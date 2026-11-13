@@ -250,6 +250,186 @@ fn build_env_host_requirements_symtab(
     symtab
 }
 
+/// What each `enableIf` of a Job Template is known to be at template
+/// validation (Template Schemas §7.6 rule 5, §3.2.2 item 5): `Some(true)`
+/// or `Some(false)` when it is absent (`true`), a boolean scalar, or an
+/// expression that evaluates to one with every Job Parameter, `Job.*`,
+/// `Step.Name`, and `Env.Param.*` value as `unresolved[T]` of its type
+/// ([`expr_field::known_bool`]); `None` when it is not known. Every check
+/// before job creation that depends on whether an entry is enabled or an
+/// Environment is disabled reads these, so they all agree.
+#[derive(Debug, Default)]
+pub(crate) struct KnownEnableIfs {
+    /// Per `jobEnvironments` entry, in order.
+    job_environments: Vec<Option<bool>>,
+    /// Per Step, per `dependencies` entry: the entry's `enableIf`,
+    /// `Some(true)` for one that is absent or not an `environment:`
+    /// entry.
+    entries: Vec<Vec<Option<bool>>>,
+    /// Per Step, per `stepEnvironments` entry.
+    step_environments: Vec<Vec<Option<bool>>>,
+}
+
+impl KnownEnableIfs {
+    /// The `enableIf` of `jobEnvironments[k]`.
+    pub(crate) fn job_environment(&self, k: usize) -> Option<bool> {
+        self.job_environments.get(k).copied().unwrap_or(Some(true))
+    }
+
+    /// The `enableIf` of `steps[i] -> dependencies[j]`.
+    pub(crate) fn entry(&self, i: usize, j: usize) -> Option<bool> {
+        self.entries
+            .get(i)
+            .and_then(|e| e.get(j))
+            .copied()
+            .unwrap_or(Some(true))
+    }
+
+    /// The `enableIf` of `steps[i] -> stepEnvironments[j]`.
+    pub(crate) fn step_environment(&self, i: usize, j: usize) -> Option<bool> {
+        self.step_environments
+            .get(i)
+            .and_then(|e| e.get(j))
+            .copied()
+            .unwrap_or(Some(true))
+    }
+
+    /// What `steps[i]`'s first well-formed `environment:` entry naming
+    /// `name` is known to be (a second one is a constraint 3 error).
+    pub(crate) fn entry_in_step(&self, i: usize, step: &StepTemplate, name: &str) -> KnownEntry {
+        let found = step
+            .dependencies
+            .iter()
+            .flatten()
+            .position(|d| d.environment() == Some(name));
+        match found {
+            None => KnownEntry::Absent,
+            Some(j) => KnownEntry::from_known(self.entry(i, j)),
+        }
+    }
+}
+
+/// [`KnownEnableIfs`] for `jt`, in each `enableIf`'s template-validation
+/// scope (§7.3.2): a Job Environment's, the `hostRequirements` scope; an
+/// entry's and a Step Environment's, the Step's template scope with its
+/// `let` bindings evaluated (a failed binding is `unresolved`).
+pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> KnownEnableIfs {
+    let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
+    let env_names_active = ctx.profile.has_extension(ModelExtension::EnvParams);
+    let profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
+    let lib = openjd_expr::FunctionLibrary::for_profile(&profile);
+    let ev = FsEval::new(&lib, &ctx.caller_limits);
+    let field_ev = ev.expr_field_eval(&profile);
+    let params = jt.parameter_definitions.as_deref();
+    let job_environments = jt
+        .job_environments
+        .iter()
+        .flatten()
+        .map(|env| match &env.enable_if {
+            None => Some(true),
+            Some(field) => expr_field::known_bool(
+                Some(field),
+                &build_env_host_requirements_symtab(params, env),
+                &field_ev,
+            ),
+        })
+        .collect();
+    let mut entries = Vec::with_capacity(jt.steps.len());
+    let mut step_environments = Vec::with_capacity(jt.steps.len());
+    for step in &jt.steps {
+        let has_expression = step
+            .dependencies
+            .iter()
+            .flatten()
+            .any(|d| matches!(d.enable_if, Some(ExprField::Expression(_))))
+            || step
+                .step_environments
+                .iter()
+                .flatten()
+                .any(|e| matches!(e.enable_if, Some(ExprField::Expression(_))));
+        // The Step's template scope, built only when an expression needs
+        // it.
+        let symtab = has_expression.then(|| {
+            let mut symtab = build_template_scope_symtab(params);
+            if expr_active {
+                add_job_symbols(&mut symtab, env_names_active);
+                symtab
+                    .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
+                    .expect("symtab");
+                let mut scratch = ValidationErrors::default();
+                for binding in step.let_bindings.iter().flatten() {
+                    if let Some(eq_pos) = binding.find('=') {
+                        evaluate_let_binding(
+                            binding,
+                            eq_pos,
+                            &[],
+                            false,
+                            &mut symtab,
+                            &ev,
+                            &profile,
+                            &mut scratch,
+                        );
+                    }
+                }
+            }
+            symtab
+        });
+        let known = |field: Option<&ExprField>| match (field, &symtab) {
+            (Some(ExprField::Expression(_)), Some(symtab)) => {
+                expr_field::known_bool(field, symtab, &field_ev)
+            }
+            (Some(ExprField::Expression(_)), None) => None,
+            _ => expr_field::known_bool(field, &SymbolTable::new(), &field_ev),
+        };
+        entries.push(
+            step.dependencies
+                .iter()
+                .flatten()
+                .map(|d| {
+                    if d.environment().is_some() {
+                        known(d.enable_if.as_ref())
+                    } else {
+                        Some(true)
+                    }
+                })
+                .collect(),
+        );
+        step_environments.push(
+            step.step_environments
+                .iter()
+                .flatten()
+                .map(|e| known(e.enable_if.as_ref()))
+                .collect(),
+        );
+    }
+    KnownEnableIfs {
+        job_environments,
+        entries,
+        step_environments,
+    }
+}
+
+/// What an Environment Template's own `enableIf` is known to be at
+/// template validation, in its `hostRequirements` scope (§7.3.2, §7.6
+/// rule 5); `Some(true)` when it is absent.
+pub(crate) fn known_environment_template_enable_if(
+    et: &crate::template::EnvironmentTemplate,
+    ctx: &ValidationContext,
+) -> Option<bool> {
+    let env = &et.environment;
+    let Some(field) = &env.enable_if else {
+        return Some(true);
+    };
+    let profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
+    let lib = openjd_expr::FunctionLibrary::for_profile(&profile);
+    let ev = FsEval::new(&lib, &ctx.caller_limits);
+    expr_field::known_bool(
+        Some(field),
+        &build_env_host_requirements_symtab(et.parameter_definitions.as_deref(), env),
+        &ev.expr_field_eval(&profile),
+    )
+}
+
 /// Pass-8 check of one format-string Environment parameter value against
 /// `symtab`: the default scope for a `default`, the entry-value scope for
 /// an `environment:` entry value. `target` is the parameter's expression
@@ -274,14 +454,11 @@ fn validate_env_param_value_fs(
 /// The parameter types of each `jobEnvironments` entry, by Environment
 /// name and then parameter name (the first definition of a duplicated
 /// name), built once per template for [`validate_env_entry_values`], with
-/// the Environment and whether it is certainly not disabled: its
-/// `activation` is `ALWAYS` (§3.2.2 item 6) or its own `enableIf` is absent
-/// or `true`. A Step's values for an Environment are not checked against
-/// their types where it is disabled (§3.2.2), so for any other one whose
-/// `enableIf` is `false` or an expression they are checked with no target
-/// type (§7.6 rule 5), unless
-/// the expression is certainly unresolved for the entry
-/// (`env_params::enable_if_certainly_unresolved`). One with an
+/// the Environment and whether it is known not to be disabled: its
+/// `activation` is `ALWAYS` (§3.2.2 item 6) or its own `enableIf` is known
+/// to be `true` (§7.6 rule 5). A Step's values for an Environment are not
+/// checked against their types where it is disabled (§3.2.2), so for any
+/// other one they are checked with no target type. One with an
 /// `exclusiveGroup` (§4 item 7) may be superseded, which disables it, so
 /// its values are also checked with no target type.
 type JobEnvParamTypes<'a> = std::collections::HashMap<
@@ -293,9 +470,9 @@ type JobEnvParamTypes<'a> = std::collections::HashMap<
     ),
 >;
 
-fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
+fn job_env_param_types<'a>(jt: &'a JobTemplate, known: &KnownEnableIfs) -> JobEnvParamTypes<'a> {
     let mut out: JobEnvParamTypes<'_> = std::collections::HashMap::new();
-    for env in jt.job_environments.iter().flatten() {
+    for (k, env) in jt.job_environments.iter().flatten().enumerate() {
         // A duplicated Environment name (reported by pass 6): keep the
         // first.
         let std::collections::hash_map::Entry::Vacant(slot) = out.entry(env.name.as_str()) else {
@@ -305,7 +482,9 @@ fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
         for d in env.env_parameter_definitions.iter().flatten() {
             types.entry(d.name()).or_insert(d.job_param_type());
         }
-        slot.insert((env, env.certainly_not_disabled(), types));
+        let not_disabled = env.activation() == EnvironmentActivation::Always
+            || known.job_environment(k) == Some(true);
+        slot.insert((env, not_disabled, types));
     }
     out
 }
@@ -313,15 +492,14 @@ fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
 /// Pass-8 checks of a Step's format-string `environment:` entry values
 /// (`ENV_PARAMS`, §3.2) against `symtab`, the Step's template scope.
 ///
-/// A value of an entry whose `enableIf` is absent or `true` (a disabled
+/// A value of an entry whose `enableIf` is known to be `true` (a disabled
 /// entry's parameters are not checked, §3.2 item 3.2, and one whose `enableIf`
-/// is an expression may be disabled, §7.6 rule 5), for a parameter of a
-/// `jobEnvironments` entry with `activation:
-/// ALWAYS`, or whose own `enableIf` is absent or `true` or certainly
-/// unresolved for the entry,
-/// is checked with the parameter's type as its target type; for any
-/// other Job Environment the type is checked
-/// when the Job is created, for the Steps it is not disabled for (§3.2.2). A value for an
+/// is not known may be disabled, §7.6 rule 5), for a parameter of an
+/// ungrouped `jobEnvironments` entry with `activation: ALWAYS`, or whose
+/// own `enableIf` is known to be `true`, is checked with the parameter's
+/// type as its target type; for any other Job Environment the type is
+/// checked when the Job is created, for the Steps it is not disabled for
+/// (§3.2.2). A value for an
 /// external Environment has no known type at template validation, so it
 /// is checked with no target type, and its type is checked when the Job is
 /// created.
@@ -329,6 +507,8 @@ fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
 fn validate_env_entry_values(
     job_env_types: &JobEnvParamTypes<'_>,
     step: &StepTemplate,
+    step_index: usize,
+    known: &KnownEnableIfs,
     symtab: &SymbolTable,
     ev: &FsEval<'_>,
     ctx: &ValidationContext,
@@ -344,21 +524,22 @@ fn validate_env_entry_values(
             continue;
         };
         // The types apply where the Environment is not disabled (§3.2.2):
-        // it is `ALWAYS`, its `enableIf` is absent or `true`, or certainly
-        // unresolved with the values of this entry, which must then be
-        // certainly enabled. A disabled entry's parameters are not checked
-        // (§3.2 item 3.2), so only a certainly enabled entry's values are
-        // typed here; an expression entry's are typed when the Job is
-        // created, if it is enabled (§7.6 rule 5).
+        // it is `ALWAYS` or its `enableIf` is known to be `true`. A disabled
+        // entry's parameters are not checked (§3.2 item 3.2), so only the
+        // values of an entry known to be enabled are typed here; any other
+        // entry's are typed when the Job is created, if it is enabled
+        // (§7.6 rule 5).
         let job_env = job_env_types
             .get(env_name)
-            .filter(|_| dep.literal_enabled() == Some(true))
-            .filter(|(env, certain, _)| {
-                // A grouped one may be superseded (§4 item 7), which
-                // disables it, so its values are typed at job creation.
+            .filter(|_| known.entry(step_index, j) == Some(true))
+            // A grouped one may be superseded (§4 item 7), which disables
+            // it, so its values are typed at job creation. One whose
+            // `enableIf` reads a literal of this entry's that does not
+            // convert is certainly not disabled (§3.2.2 item 2).
+            .filter(|(env, not_disabled, _)| {
                 env.group().is_none()
-                    && (*certain
-                        || super::env_params::enable_if_certainly_unresolved(
+                    && (*not_disabled
+                        || super::env_params::enable_if_reads_unconvertible_literal(
                             env,
                             Some(&params.0),
                             ctx,
@@ -2392,6 +2573,7 @@ fn validate_host_requirements_fs(
 pub fn validate_format_strings(
     jt: &JobTemplate,
     ctx: &ValidationContext,
+    known: &KnownEnableIfs,
     errors: &mut ValidationErrors,
 ) {
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
@@ -2407,7 +2589,7 @@ pub fn validate_format_strings(
     // `Job.EnvNames` (§7.3.1) needs ENV_PARAMS, which requires EXPR.
     let env_names_active = env_params_active;
     let job_env_types = if env_params_active {
-        job_env_param_types(jt)
+        job_env_param_types(jt, known)
     } else {
         JobEnvParamTypes::new()
     };
@@ -2840,6 +3022,8 @@ pub fn validate_format_strings(
             validate_env_entry_values(
                 &job_env_types,
                 step,
+                i,
+                known,
                 &step_template_symtab,
                 &template_ev,
                 ctx,

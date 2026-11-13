@@ -760,8 +760,9 @@ describe("createJob", () => {
 
   it("a Step enters only the first Job Environment of an exclusiveGroup", () => {
     // Template Schemas §4 item 7: B is superseded by A, which disables it
-    // for the Step, so it is not held to constraint 7 (its parameter has no
-    // default) and gets no values.
+    // for the Step, so its values are not checked and the Step's Sessions
+    // do not enter it. It still applies to the Step, so the Step supplies
+    // its parameter without a default (§3.2 constraint 7).
     const doc = JSON.stringify({
       specificationVersion: "jobtemplate-2023-09",
       extensions: ["ENV_PARAMS", "EXPR"],
@@ -771,11 +772,17 @@ describe("createJob", () => {
         {
           name: "B",
           exclusiveGroup: "G",
-          envParameterDefinitions: [{ name: "P", type: "STRING" }],
+          envParameterDefinitions: [{ name: "P", type: "INT", minValue: 5 }],
           variables: { V: "b" },
         },
       ],
-      steps: [{ name: "S", script: { actions: { onRun: { command: "x" } } } }],
+      steps: [
+        {
+          name: "S",
+          dependencies: [{ environment: "B", parameters: { P: 1 } }],
+          script: { actions: { onRun: { command: "x" } } },
+        },
+      ],
     });
     const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
       "ENV_PARAMS",

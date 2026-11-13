@@ -438,21 +438,34 @@ fn a_literal_of_the_wrong_type_is_rejected() {
         &[&conda],
         &[wrong_type],
     );
-    // The sample's `enableIf` reads only Packages, a literal that does not
-    // convert, so it is certainly unresolved for the Step: the Environment
-    // is not disabled, and check rejects the value too (Template Schemas
-    // §3.2.2).
+    // The sample's `enableIf` reads Packages, a literal that does not
+    // convert, so it is never evaluated for the Step: the Environment is
+    // not disabled, and check rejects the value too (Template Schemas
+    // §3.2.2 item 2).
     check_err_same_as_apply(
         &steps_naming("Conda", false, "{Packages: 7}"),
         &[CONDA],
         &[wrong_type],
     );
-    // An `enableIf` that also reads a Job Parameter is undetermined before
+    // An `enableIf` that also reads a Job Parameter still reads Packages,
+    // so it is certainly not evaluated either, and check rejects the value
+    // (Template Schemas §3.2.2 item 2).
+    let conda = CONDA.replace(
+        "\"Env.Param.Packages != ''\"",
+        "\"Env.Param.Packages != '' and Param.CondaPackages != 'x'\"",
+    );
+    assert_ne!(conda, CONDA);
+    check_err_same_as_apply(
+        &steps_naming("Conda", false, "{Packages: 7}"),
+        &[&conda],
+        &[wrong_type],
+    );
+    // An `enableIf` that reads only a Job Parameter is undetermined before
     // job creation (§7.6 rule 5), so check leaves the value to job
     // creation, which rejects it.
     let conda = CONDA.replace(
         "\"Env.Param.Packages != ''\"",
-        "\"Env.Param.Packages != '' and Param.CondaPackages != 'x'\"",
+        "\"Param.CondaPackages != 'x'\"",
     );
     assert_ne!(conda, CONDA);
     let jt = job_ok(&steps_naming("Conda", false, "{Packages: 7}"));
@@ -519,9 +532,9 @@ steps:
         &[env],
         &[
             "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every \
-           parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+           parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
            activation BY_DEFAULT that the Step does not decline, and each one \
-           with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Need' of Environment 'E' \
+           with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Need' of Environment 'E' \
            (EnvironmentTemplate[0]).",
         ],
     );
@@ -689,7 +702,7 @@ steps:
             "JobTemplate -> steps[0]:\n\tcannot supply the parameters without a default of \
            Environment 'E' (EnvironmentTemplate[0]): Need. It has the same name as a \
            stepEnvironments entry of this Step, so no 'environment:' dependency of this Step \
-           can reach it (Template Schemas §3.2.1 item 5), and its activation is BY_DEFAULT, so this Step's Sessions enter it.",
+           can reach it (Template Schemas §3.2.1 item 5), and its activation is BY_DEFAULT, so it applies to this Step (§3.2 constraint 7).",
         ],
     );
 }
@@ -762,9 +775,9 @@ fn always_entry_disabled(step_index: usize, step: &str, label: &str) -> String {
 fn attached_missing(note: &str) -> String {
     format!(
         "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-         parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+         parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
          activation BY_DEFAULT that the Step does not decline, and each one \
-         with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Packages' of Environment 'Conda' \
+         with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Packages' of Environment 'Conda' \
          (EnvironmentTemplate[0]){note}."
     )
 }
@@ -809,24 +822,18 @@ fn an_entry_disabled_by_an_expression_is_named_at_job_creation() {
 }
 
 #[test]
-fn a_constant_expression_that_disables_an_always_entry_is_named_at_job_creation() {
-    // A constant expression is still an expression, unknown before the Job
-    // is created (§7.6 rule 5), so `check` accepts the entry and job
-    // creation reports the §4 item 4 error (`specs/cli/check.md`). That
-    // error, of §7.4.1 step 4, stops the Step, so its constraint 7 is not
-    // checked.
-    let jt = job_ok(&entry_with_enable_if(r#""false""#));
-    let envs = [env_ok(&required_attached_always())];
-    assert_eq!(check(&jt, &envs).unwrap(), Vec::<String>::new());
-    let err = apply(&jt, &envs, &[]).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[&always_entry_disabled(
-            0,
-            "S",
-            "'Conda' (EnvironmentTemplate[0])",
-        )],
+fn a_constant_expression_that_disables_an_always_entry_is_named_by_check() {
+    // A constant expression evaluates to a concrete bool with every value
+    // unknown, so it is known before the Job is created (§7.6 rule 5), and
+    // `check` reports what it reports for a literal `false`: the §4 item 4
+    // error and constraint 7 with the disabled note. Job creation stops
+    // the Step after that error, of §7.4.1 step 4, so it reports only it.
+    let disabled = always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])");
+    check_err_and_apply_err(
+        &entry_with_enable_if(r#""false""#),
+        &[&required_attached_always()],
+        &[&disabled, &attached_missing(DISABLED_NOTE)],
+        &[&disabled],
     );
 }
 
@@ -1784,8 +1791,9 @@ environment:
 /// `check_environment_templates` decides an attached Environment's
 /// `enableIf` from the literal values a Step supplies, of any form
 /// (§4.5 item 3): with each value read as given the `enableIf` is `false`,
-/// so the Environment is disabled and its unsupplied `Q` is no error,
-/// as at job creation.
+/// so the Environment is disabled, as at job creation. The Step still
+/// supplies `Q`: the Environment applies to it, so constraint 7 holds it
+/// to `Q` whatever its `enableIf` is (Template Schemas §3.2 constraint 7).
 #[test]
 fn check_reads_literal_path_values_of_any_form_in_an_enable_if() {
     for value in ["''", "'s3://b/k'", "'rel/x'", "'C:/x'"] {
@@ -1806,7 +1814,7 @@ environment:
         let jt = job_ok(&steps_naming(
             "E",
             true,
-            &format!("{{P: {value}, L: [{value}]}}"),
+            &format!("{{P: {value}, L: [{value}], Q: q}}"),
         ));
         assert_eq!(
             check_ok_and_apply_ok(&jt, &[env_ok(&env)]),

@@ -198,6 +198,39 @@ fn unresolved_boolop_outcomes(
     passes
 }
 
+/// Whether `a` and `b` are the same value: of the same type, equal, and,
+/// for a float, written with the same text (2026-02 §1.3.4), element by
+/// element in a list. A conditional with an unknown condition whose
+/// branches give the same value has that value
+/// ([`Evaluator::eval_ifexp`]). Values of different types are never the
+/// same, so `1 if U else 1.0` stays unresolved. Each element comparison is
+/// bounded by the lists the branches already built and charged for.
+fn identical(a: &ExprValue, b: &ExprValue) -> bool {
+    if a.expr_type() != b.expr_type() {
+        return false;
+    }
+    match (a, b) {
+        // `Float64` equality compares the value and the text it renders.
+        (ExprValue::Float(x), ExprValue::Float(y)) => x == y,
+        (ExprValue::ListFloat(x), ExprValue::ListFloat(y)) => x == y,
+        (
+            ExprValue::Path {
+                value: x,
+                format: fx,
+            },
+            ExprValue::Path {
+                value: y,
+                format: fy,
+            },
+        ) => x == y && fx == fy,
+        (ExprValue::ListPath(x, fx, _), ExprValue::ListPath(y, fy, _)) => x == y && fx == fy,
+        (ExprValue::ListList(x, _, _), ExprValue::ListList(y, _, _)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(ex, ey)| identical(ex, ey))
+        }
+        _ => a.equals(b),
+    }
+}
+
 /// Default memory limit: 100 million bytes.
 pub const DEFAULT_MEMORY_LIMIT: usize = 100_000_000; // 100 million bytes per spec
 
@@ -1354,6 +1387,17 @@ impl<'a> Evaluator<'a> {
                     let t = unwrap_unresolved(&o.expr_type());
                     self.release(&o);
                     self.track(ExprValue::unresolved(t))
+                }
+                // Both branches give the same known value, which is then
+                // the result whichever branch a run takes (2026-02
+                // "Conditional Expressions with Unknown Conditions"):
+                // `c if U else c` is `c`. The value is kept, so the other
+                // branch's is released.
+                (Speculative::Value(b), Speculative::Value(o))
+                    if !b.is_unresolved() && !o.is_unresolved() && identical(&b, &o) =>
+                {
+                    self.release(&o);
+                    Ok(b)
                 }
                 (Speculative::Value(b), Speculative::Value(o)) => {
                     let bt = unwrap_unresolved(&b.expr_type());

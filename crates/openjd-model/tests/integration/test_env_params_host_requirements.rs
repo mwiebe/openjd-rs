@@ -1149,7 +1149,7 @@ fn rejected_values_are_not_also_reported_as_undefined_in_the_requirements() {
     )
     .err(&["JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tis not a valid INT value: Cannot parse 'abc' as integer"]);
     submission(&step(""), &[&gpu_template(true)], &[]).err(&[
-        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'N' of Environment 'Gpu' (EnvironmentTemplate[0]).",
+        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'N' of Environment 'Gpu' (EnvironmentTemplate[0]).",
     ]);
 }
 

@@ -564,8 +564,8 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#,
         &[
-            "steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of Environment 'L'.",
-            "steps[2]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of Environment 'L'.",
+            "steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'L'.",
+            "steps[2]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'L'.",
         ],
     );
 }
@@ -765,7 +765,7 @@ fn rfc_render_license_example() {
     );
     job_err(
         &without,
-        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of Environment 'RenderLicense'."],
+        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'RenderLicense'."],
     );
 }
 
@@ -788,7 +788,7 @@ steps:
   dependencies: [{environment: B, parameters: {P: x}}, {environment: Ext, parameters: {P: y}}]
   script: {actions: {onRun: {command: x}}}
 "#,
-        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'A'."],
+        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'P' of Environment 'A'."],
     );
 }
 
@@ -813,7 +813,7 @@ steps:
         &[
             "jobEnvironments[0] -> envParameterDefinitions[1]:\n\tduplicate parameter name: 'P'",
             "steps[0] -> dependencies[0] -> parameters -> Q:\n\tEnvironment 'E' declares no parameter 'Q'. Declared: P.",
-            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'E'.",
+            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'P' of Environment 'E'.",
         ],
     );
 }
@@ -905,7 +905,7 @@ steps:
   dependencies: [{environment: L, parameters: {B: b}}]
   script: {actions: {onRun: {command: x}}}
 "#,
-        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'A' of Environment 'L'; 'C' of Environment 'M'."],
+        &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'A' of Environment 'L'; 'C' of Environment 'M'."],
     );
     // Many missing parameters: one error per Step, listing 50.
     let envs: Vec<String> = (0..3)
@@ -927,7 +927,7 @@ steps:
             + &format!(" of Environment 'E{e}'")
     };
     let expected = format!(
-        "must supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: {}; {}; {}; and 10 more.",
+        "must supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: {}; {}; {}; and 10 more.",
         list(0, 20),
         list(1, 20),
         list(2, 10)
@@ -1041,7 +1041,7 @@ fn constraint_7_list_is_capped_in_characters() {
     job_err(
         &doc,
         &[&format!(
-            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: {}; and 15 more.",
+            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: {}; and 15 more.",
             shown.join("; ")
         )],
     );

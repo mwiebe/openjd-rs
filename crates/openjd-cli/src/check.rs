@@ -91,17 +91,17 @@ pub fn execute(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// and the
 /// §3.3.3 combination of literal host requirements. The warnings go to
 /// stderr. Format-string values, non-literal `default`s and host
-/// requirements, and entries and Environments whose `enableIf` is an
-/// expression (even a constant one; it is an expression field, Template
-/// Schemas §7.6) are left to `openjd run`, which has the Job Parameter
-/// values; an Environment whose `enableIf` is the scalar `false` is not
-/// entered, and its values and parameters without a `default` are not
-/// checked (§3.2.2), so the value checks and constraint 7 are made only
-/// for an attached Environment whose `enableIf` is absent or `true`, or
-/// certainly unresolved (it reads only values that stay unknown), and that
-/// no earlier Environment of its `exclusiveGroup` supersedes or may
-/// supersede (§4 item 7), and for a grouped Job Environment the Step is
-/// known to enter.
+/// requirements, and entries and Environments whose `enableIf` is not
+/// known before the Job is created (Template Schemas §7.6 rule 5) are left
+/// to `openjd run`, which has the Job Parameter values. Constraint 7 is
+/// checked for every attached Environment that applies to a Step, whatever
+/// its own `enableIf` or `exclusiveGroup` (§3.2 constraint 7). The value
+/// checks are made only where the Environment is known not to be disabled
+/// (§3.2.2): for an attached Environment whose `enableIf` is known to be
+/// `true`, or reads a literal value that does not convert, and that no
+/// earlier Environment of its `exclusiveGroup` supersedes or may supersede
+/// (§4 item 7), and for a grouped Job Environment the Step is known to
+/// enter.
 /// Returns the Environment Templates read.
 fn check_with_environments(
     job_template: &openjd_model::template::JobTemplate,
@@ -136,8 +136,11 @@ fn check_with_environments(
 /// `BY_DEFAULT` Environment has `enableIf: false` declines it (Template
 /// Schemas §3.2 item 3.2), so the Environment's own `enableIf` is not
 /// evaluated for that Step and the Environment is not listed. An
-/// Environment or entry whose `enableIf` is an expression is decided when
-/// the Job is created, so it is not listed. An
+/// Environment or entry whose `enableIf` is an expression is not listed,
+/// even one whose value template validation knows (§7.6 rule 5): these
+/// lines name only the boolean scalar `false`. They are informational. A
+/// disabled Environment that applies to a Step still needs the Step to
+/// supply its parameters without a `default` (§3.2 constraint 7). An
 /// Environment with `activation: ALWAYS` cannot be disabled: template
 /// validation, which runs first, rejects one with `enableIf: false`
 /// (Template Schemas §3.2.2 item 6).

@@ -291,15 +291,20 @@ must be supported (Template Schemas §1.1 item 3). The `JobTemplate` wrapper exp
 for them. An entry's
 `enableIf` is an expression field of type `bool` (Template Schemas §7.6): a JSON boolean is
 used as written, and a string holds one expression written without `{{ }}`, so `"false"` is
-an expression evaluated by `createJob`. A number, a `null`, a `{{ }}` value, or an
+an expression evaluated by `createJob` (`decodeJobTemplate`'s template validation also knows
+its value, Template Schemas §7.6 rule 5, and checks the template accordingly). A number, a `null`, a `{{ }}` value, or an
 expression whose type is not `bool` is rejected by `decodeJobTemplate` with the field's path;
 a list, a map, or an integer above `i64::MAX` that fits `u64` is a decode error that names
 `enableIf` but has no path.
 An Environment's own `enableIf` (§4 item 6) is an expression field of type `bool` with the
 same rules, permitted on every Environment, and `createJob` resolves it per Step with that
-Step's effective values that are known (Template Schemas §3.2.2); a Step's values for an
-Environment it disables are not checked against their type and constraints (constraint 5
-still applies), and the Step is not held to constraint 7 for it.
+Step's concrete effective values, and does not evaluate it when it reads one that is missing
+or does not convert (Template Schemas §3.2.2 item 2); a Step's values for an Environment it
+disables are not checked against their type and constraints (constraint 5 still applies).
+The Step must still supply every parameter without a `default` of every Environment that
+applies to it, whatever that Environment's own `enableIf` or `exclusiveGroup` (§3.2
+constraint 7), so `decodeJobTemplate` or `createJob` rejects a Step that leaves one out even
+where the Environment is disabled or superseded.
 Of the Job Environments a Step would enter that share an `exclusiveGroup` (§4 item 7),
 `createJob` takes them in `jobEnvironments` order: once one is left in the Step's set (its
 `enableIf` does not disable it), it supersedes the later ones without evaluating their

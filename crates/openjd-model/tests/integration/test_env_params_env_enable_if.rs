@@ -10,11 +10,13 @@
 //! the single-layer rule counting only Environments certainly entered.
 //! Job creation (§7.4.1): resolution once per Step with its effective
 //! values, and every effect of a disabled Environment (not entered, no
-//! values, no host requirements, `Job.EnvNames` unchanged, no constraint
-//! 7 and no value checks, the Environment-set comparison, the single-layer rule over the
-//! final set), the `enableIf` evaluated with the values that are known
-//! (§3.2.2), and `check_environment_templates` treating only certainly
-//! entered Environments as entered.
+//! values, no host requirements, `Job.EnvNames` unchanged, no value
+//! checks, the Environment-set comparison, the single-layer rule over the
+//! final set), the `enableIf` evaluated with the Step's concrete values
+//! and not evaluated when it reads one that is missing or does not convert
+//! (§3.2.2 item 2), constraint 7 held whatever the `enableIf` (§3.2
+//! constraint 7), and `check_environment_templates` treating only
+//! certainly entered Environments as entered.
 
 use openjd_model::job::{Document, EnvironmentRef, Job};
 use openjd_model::template::EnvironmentTemplate;
@@ -156,7 +158,8 @@ fn expression_field_rules_apply_in_every_position() {
 fn a_disabled_environment_is_still_validated_in_full() {
     // `enableIf: false` does not exempt the Environment itself from any
     // check: it is validated in full as written. Only the checks of the
-    // Steps' values for it, and constraint 7, are skipped (§3.2.2).
+    // Steps' values for it are skipped (§3.2.2); constraint 7 still holds
+    // for every Step it applies to (§3.2 constraint 7).
     job_err(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          jobEnvironments:\n- {name: E, enableIf: false, variables: {V: \"{{ Param.Nope }}\"}}\n\
@@ -288,8 +291,9 @@ fn env_raw_param_of_a_path_is_a_string_to_the_enable_if() {
              script: {{actions: {{onRun: {{command: x}}}}}}\n"
         )
     };
-    // A known value: `/none` disables E, so Q need not be supplied.
-    let job = create_ok(&jt(", default: /none", ""), &[], &[]).job;
+    // A known value: `/none` disables E. E applies to S, so S still
+    // supplies Q (§3.2 constraint 7).
+    let job = create_ok(&jt(", default: /none", ", parameters: {Q: 1}"), &[], &[]).job;
     assert_eq!(entered(&job, 0), Vec::<String>::new());
     // A value that does not convert is unknown, typed as a string: only
     // the value's own error, no enableIf type error.
@@ -301,18 +305,16 @@ fn env_raw_param_of_a_path_is_a_string_to_the_enable_if() {
         &["steps[0] -> dependencies[0] -> parameters -> D:\n\tcould not be resolved as a value of \
            type PATH: Cannot coerce list[int] to path"],
     );
-    // A missing value, at template validation: unresolved[string], so the
-    // result depends on it and constraint 7 is reported then.
+    // Missing values, at template validation: constraint 7 is reported,
+    // whatever E's enableIf is.
     job_err(
         &jt("", ""),
         &[
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-           default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+           default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
            activation BY_DEFAULT that the Step does not decline, and each one \
            with activation ON_REQUEST that the Step requests; \
-           Template Schemas §3.2 constraint 7); missing: 'D', 'Q' of Environment 'E' (its own \
-           enableIf depends on a value that is missing or does not convert, so it does not \
-           disable the Environment; Template Schemas §3.2.2).",
+           Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'D', 'Q' of Environment 'E'.",
         ],
     );
 }
@@ -486,59 +488,64 @@ fn a_disabled_environments_wrap_hooks_still_need_the_extension() {
 // ── Template validation: constraint 7 and the single-layer rule ─────
 
 #[test]
-fn a_disabled_environment_is_not_held_to_constraint_7() {
-    // §3.2.2: constraint 7 does not apply to a Step for which the
-    // Environment is disabled. With the scalar `false` it is disabled for
-    // every Step, which template validation knows; with an expression it is
-    // undetermined there (§7.6 rule 5), and job creation decides it.
-    let jt = |enable_if: &str| {
+fn a_disabled_environment_is_held_to_constraint_7() {
+    // §3.2 constraint 7: a Step must supply every parameter without a
+    // default of each Environment that applies to it, whatever that
+    // Environment's own enableIf is. Lic is BY_DEFAULT and no Step declines
+    // it, so it applies to S, and template validation reports the missing
+    // value whether its enableIf is `false`, `true`, an expression over a
+    // Job Parameter, or one that reads only the missing value (§3.2.2
+    // item 2: the Step's entries that bear on it are known).
+    let jt = |enable_if: &str, deps: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
              parameterDefinitions: [{{name: Use, type: STRING, default: 'no'}}]\n\
              jobEnvironments:\n- name: Lic\n  envParameterDefinitions: [{{name: Product, type: \
              STRING}}]\n  enableIf: {enable_if}\n  variables: {{V: x}}\n\
-             steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+             steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
         )
     };
-    let missing = |note: &str| {
-        format!(
-            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
-             a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
-             activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; \
-             Template Schemas §3.2 constraint 7); missing: 'Product' of Environment 'Lic'{note}."
-        )
-    };
-    // Disabled for every Step: valid, and the Job does not enter it.
-    let created = create_ok(&jt("false"), &[], &[]);
+    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
+                   without a default of each Environment that applies to it (every \
+                   jobEnvironments entry with activation ALWAYS, each one with activation \
+                   BY_DEFAULT that the Step does not decline, and each one with activation \
+                   ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), \
+                   whatever that Environment's own enableIf is; missing: 'Product' of \
+                   Environment 'Lic'.";
+    for enable_if in [
+        "false",
+        "true",
+        "\"Param.Use == 'yes'\"",
+        "\"Env.Param.Product != ''\"",
+    ] {
+        job_err(&jt(enable_if, ""), &[missing]);
+    }
+    // At job creation, through an entry whose own enableIf is unknown at
+    // template validation (so Lic is decided for S then) and `true` when
+    // the Job is created: the entry supplies nothing, and Lic's enableIf,
+    // `false` for S with Use 'no', does not lift constraint 7 (§7.4.1 step
+    // 5).
+    let deferred = jt(
+        "\"Param.Use == 'yes'\"",
+        "  dependencies: [{environment: Lic, enableIf: \"Param.Use != 'maybe'\"}]\n",
+    );
+    job_ok(&deferred);
+    create_err(&deferred, &[], &[], "JobTemplate", &[missing]);
+    create_err(&deferred, &[], &[("Use", "yes")], "JobTemplate", &[missing]);
+    // With Product supplied, Lic's enableIf decides whether S enters it:
+    // `false` for S with Use 'no', so Lic is disabled.
+    let supplied = jt(
+        "\"Param.Use == 'yes'\"",
+        "  dependencies: [{environment: Lic, parameters: {Product: p}}]\n",
+    );
+    let created = create_ok(&supplied, &[], &[]);
     assert_eq!(entered(&created.job, 0), Vec::<String>::new());
-    assert_eq!(created.job.steps[0].environment_parameters, None);
-    // An expression: no error at template validation. `false` for the
-    // Step: disabled, so the Job is created.
-    let expr = jt("\"Param.Use == 'yes'\"");
-    job_ok(&expr);
-    let created = create_ok(&expr, &[], &[]);
     assert_eq!(
         created.disabled_environments[0].environments,
         [job_env_ref("Lic")]
     );
-    // `true` for the Step: the parameter is required, with no note.
-    create_err(
-        &expr,
-        &[],
-        &[("Use", "yes")],
-        "JobTemplate",
-        &[&missing("")],
-    );
-    // The scalar `true`: required, at template validation.
-    job_err(&jt("true"), &[&missing("")]);
-    // An expression that reads only the missing value is certainly
-    // unresolved, so it does not disable the Environment, at template
-    // validation as at job creation, and the message says why.
-    job_err(
-        &jt("\"Env.Param.Product != ''\""),
-        &[&missing(" (its own enableIf depends on a value that is missing or does not convert, so it does not disable the Environment; Template Schemas §3.2.2)")],
-    );
+    let created = create_ok(&supplied, &[], &[("Use", "yes")]);
+    assert_eq!(entered(&created.job, 0), ["Lic"]);
 }
 
 const WRAP_HOOKS: &str = "script:\n    actions:\n      onWrapEnvEnter: {command: x}\n      \
@@ -567,20 +574,22 @@ const SINGLE_LAYER_JC: &str = "steps[0]:\n\tits Sessions would enter 2 \
 
 #[test]
 fn single_layer_rule_counts_only_environments_certainly_entered() {
-    // Both certainly entered: rejected at template validation.
+    // Both certainly entered: rejected at template validation. A constant
+    // expression is a concrete bool with every value unknown, so `"true"`
+    // is known at template validation too (§7.6 rule 5).
     job_err(&two_wrappers(None, None), &[SINGLE_LAYER_TV]);
     job_err(&two_wrappers(Some("true"), None), &[SINGLE_LAYER_TV]);
+    job_err(&two_wrappers(None, Some("\"true\"")), &[SINGLE_LAYER_TV]);
     // A scalar false counts as not entered, so the Job is created and the
     // Step enters only Outer.
     let created = create_ok(&two_wrappers(Some("true"), Some("false")), &[], &[]);
     assert_eq!(entered(&created.job, 0), ["Outer"]);
-    // An expression, even a constant one, defers the rule to job creation:
-    // accepted at template validation, and rejected or not by its value.
-    for inner in ["\"true\"", "\"Param.UseInner == 'yes'\""] {
-        let jt = two_wrappers(None, Some(inner));
-        job_ok(&jt);
-        create_err(&jt, &[], &[], "JobTemplate", &[SINGLE_LAYER_JC]);
-    }
+    // An expression that reads a Job Parameter defers the rule to job
+    // creation: accepted at template validation, and rejected or not by
+    // its value.
+    let jt = two_wrappers(None, Some("\"Param.UseInner == 'yes'\""));
+    job_ok(&jt);
+    create_err(&jt, &[], &[], "JobTemplate", &[SINGLE_LAYER_JC]);
     let created = create_ok(
         &two_wrappers(None, Some("\"Param.UseInner == 'yes'\"")),
         &[],
@@ -775,9 +784,9 @@ fn a_null_result_is_an_error_naming_the_steps() {
 fn the_values_are_not_checked_where_the_environment_is_disabled() {
     // §3.2.2: a Step's effective values for an Environment disabled for it
     // are not checked against their type and constraints. A value that
-    // converts is known to the `enableIf` whether or not it meets them;
-    // one that does not convert is unknown, so an `enableIf` that reads it
-    // is unresolved and does not disable the Environment.
+    // converts is used by the `enableIf` whether or not it meets them; an
+    // `enableIf` that reads one that does not convert is not evaluated
+    // (§3.2.2 item 2), so it does not disable the Environment.
     let jt = |enable_if: &str, count: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -815,8 +824,8 @@ fn the_values_are_not_checked_where_the_environment_is_disabled() {
     // not read it and is false.
     let many = [("N", "many")];
     create_ok(&jt("\"Param.N == '0'\"", "{{Param.N}}"), &[], &many);
-    // Where the enableIf reads it, the result is unresolved, and the
-    // value is rejected.
+    // Where the enableIf reads it, the enableIf is not evaluated (§3.2.2
+    // item 2), and the value is rejected.
     create_err(
         &jt("\"Env.Param.Count > 0\"", "{{Param.N}}"),
         &[],
@@ -960,26 +969,22 @@ fn a_declined_environments_enable_if_is_not_evaluated_and_constraint_7_does_not_
 }
 #[test]
 fn constraint_7_and_an_attached_environments_enable_if() {
-    // Without a default, B does not supply Packages, so Conda's enableIf,
-    // which reads it, is unresolved for B: Conda is not disabled, and
-    // constraint 7 rejects B (§3.2.2).
+    // Without a default, B does not supply Packages. Conda is BY_DEFAULT,
+    // so it applies to B, and constraint 7 rejects B (§3.2.1). Conda's
+    // enableIf reads the missing value, so it is not evaluated (§7.4.1 step
+    // 6) and adds no error of its own.
+    let missing = "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, \
+                   every parameter without a default of each Environment that applies to it \
+                   (every attached Environment with activation ALWAYS, each one with activation \
+                   BY_DEFAULT that the Step does not decline, and each one with activation \
+                   ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that \
+                   Environment's own enableIf is; missing: 'Packages' of Environment 'Conda' \
+                   (EnvironmentTemplate[0]).";
     let env = ATTACHED_CONDA.replace(", default: none", "");
-    create_err(
-        STEPS_FOR_ATTACHED,
-        &[&env],
-        &[],
-        "Submission",
-        &[
-            "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every \
-           parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
-           activation BY_DEFAULT that the Step does not decline, and each one \
-           with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Packages' of Environment 'Conda' \
-           (EnvironmentTemplate[0]) (its own enableIf depends on a value that is missing or does \
-           not convert, so it does not disable the Environment; Template Schemas §3.2.2).",
-        ],
-    );
+    create_err(STEPS_FOR_ATTACHED, &[&env], &[], "Submission", &[missing]);
     // An enableIf over the attachment's own Job Parameter that is false
-    // for B disables Conda for it, so B need not supply Packages.
+    // for B would disable Conda for it, but Conda still applies to B, so
+    // constraint 7 still rejects B.
     let env = env
         .replace(
             "environment:\n",
@@ -989,14 +994,16 @@ fn constraint_7_and_an_attached_environments_enable_if() {
             "\"Env.Param.Packages != 'none'\"",
             "\"Param.UseConda == 'yes'\"",
         );
-    let created = create_ok(STEPS_FOR_ATTACHED, &[&env], &[]);
-    assert_eq!(created.job.steps[1].environments, Some(vec![]));
-    assert_eq!(created.job.steps[1].environment_parameters, None);
+    create_err(STEPS_FOR_ATTACHED, &[&env], &[], "Submission", &[missing]);
 }
 #[test]
 fn check_environment_templates_counts_only_certainly_entered_layers() {
-    // A wrapping attachment and a wrapping Job Environment: a scalar
-    // false or an expression on either leaves the Step to job creation.
+    // A wrapping attachment and a wrapping Job Environment: a scalar false
+    // on the attachment means it is not entered, and an expression that
+    // reads a value unknown before job creation (`Job.Name`) leaves the
+    // Step to job creation. A constant expression is a concrete bool with
+    // every value unknown, so `"true"` is known, as `true` is (§7.6 rule
+    // 5).
     let attached = |enable_if: &str| {
         format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, EXPR]\n\
@@ -1018,17 +1025,19 @@ fn check_environment_templates_counts_only_certainly_entered_layers() {
         .map_err(|e| e.to_string())
     };
     assert!(check("false").is_ok());
-    assert!(check("\"true\"").is_ok());
-    let err = check("true").unwrap_err();
-    assert_errors(
-        &err,
-        "Submission",
-        &[
-            "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
-           hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Att' (EnvironmentTemplate[0]), \
-           'Own'. A Session may have at most one Environment defining wrap hooks (RFC 0008).",
-        ],
-    );
+    assert!(check("\"Job.Name == 'J'\"").is_ok());
+    for enable_if in ["true", "\"true\""] {
+        let err = check(enable_if).unwrap_err();
+        assert_errors(
+            &err,
+            "Submission",
+            &[
+                "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
+               hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Att' (EnvironmentTemplate[0]), \
+               'Own'. A Session may have at most one Environment defining wrap hooks (RFC 0008).",
+            ],
+        );
+    }
 }
 
 #[test]
@@ -1103,7 +1112,9 @@ fn gpu_conflict(path: &str, environment: &str) -> String {
 #[test]
 fn check_environment_templates_skips_disabled_job_and_step_environment_layers() {
     // A wrapping attachment, and a wrapping Job or Step Environment whose
-    // own enableIf is the scalar false (not entered) or true.
+    // own enableIf is the scalar false (not entered), true, the constant
+    // expression `"true"` (known, as `true` is: §7.6 rule 5), or an
+    // expression over `Job.Name` (unknown, so left to job creation).
     let att = env_ok(&format!(
         "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, EXPR]\n\
          environment:\n  name: Att\n  {WRAP_HOOKS}\n"
@@ -1139,19 +1150,23 @@ fn check_environment_templates_skips_disabled_job_and_step_environment_layers() 
         )
     };
     assert_eq!(check(&job_env("false")), Ok(vec![]));
-    assert_eq!(check(&job_env("\"true\"")), Ok(vec![]));
-    assert_errors(
-        &check(&job_env("true")).unwrap_err(),
-        "Submission",
-        &[&layers("'Own'")],
-    );
+    assert_eq!(check(&job_env("\"Job.Name == 'J'\"")), Ok(vec![]));
+    for enable_if in ["true", "\"true\""] {
+        assert_errors(
+            &check(&job_env(enable_if)).unwrap_err(),
+            "Submission",
+            &[&layers("'Own'")],
+        );
+    }
     assert_eq!(check(&step_env("false")), Ok(vec![]));
-    assert_eq!(check(&step_env("\"true\"")), Ok(vec![]));
-    assert_errors(
-        &check(&step_env("true")).unwrap_err(),
-        "Submission",
-        &[&layers("'Mine' (stepEnvironments)")],
-    );
+    assert_eq!(check(&step_env("\"Job.Name == 'J'\"")), Ok(vec![]));
+    for enable_if in ["true", "\"true\""] {
+        assert_errors(
+            &check(&step_env(enable_if)).unwrap_err(),
+            "Submission",
+            &[&layers("'Mine' (stepEnvironments)")],
+        );
+    }
 }
 
 #[test]
@@ -1177,13 +1192,18 @@ fn check_environment_templates_skips_a_disabled_job_environments_literal_require
         )
         .map_err(|e| e.to_string())
     };
+    // The scalar false: Gpu is not entered. An expression over `Job.Name`
+    // is unknown before job creation, so the conflict is left to it. `true`
+    // and the constant expression `"true"` are known (§7.6 rule 5).
     assert_eq!(check(&jt("false")), Ok(vec![]));
-    assert_eq!(check(&jt("\"true\"")), Ok(vec![]));
-    assert_errors(
-        &check(&jt("true")).unwrap_err(),
-        "Submission",
-        &[&gpu_conflict("JobTemplate -> jobEnvironments[0]", "Gpu")],
-    );
+    assert_eq!(check(&jt("\"Job.Name == 'J'\"")), Ok(vec![]));
+    for enable_if in ["true", "\"true\""] {
+        assert_errors(
+            &check(&jt(enable_if)).unwrap_err(),
+            "Submission",
+            &[&gpu_conflict("JobTemplate -> jobEnvironments[0]", "Gpu")],
+        );
+    }
 }
 
 #[test]
@@ -1275,25 +1295,17 @@ fn a_step_environment_reads_its_let_with_posix_paths() {
     assert_eq!(names, ["Posix"]);
 }
 
-// ── Round 3 audit: the constraint 7 note ────────────────────────────
+// ── Round 3 audit: constraint 7 for an attachment ───────────────────
 
-/// The constraint 7 message for attachment `Att`'s parameter `P`, with
-/// the unresolved note when `noted`.
-fn att_missing(noted: bool) -> String {
-    let note = if noted {
-        " (its own enableIf depends on a value that is missing or does not convert, so it does \
-         not disable the Environment; Template Schemas §3.2.2)"
-    } else {
-        ""
-    };
-    format!(
-        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-         parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
-         activation BY_DEFAULT that the Step does not decline, and each one \
-         with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of Environment 'Att' \
-         (EnvironmentTemplate[0]){note}."
-    )
-}
+/// The constraint 7 message for attachment `Att`'s parameter `P`.
+const ATT_MISSING: &str = "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' \
+                           dependency, every parameter without a default of each Environment \
+                           that applies to it (every attached Environment with activation \
+                           ALWAYS, each one with activation BY_DEFAULT that the Step does not \
+                           decline, and each one with activation ON_REQUEST that the Step \
+                           requests; Template Schemas §3.2.1), whatever that Environment's own \
+                           enableIf is; missing: 'P' of Environment 'Att' \
+                           (EnvironmentTemplate[0]).";
 
 fn att_with_enable_if(enable_if: &str) -> String {
     format!(
@@ -1308,45 +1320,30 @@ const ONE_STEP: &str =
      name: J\nsteps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n";
 
 #[test]
-fn constraint_7_for_an_attachment_follows_its_enable_if() {
-    // Job creation: `true` and an expression that is `true` require P with
-    // no note; the scalar `false` disables Att, so nothing is required;
-    // an expression that reads P is unresolved, with the note.
-    for (enable_if, outcome) in [
-        ("true", Some(false)),
-        ("false", None),
-        ("\"Job.Name == 'J'\"", Some(false)),
-        ("\"Job.Name == 'K'\"", None),
-        ("\"Env.Param.P != ''\"", Some(true)),
+fn constraint_7_for_an_attachment_ignores_its_enable_if() {
+    // Att is BY_DEFAULT, and S does not decline it, so it applies to S, and
+    // S must supply P whatever Att's enableIf is (§3.2.1, §3.2 constraint
+    // 7): job creation and check_environment_templates both report the
+    // missing value for `true`, `false`, expressions that are `true` or
+    // `false` for S, and one that reads only P.
+    for enable_if in [
+        "true",
+        "false",
+        "\"Job.Name == 'J'\"",
+        "\"Job.Name == 'K'\"",
+        "\"Env.Param.P != ''\"",
     ] {
         let env = att_with_enable_if(enable_if);
-        match outcome {
-            Some(noted) => create_err(ONE_STEP, &[&env], &[], "Submission", &[&att_missing(noted)]),
-            None => {
-                create_ok(ONE_STEP, &[&env], &[]);
-            }
-        }
-        // check_environment_templates reports constraint 7 only where Att
-        // is certainly not disabled: its enableIf is `true`, or certainly
-        // unresolved (it reads only P, which no Step supplies).
+        create_err(ONE_STEP, &[&env], &[], "Submission", &[ATT_MISSING]);
         let jt = job_ok(ONE_STEP);
         let e = env_ok(&env);
-        let checked = check_environment_templates(
+        let err = check_environment_templates(
             &jt,
             &[AttachedEnvironmentTemplate::new(&e)],
             &template_ctx(&jt),
-        );
-        match enable_if {
-            "true" | "\"Env.Param.P != ''\"" => {
-                let err = checked.expect_err("expected check to reject the submission");
-                assert_errors(
-                    &err.to_string(),
-                    "Submission",
-                    &[&att_missing(enable_if != "true")],
-                );
-            }
-            _ => assert_eq!(checked.unwrap(), vec![], "enableIf: {enable_if}"),
-        }
+        )
+        .expect_err("expected check to reject the submission");
+        assert_errors(&err.to_string(), "Submission", &[ATT_MISSING]);
     }
 }
 #[test]

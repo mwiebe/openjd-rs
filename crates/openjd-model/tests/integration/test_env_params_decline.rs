@@ -11,8 +11,8 @@
 //!   its own `enableIf` is not evaluated for the Step, and constraint 7,
 //!   the value checks, and its `hostRequirements` do not apply to the Step;
 //! - `ALWAYS`: an error naming the Step and the Environment, at template
-//!   validation for a literal `false` on an entry naming a Job
-//!   Environment, otherwise when the Job is created.
+//!   validation for an entry known there to be `false` (§7.6 rule 5) that
+//!   names a Job Environment, otherwise when the Job is created.
 //!
 //! An Environment from a document that does not list `ENV_PARAMS` behaves
 //! as `ALWAYS` with no `enableIf`, except that a disabled entry for it has
@@ -148,9 +148,9 @@ fn a_literal_false_entry_for_an_always_job_environment_is_rejected_at_validation
         &[
             &always_error("", 0, 0, "A", "'Lic'"),
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-             default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+             default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of \
+             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of \
              Environment 'Lic' (the Step's 'environment:' dependency for it is disabled by its \
              enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2).",
         ],
@@ -288,18 +288,19 @@ fn a_declined_environments_parameters_are_not_listed_as_missing() {
         &src,
         &[
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-           default of each Environment its Sessions enter (every jobEnvironments entry with \
+           default of each Environment that applies to it (every jobEnvironments entry with \
            activation ALWAYS, each one with activation BY_DEFAULT that the Step does not \
            decline, and each one with activation ON_REQUEST that the Step requests; Template \
-           Schemas §3.2 constraint 7); missing: 'Seat' of Environment 'Other'.",
+           Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Seat' of Environment 'Other'.",
         ],
     );
 }
 
 #[test]
 fn an_expression_entry_that_resolves_false_declines_a_by_default_job_environment() {
-    // Whether A enters Lic is undetermined at template validation, so
-    // constraint 7 is not reported then (JB-35).
+    // Whether Lic applies to A is not known at template validation (the
+    // entry's enableIf reads a Job Parameter, §7.6 rule 5), so constraint
+    // 7 is not reported then (JB-35).
     let src = lic("BY_DEFAULT", MODE_ON, "maya");
     job_ok(&src);
     let created = create_ok(&src, &[], &[]);

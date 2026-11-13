@@ -16,15 +16,17 @@
 //! the attached Environment Templates' Environments, through
 //! [`DeclaringEnvironment::values_for_step`]. The submission stage then
 //! decides every Environment of each Step, attached ones first, in the
-//! Job's Environment order: it applies the `exclusiveGroup` rule and
-//! decides the Environment's own `enableIf` (§4 item 6) with the values
-//! that are known ([`DeclaringEnvironment::decide`]), so one whose group
+//! Job's Environment order. Constraint 7 comes first, for every
+//! Environment that applies to the Step, whatever its `enableIf` or group
+//! (§3.2 constraint 7, §7.4.1 step 5; [`PendingValues::missing`]). Then it
+//! applies the `exclusiveGroup` rule and decides the Environment's own
+//! `enableIf` (§4 item 6) with the Step's concrete values
+//! ([`DeclaringEnvironment::decide`]; §3.2.2 item 2), so one whose group
 //! an earlier one that remains in the Step's set already has is
 //! superseded, and its `enableIf` is not evaluated (§4 item 7, §7.4.1
-//! step 6). Then it reports the value checks and constraint 7 only where
-//! the Environment is not disabled ([`DeclaringEnvironment::commit`];
-//! §3.2.2, §7.4.1 step 7), so values from either document convert and are
-//! checked the same way:
+//! step 6). Then it reports the value checks only where the Environment is
+//! not disabled ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1 step 7),
+//! so values from either document convert and are checked the same way:
 //!
 //! - a literal is decoded as the Job Parameter `default` of its type is
 //!   (the template-validation decoder, so the messages match);
@@ -125,11 +127,6 @@ pub(crate) struct DeclaringEnvironment<'a> {
     /// list `ENV_PARAMS` has no entries and no `enableIf`, so every Session
     /// enters its Environments whichever `activation` they are read as.
     pub(crate) pre_extension: bool,
-    /// Whether the Environment is known before job creation not to be
-    /// disabled for any Step: its `activation` is `ALWAYS`, which cannot be
-    /// disabled (§3.2.2 item 6), or its own `enableIf` (§4 item 6) is
-    /// absent or `true`.
-    pub(crate) certainly_enabled: bool,
     /// How messages name the Environment: `'Name'`, plus the document for
     /// an attached one.
     pub(crate) label: String,
@@ -147,9 +144,13 @@ pub(crate) struct DeclaringEnvironment<'a> {
     /// The constraint 5 message's capped list of declared names, built on
     /// first use.
     declared_list: OnceCell<String>,
-    /// The `enableIf` results so far, one per distinct set of known values
-    /// (§3.2.2), with the Steps they were resolved for, in Step order.
+    /// The `enableIf` results so far, one per distinct set of the values
+    /// it reads (§3.2.2), with the Steps they were resolved for, in Step
+    /// order.
     decisions: RefCell<EnableIfDecisions>,
+    /// The names of the parameters the `enableIf` reads, found on first
+    /// use ([`enable_if_reads`](Self::enable_if_reads)).
+    reads: OnceCell<Option<HashSet<String>>>,
     /// For an Environment with `activation: ALWAYS`, the Steps its
     /// `enableIf` is `false` for, in the order they were decided: each is an
     /// error (§4 item 4, §3.2.2 item 6), reported once for all of them by
@@ -176,8 +177,8 @@ struct Effective {
     value: ExprValue,
 }
 
-/// An Environment's `enableIf` results, keyed by the known values they
-/// were evaluated with.
+/// An Environment's `enableIf` results, keyed by the values it reads that
+/// they were evaluated with.
 #[derive(Default)]
 struct EnableIfDecisions {
     by_key: HashMap<String, usize>,
@@ -193,15 +194,18 @@ pub(crate) enum EnableIf {
     Enabled,
     /// `false`: the Environment is disabled for the Step.
     Disabled,
-    /// The result depends on a value that is missing or does not convert
-    /// (`unresolved[bool]`): the Environment is not disabled.
-    Unresolved,
+    /// Not evaluated: it reads (references) a parameter whose effective
+    /// value is missing, fails to resolve, or does not convert (§3.2.2 item
+    /// 2). That value is an error already, of constraint 7 or 6, so Job
+    /// creation fails; the Environment is not disabled for the Step, and
+    /// its other value checks are made.
+    NotEvaluated,
     /// The evaluation failed or did not fit `bool` (reported once, by
     /// [`DeclaringEnvironment::report_enable_if_errors`]). Job creation
     /// fails either way; which other errors to report is an implementation
     /// choice. The Environment is checked as if it is not disabled, so the
-    /// Step's other mistakes for it (a value that breaks a constraint, a
-    /// missing parameter) are reported in the same run.
+    /// Step's other mistakes for it (a value that breaks a constraint) are
+    /// reported in the same run.
     Failed,
 }
 
@@ -230,8 +234,9 @@ pub(crate) struct PendingValues<'a> {
     /// disabled for the Step.
     deferred: Vec<Deferred>,
     /// The parameters with neither a supplied value nor a `default`
-    /// (constraint 7), reported only when the Environment is not disabled.
-    missing: Vec<&'a str>,
+    /// (constraint 7), reported whatever the Environment's `enableIf` or
+    /// group decides (§3.2 constraint 7, §7.4.1 step 5).
+    pub(crate) missing: Vec<&'a str>,
 }
 
 impl<'a> DeclaringEnvironment<'a> {
@@ -262,7 +267,6 @@ impl<'a> DeclaringEnvironment<'a> {
                 env.activation()
             },
             pre_extension,
-            certainly_enabled: env.certainly_not_disabled(),
             label,
             defs,
             enable_if: env.enable_if.as_ref(),
@@ -275,6 +279,7 @@ impl<'a> DeclaringEnvironment<'a> {
                 .collect(),
             declared_list: OnceCell::new(),
             decisions: RefCell::new(EnableIfDecisions::default()),
+            reads: OnceCell::new(),
             always_disabled: RefCell::new(Vec::new()),
         }
     }
@@ -343,8 +348,10 @@ impl<'a> DeclaringEnvironment<'a> {
     ///
     /// Reports into `errors` at once the checks that apply whatever the
     /// `enableIf` decides: every key the Environment does not declare
-    /// (constraint 5). The value checks (constraint 6, §4.5 item 3) and
-    /// constraint 7 are kept in the result, for
+    /// (constraint 5). The parameters it lacks (constraint 7) are kept in
+    /// [`PendingValues::missing`], for the caller's one error per Step,
+    /// which it reports whatever the `enableIf` decides. The value checks
+    /// (constraint 6, §4.5 item 3) are kept in the result, for
     /// [`commit`](Self::commit) to report when the Environment is not
     /// disabled for the Step.
     pub(crate) fn values_for_step(
@@ -413,18 +420,18 @@ impl<'a> DeclaringEnvironment<'a> {
         pending
     }
 
-    /// Report the value checks and constraint 7 of `pending`, for a Step
-    /// named `step_name` for which the Environment is not disabled, and
-    /// return its values (`None` when a parameter has no value or a check
-    /// failed) and the names of the parameters it lacks (constraint 7), for
-    /// the caller's one error per Step. A failed resolved `default` is
-    /// reported once, naming the first Step that reports it.
+    /// Report the value checks of `pending`, for a Step named `step_name`
+    /// for which the Environment is not disabled, and return its values
+    /// (`None` when a parameter has no value or a check failed). A failed
+    /// resolved `default` is reported once, naming the first Step that
+    /// reports it. The parameters it lacks (constraint 7) are the caller's
+    /// to report, from [`PendingValues::missing`], before this is called.
     pub(crate) fn commit(
         &self,
         pending: PendingValues<'a>,
         step_name: &str,
         errors: &mut ValidationErrors,
-    ) -> (Option<job::EnvironmentParameterValues>, Vec<&'a str>) {
+    ) -> Option<job::EnvironmentParameterValues> {
         for d in pending.deferred {
             match d {
                 Deferred::Error(e) => errors.errors.push(e),
@@ -446,7 +453,7 @@ impl<'a> DeclaringEnvironment<'a> {
                 }
             }
         }
-        (pending.values, pending.missing)
+        pending.values
     }
 
     /// Decide this Environment's own `enableIf` (§4 item 6) for the Step
@@ -454,27 +461,30 @@ impl<'a> DeclaringEnvironment<'a> {
     /// (§3.2.2): absent is [`EnableIf::Enabled`], a boolean scalar is used
     /// as written, and an expression is evaluated in its scope (§7.3.2):
     /// `base`, which holds the document's Job Parameters, `Job.Name`, and
-    /// `Job.EnvNames`, plus this Environment's
-    /// `Env.RawParam.*` of any type (a path as its unmapped string) and
-    /// `Env.Param.*` of types other than PATH and LIST[PATH], each bound to
-    /// its known value or, when the value is missing, fails to resolve, or
-    /// does not convert, to `unresolved[T]` of its type. The
-    /// result is `true`, `false`, or unresolved (Expression Language,
-    /// progressive evaluation).
+    /// `Job.EnvNames`, plus this Environment's `Env.RawParam.*` of any type
+    /// (a path as its unmapped string) and `Env.Param.*` of types other
+    /// than PATH and LIST[PATH], each bound to its concrete value (§3.2.2
+    /// item 2).
     ///
-    /// Steps with the same known values share one evaluation, whose error,
-    /// if any, [`report_enable_if_errors`](Self::report_enable_if_errors)
+    /// The `enableIf` sees only concrete values. When it reads (references,
+    /// whether or not evaluation reaches the reference) a parameter whose
+    /// value is missing, fails to resolve, or does not convert, it is not
+    /// evaluated: the result is [`EnableIf::NotEvaluated`], and the value
+    /// is reported by constraint 7 or by [`commit`](Self::commit). A value
+    /// it does not read is not bound, and need not convert. A value it
+    /// reads is used whether or not it meets the parameter's other
+    /// constraints.
+    ///
+    /// Steps with the same values share one evaluation, whose error, if
+    /// any, [`report_enable_if_errors`](Self::report_enable_if_errors)
     /// reports once, naming them all.
     ///
     /// An Environment with `activation: ALWAYS` cannot be disabled (§4 item
     /// 4, §3.2.2 item 6): a `false` result records the Step for that error,
     /// which `report_enable_if_errors` reports, and returns
     /// [`EnableIf::Enabled`], so the Step is checked as entering it and its
-    /// other mistakes for it are reported in the same run. An unresolved
-    /// result is also [`EnableIf::Enabled`] for it: whether it disables the
-    /// Environment does not arise, so a constraint 7 message carries no
-    /// unresolved note, as at template validation and in
-    /// `check_environment_templates`, which treat it as entered.
+    /// other mistakes for it are reported in the same run. An `enableIf`
+    /// that is not evaluated is also [`EnableIf::Enabled`] for it.
     pub(crate) fn decide(
         &self,
         pending: &PendingValues<'_>,
@@ -493,9 +503,32 @@ impl<'a> DeclaringEnvironment<'a> {
                     .push(step_name.to_string());
                 EnableIf::Enabled
             }
-            EnableIf::Unresolved => EnableIf::Enabled,
+            EnableIf::NotEvaluated => EnableIf::Enabled,
             EnableIf::Enabled | EnableIf::Failed => decision,
         }
+    }
+
+    /// The names of the parameters this Environment's own `enableIf` reads
+    /// (§3.2.2 item 2): every `Env.Param.<name>` and `Env.RawParam.<name>`
+    /// its expression references. `None` for a scalar, or for an
+    /// expression that does not parse, which template validation reported.
+    fn enable_if_reads(&self, ev: &ExprFieldEval<'_>) -> Option<&HashSet<String>> {
+        self.reads
+            .get_or_init(|| {
+                let field = self.enable_if?;
+                let symbols = expr_field::accessed_symbols(field, ev)?;
+                Some(
+                    symbols
+                        .iter()
+                        .filter_map(|s| {
+                            s.strip_prefix("Env.Param.")
+                                .or_else(|| s.strip_prefix("Env.RawParam."))
+                        })
+                        .map(|rest| rest.split('.').next().unwrap_or(rest).to_string())
+                        .collect(),
+                )
+            })
+            .as_ref()
     }
 
     /// The result of the Environment's own `enableIf` for the Step, as
@@ -518,14 +551,38 @@ impl<'a> DeclaringEnvironment<'a> {
                 EnableIf::Disabled
             };
         }
+        // The profile and library pass 8 checked the field with: its
+        // document's, in template scope, with POSIX paths.
+        let profile = policy
+            .ctx
+            .profile
+            .to_expr_profile(openjd_expr::HostContext::None);
+        let lib = openjd_expr::FunctionLibrary::for_profile(&profile);
+        let ev = ExprFieldEval {
+            profile: &profile,
+            library: &lib,
+            memory_limit: policy.budgets.memory,
+            operation_limit: policy.budgets.operations,
+        };
+        let reads = self.enable_if_reads(&ev);
+        let read = |name: &str| reads.is_none_or(|r| r.contains(name));
+        // §3.2.2 item 2: a value it reads must be concrete.
+        if pending
+            .known
+            .iter()
+            .any(|(name, _, value)| value.is_none() && read(name))
+        {
+            return EnableIf::NotEvaluated;
+        }
         let is_path = |pt: &JobParameterType| {
             matches!(pt, JobParameterType::Path | JobParameterType::ListPath)
         };
+        // The key holds only the values it reads, so Steps that differ in
+        // the others share one evaluation.
         let mut key = String::new();
         for (name, _, value) in &pending.known {
-            match value {
-                Some(v) => key.push_str(&format!("{name}={v:?};")),
-                None => key.push_str(&format!("{name}?;")),
+            if let (Some(v), true) = (value, read(name)) {
+                key.push_str(&format!("{name}={v:?};"));
             }
         }
         let mut decisions = self.decisions.borrow_mut();
@@ -537,44 +594,26 @@ impl<'a> DeclaringEnvironment<'a> {
         let mut symtab = base.clone();
         let mut bound = Ok(());
         for (name, pt, value) in &pending.known {
+            let Some(value) = value.as_ref().filter(|_| read(name)) else {
+                continue;
+            };
             // A path type's raw value is its unmapped string; its
             // `Env.Param.*` is path-mapped, which needs a host, so it is not
             // in scope.
             if is_path(pt) {
-                let raw = value
-                    .clone()
-                    .map(paths_to_strings)
-                    .unwrap_or_else(|| ExprValue::unresolved(pt.raw_expr_type()));
+                let raw = paths_to_strings(value.clone());
                 bound = bound.and_then(|()| symtab.set(&format!("Env.RawParam.{name}"), raw));
                 continue;
             }
-            let value = value
-                .clone()
-                .unwrap_or_else(|| ExprValue::unresolved(pt.expr_type()));
             bound = bound
                 .and_then(|()| symtab.set(&format!("Env.Param.{name}"), value.clone()))
-                .and_then(|()| symtab.set(&format!("Env.RawParam.{name}"), value));
+                .and_then(|()| symtab.set(&format!("Env.RawParam.{name}"), value.clone()));
         }
         let result = bound.map_err(|e| e.to_string()).and_then(|()| {
-            // The profile and library pass 8 checked the field with: its
-            // document's, in template scope, with POSIX paths.
-            let profile = policy
-                .ctx
-                .profile
-                .to_expr_profile(openjd_expr::HostContext::None);
-            let lib = openjd_expr::FunctionLibrary::for_profile(&profile);
-            let ev = ExprFieldEval {
-                profile: &profile,
-                library: &lib,
-                memory_limit: policy.budgets.memory,
-                operation_limit: policy.budgets.operations,
-            };
-            expr_field::resolve_progressive(field, &ExprType::BOOL, &symtab, &ev).map(|v| match v {
-                Some(ExprValue::Bool(true)) => EnableIf::Enabled,
-                Some(ExprValue::Bool(false)) => EnableIf::Disabled,
-                // `resolve_progressive` returns only values that fit
-                // `bool`, or `None` for an unresolved result.
-                _ => EnableIf::Unresolved,
+            expr_field::resolve(field, &ExprType::BOOL, &symtab, &ev).map(|v| match v {
+                ExprValue::Bool(true) => EnableIf::Enabled,
+                // `resolve` returns only values that fit `bool`.
+                _ => EnableIf::Disabled,
             })
         });
         let decision = result.as_ref().map_or(EnableIf::Failed, |r| *r);
@@ -639,17 +678,17 @@ impl<'a> DeclaringEnvironment<'a> {
     /// The checks of [`values_for_step`](Self::values_for_step) that need
     /// no Job Parameter values, for
     /// [`check_environment_templates`](super::check_environment_templates):
-    /// constraint 5 (keys); and, when `values_checked` (the Environment is certainly
-    /// not disabled, so its own `enableIf` is absent or `true`), for each
-    /// supplied value a literal converted and checked as `values_for_step`
-    /// does (type and constraints) and a format string
-    /// checked only against the single-expression rule for a list-typed
-    /// parameter, and constraint 7. `default`s are not resolved here (a
-    /// literal one is checked by
+    /// constraint 5 (keys); and, when `values_checked` (the Environment is
+    /// known not to be disabled for the Step), for each supplied value a
+    /// literal converted and checked as `values_for_step` does (type and
+    /// constraints) and a format string checked only against the
+    /// single-expression rule for a list-typed parameter. `default`s are
+    /// not resolved here (a literal one is checked by
     /// [`check_literal_defaults`](Self::check_literal_defaults)). Returns
     /// the names of parameters with neither a supplied value nor a
-    /// `default` (constraint 7) for the caller to report; none when
-    /// `!values_checked`.
+    /// `default` (constraint 7) for the caller to report, whatever
+    /// `values_checked` is: constraint 7 does not depend on whether the
+    /// Environment is disabled.
     pub(crate) fn check_step_statically(
         &self,
         supplied: Option<&Supplied<'_>>,
@@ -677,7 +716,7 @@ impl<'a> DeclaringEnvironment<'a> {
                         }
                     }
                 }
-                None if def.default.is_some() || !values_checked => {}
+                None if def.default.is_some() => {}
                 None => missing.push(def.name()),
             }
         }
@@ -733,16 +772,14 @@ impl<'a> DeclaringEnvironment<'a> {
 /// capped as template validation caps it
 /// ([`tv::missing_parameters_message`]). `missing` pairs each
 /// Environment's label with its missing names; `why` says which
-/// Environments the Step's Sessions enter, and cites the rule. `disabled`
-/// and `unresolved` are the labels whose groups get a note (see
+/// Environments apply to the Step, and cites the rule. `disabled` holds the
+/// labels whose groups get the disabled-entry note (see
 /// [`tv::missing_parameters_message`]).
 pub(crate) fn report_missing(
     step_path: &[PathElement],
     missing: &[(String, Vec<&str>)],
     why: &str,
     disabled: &HashSet<&str>,
-    unresolved: &HashSet<&str>,
-    failed: &HashSet<&str>,
     errors: &mut ValidationErrors,
 ) {
     let total: usize = missing.iter().map(|(_, names)| names.len()).sum();
@@ -754,7 +791,7 @@ pub(crate) fn report_missing(
         .flat_map(|(label, names)| names.iter().map(move |n| (label.as_str(), *n)));
     errors.add(
         step_path,
-        tv::missing_parameters_message(pairs, total, why, disabled, unresolved, failed),
+        tv::missing_parameters_message(pairs, total, why, disabled),
     );
 }
 
@@ -1055,9 +1092,10 @@ pub(crate) struct DisabledEntry {
 /// Step's effective values for it, which job creation leaves to the
 /// submission stage. The attached Environments come first in the Job's
 /// Environment order and are known only there, so the submission stage
-/// applies the group rule to it after them and decides its own `enableIf`
-/// only when it is not superseded (§7.4.1 step 6), and only then reports
-/// its value checks and constraint 7 (step 7).
+/// reports its constraint 7 whatever its group or `enableIf` (§3.2
+/// constraint 7, §7.4.1 step 5), applies the group rule to it after them
+/// and decides its own `enableIf` only when it is not superseded (step 6),
+/// and only then reports its value checks (step 7).
 pub(crate) struct DeferredJobEnvironment<'a> {
     /// Its index in `jobEnvironments`.
     pub(crate) position: usize,
@@ -1177,7 +1215,7 @@ fn resolve_enable_if(
 /// for the submission stage. Each Step Environment's own `enableIf` (§4
 /// item 6) is evaluated here too, in the same scope
 /// ([`StepEntries::step_environments_enabled`]). The Job Environments'
-/// groups and own `enableIf`, and their value checks and constraint 7, are
+/// constraint 7, groups and own `enableIf`, and their value checks, are
 /// left to the submission stage, which knows the attached Environments
 /// that come before them ([`DeferredJobEnvironment`]).
 ///
@@ -1347,7 +1385,8 @@ pub(crate) fn resolve_step_entries<'a>(
     // one, so an entry's keys are checked (constraint 5) even for one that
     // turns out to be superseded. The submission stage, which knows the
     // attached Environments that come first in the Job's Environment
-    // order, decides each one's group and `enableIf` (step 6) and checks
+    // order, checks constraint 7 for each one (step 5, whatever its group
+    // or `enableIf`), decides its group and `enableIf` (step 6), and checks
     // its values (step 7). One whose entry's `enableIf` failed has none: the
     // failure stops the Step after step 4.
     let mut deferred = Vec::new();

@@ -413,11 +413,11 @@ budgets template validation and the session runtime apply.
    item 3), so it is dropped, and a list left empty by the filter becomes
    `None`.
 8. ENV_PARAMS, after the step's `let` bindings (§7.4.1): evaluate each `environment:` entry's
-   `enableIf`, fix which Job Environments the step's Sessions would enter by their
-   `activation`, compute its effective Environment parameter values for them, unchecked, and
+   `enableIf`, fix which Job Environments apply to the step by their
+   `activation` and its entries, compute its effective Environment parameter values for them, unchecked, and
    keep them, with its enabled entries for external Environments, for the submission stage,
-   which decides each Job Environment's group and own `enableIf` after the attachments and
-   checks its values; see [Environment parameter
+   which checks each Job Environment's constraint 7, decides its group and own `enableIf`
+   after the attachments, and checks its values; see [Environment parameter
    values](#environment-parameter-values-env_params). Each Step Environment's own `enableIf`
    is decided here too, and a disabled one is left out of `job::Step::step_environments`
    (see [Environment enableIf](#environment-enableif-env_params)). Errors are filed by §7.4.1
@@ -477,28 +477,29 @@ A disabled entry's name is resolved, as an enabled one's is, to learn the `activ
 submission stage, which job creation keeps it for, by name and position
 (`StepSelection::disabled`). Constraint 3 applies to entries as written, enabled or not.
 
-**Each Step's Environment set** (§4 item 4). A Step's Sessions would enter every Job
-Environment with `activation: ALWAYS`, every one with `BY_DEFAULT` (the default) that no
-disabled entry of the Step declines, and every one with
-`activation: ON_REQUEST` that an enabled entry of the Step requests, plus its own
-`stepEnvironments`; the Environments' own `enableIf`s then take out the ones disabled for
+**Each Step's Environment set** (§4 item 4). Every Job Environment with `activation: ALWAYS`
+applies to a Step, and so does every one with `BY_DEFAULT` (the default) that no disabled
+entry of the Step declines, and every one with `activation: ON_REQUEST` that an enabled entry
+of the Step requests (§3.2 constraint 7); with its own `stepEnvironments`, that is the set its
+Sessions would enter. The Environments' own `enableIf`s then take out the ones disabled for
 the Step, except an `ALWAYS` one, which cannot be disabled (see
 [Environment enableIf](#environment-enableif-env_params)), and each `exclusiveGroup` takes out
 all but the first of its Environments left (see
 [Exclusive groups](#exclusive-groups-env_params)). Job creation proper records, for each
-`jobEnvironments` entry, whether the Step would enter it by its `activation` and entries; the
+`jobEnvironments` entry, whether it applies to the Step by its `activation` and entries; the
 submission stage takes out the ones an `enableIf` disables or a group supersedes, does the
 same for the attached Environments, and stores the result on `job::Step::environments` (see
 [job-types.md](job-types.md#step)).
 
-Template Schemas §3.2.2: for each Step and each Environment its Sessions would enter that declares
+Template Schemas §3.2.2: for each Step and each Environment that applies to it that declares
 `envParameterDefinitions`, every parameter's **effective value** is the value the Step's enabled
 `environment:` entry for that Environment supplies, else the parameter's resolved `default`.
 So every Step gets values for every `ALWAYS` Job Environment that declares parameters, and every
 `BY_DEFAULT` one it does not decline, whether or
 not it names it (prototype plan A8), and for each `ON_REQUEST` one it requests; an
-Environment the Step does not enter has no values for it, and its parameters without a
-`default` need no value from the Step (constraint 7 over the Step's set). An entry that
+Environment that does not apply to the Step has no values for it, and its parameters without a
+`default` need no value from the Step (constraint 7 over the Step's set, which does not depend
+on any Environment's own `enableIf` or `exclusiveGroup`). An entry that
 supplies keys to a Job Environment that declares none is rejected (constraint 5).
 `create_job` stores them on `job::Step::environment_parameters`, one
 `EnvironmentParameterValues { document: JobTemplate, environment, values }` per such Job
@@ -568,38 +569,45 @@ stage](#the-submission-stage):
   resolutions of `enableIf` and `hostRequirements` see them as one. A Session parses it as it
   parses a RANGE_EXPR Job Parameter's value.
 
-**Disabled Environments** (§3.2.2, §7.4.1). For each Step and each Environment its Sessions
-would enter, `DeclaringEnvironment::values_for_step` computes the effective values without
+**Disabled Environments** (§3.2.2, §7.4.1). For each Step and each Environment that applies
+to it, `DeclaringEnvironment::values_for_step` computes the effective values without
 reporting the checks that depend on the Environment's own `enableIf` (`PendingValues`):
 
 - reported at once, whatever the `enableIf`: constraint 5 (a key the Environment does not
   declare);
+- `PendingValues::missing`: the parameters without a `default` the Step does not supply
+  (constraint 7), which the caller reports under §7.4.1 step 5 for every Environment that
+  applies to the Step, superseded or disabled included, before any Environment's `enableIf` is
+  evaluated (§3.2 constraint 7);
 - kept: each value's conversion and checks (type, constraints, the
-  single-expression rule for a list type), a failed resolved `default`, and the parameters
-  without a `default` the Step does not supply (constraint 7);
+  single-expression rule for a list type) and a failed resolved `default`;
 - the value each definition has for the `enableIf`: the effective value when it converts to
   the parameter's type, whether or not it meets the other constraints, and otherwise
-  (missing, or not converting) unknown.
+  (missing, failing to resolve, or not converting) none.
 
 `DeclaringEnvironment::decide` then decides the Environment's `enableIf` for the Step
-(`EnableIf`): absent or `true` is enabled; the scalar `false` is disabled; an expression is
-evaluated (`expr_field::resolve_progressive`) in its scope with each `Env.RawParam.<name>`
-(a path as its unmapped string) and each non-PATH `Env.Param.<name>` bound to the known
-value or to `unresolved[T]` of its type, and Expression Language progressive evaluation gives `true`,
-`false`, or an unresolved result. Steps with the same known values share one evaluation
-(keyed by the values, an unknown one as such; a RANGE_EXPR value is keyed by its canonical
-form, so `1-3` and `1,2,3`, which are equal values, share one evaluation). For an Environment that is not disabled
-(`true` or unresolved), `DeclaringEnvironment::commit` reports what was kept, so a missing or
-unconvertible value is reported; for a disabled one it is dropped, and the Environment is
-left out of the Step's set with no values. An evaluation that fails (or resolves to `null`,
+(`EnableIf`), with concrete values only (§3.2.2 item 2): absent or `true` is enabled; the
+scalar `false` is disabled; an expression that *reads* (references, from its
+`accessed_symbols`, whether or not evaluation reaches the reference) an `Env.Param.<name>` or
+`Env.RawParam.<name>` whose value is none is not evaluated (`EnableIf::NotEvaluated`): the
+Environment is not disabled, and the value's error (constraint 7, or the value's own) is
+reported. Any other expression is evaluated (`expr_field::resolve`) in its scope with each
+`Env.RawParam.<name>` it reads (a path as its unmapped string) and each non-PATH
+`Env.Param.<name>` it reads bound to its value; a value it does not read is not bound and
+need not convert. Steps with the same values of the parameters it reads share one evaluation
+(keyed by those values; a RANGE_EXPR value is keyed by its canonical form, so `1-3` and
+`1,2,3`, which are equal values, share one evaluation). For an Environment that is not
+disabled (`true` or not evaluated), `DeclaringEnvironment::commit` reports what was kept and
+returns the values; for a disabled one it is dropped, and the Environment is left out of the
+Step's set with no values. An evaluation that fails (or resolves to `null`,
 or to a value that does not fit `bool`) is reported once, under §7.4.1 step 6 and the first
 Step it names, at `<environment> -> enableIf` with "Resolved for Step 'A'." (or "Steps 'A'
 and 'B'") appended (`report_enable_if_errors`). Job creation fails either way, and which other errors
 to report is an implementation choice (plan 4 A40, revised): openjd-rs checks the Environment for those
 Steps as if it is not disabled, so a Step's other mistakes for it (a value that breaks a
-constraint, a `default` that does not convert, a missing parameter, a second wrapping layer)
-are reported in the same run instead of one edit at a time. A constraint 7 error for such an
-Environment says its `enableIf` could not be evaluated.
+constraint, a `default` that does not convert, a second wrapping layer) are reported in the
+same run instead of one edit at a time. A missing parameter is reported whatever the
+`enableIf` (constraint 7).
 
 **When a `default` is checked** (§4.5 item 2, plan A19). A literal `default` is checked
 when `create_job` sets up the Job Environments, before any Step, so one that fails a
@@ -623,24 +631,22 @@ or checked either; job creation already fails on the `let` error, and the values
 once it is fixed.
 
 A supplied value that fails is reported at `steps[i] -> dependencies[j] -> parameters -> <name>`.
-A parameter with neither a supplied value nor a `default`, of an Environment in the Step's set
-that is not disabled for it, is reported once per Step at `steps[i]` (constraint 7); template
-validation already rejects that for a decoded template whose entries' and Environments'
-`enableIf` are absent or a boolean scalar. (Template validation and
+A parameter with neither a supplied value nor a `default`, of an Environment in the Step's set,
+is reported once per Step at `steps[i]` (constraint 7), whatever the Environment's own
+`enableIf` or `exclusiveGroup`: "must supply, in an 'environment:' dependency, every parameter
+without a default of each Environment that applies to it (<why>), whatever that Environment's
+own enableIf is; missing: ...". Template validation already rejects that for a decoded
+template where the Step's entries for the Job Environments are known (§7.6 rule 5). (Template validation and
 `check_environment_templates` note an entry its `enableIf` disabled; job creation never
 needs to, since such an entry for an `ALWAYS` Environment is a step 4 error that stops the
 Step, and one for any other declines or does not request it. `StepSelection::disabled`
 carries the disabled entries to the submission stage, which resolves them against the
-attachments.) When the
-Environment's own `enableIf` was unresolved for the Step, its group adds "(its own enableIf
-depends on a value that is missing or does not convert, so it does not disable the
-Environment; Template Schemas §3.2.2)", since a reader who expected it to be `false` would
-otherwise not see why the parameter is required.
+attachments.)
 These errors join the carried-forward check failures in the one `ModelValidation` error
 `create_job` reports, in §7.4.1 order (see [Error order](#error-order)): the
-literal `default`s with the carried-forward checks, after the Job Environments' ones, and the
-values and constraint 7 under step 7, by Step and then the Environment's place in the Job's
-Environment order.
+literal `default`s with the carried-forward checks, after the Job Environments' ones,
+constraint 7 under step 5, and the values under step 7, by Step and then the Environment's
+place in the Job's Environment order.
 
 **External entries.** An enabled `environment:` entry that names no `jobEnvironments` entry
 refers to an external Environment (§3.2 item 3), whose definitions job creation proper does
@@ -854,7 +860,7 @@ item 4), the crate-private `apply_environment_templates` in `job/create_job/exte
 submission combines one Job Template with zero or more Environment Templates that the
 scheduler attaches, in its order. It takes the Job that job creation proper built from the
 Job Template, what job creation decided for each Step (its frozen and disabled entries, and
-the `jobEnvironments` entries its Sessions would enter by their `activation`, with its values
+the `jobEnvironments` entries that apply to it by their `activation`, with its values
 for them, undecided), the errors job creation found, the `Job.EnvNames` value, and the merged
 values
 `preprocess_job_parameters` produced with the same Environment Templates. `ctx` supplies the
@@ -870,17 +876,16 @@ that has entries lists both.
    the Job Template lists `ENV_PARAMS` (without it the Job Template has no entries, and the
    submission gets no warning it did not get before the extension, RFC Backward
    compatibility); if its `activation`
-   is `ALWAYS` or `BY_DEFAULT` and it has parameters without a `default`, every Session of a
-   Step for which its own `enableIf` does not disable it enters it (every Session, for
-   `ALWAYS`, which cannot be disabled), and no entry can supply them, so that is one
-   error at `<attachment> -> environment -> envParameterDefinitions`, and those parameters are
-   not reported again per Step under constraint 7. The error is reported after every Step's
-   values, when the attachment's `enableIf` (decided in step 3, with the parameters unknown)
-   is not `false` for some Step that is not stopped after §7.4.1 step 4 (see
-   [Error order](#error-order)); a `BY_DEFAULT` one disabled for every such Step is
-   not entered, so it is not an error (§3.2.2), and an `ALWAYS` one is an error whenever some
-   Step is not stopped (§3.2.1 item 4). One with `activation: ON_REQUEST` is never entered, since no entry can
-   request it, so it is not an error. (Warnings are returned only with a successful result.)
+   is `ALWAYS` or `BY_DEFAULT` and it has parameters without a `default`, it applies to every
+   Step, since no entry can decline it, whatever its own `enableIf` or `exclusiveGroup` (§3.2
+   constraint 7), and no entry can supply them, so that is one error at `<attachment> ->
+   environment -> envParameterDefinitions`, and those parameters are not reported again per
+   Step under constraint 7. The error is reported when the attachment applies to some Step
+   that is not stopped after §7.4.1 step 4 (`report_unreachable`), filed under step 5 after
+   the Steps' step 5 errors (see [Error order](#error-order)); for a `BY_DEFAULT` one with an `enableIf` or an
+   `exclusiveGroup` its message says "Its activation is BY_DEFAULT, so it applies to every
+   Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7)". One with `activation:
+   ON_REQUEST` never applies, since no entry can request it, so it is not an error. (Warnings are returned only with a successful result.)
 2. Each Step's frozen entries are matched to the attachments by `environment.name`:
    - exactly one: the entry refers to it, whatever `required` says (§3.2.1 item 1). When the
      attachment declares no parameters, such as one written before ENV_PARAMS, and the entry
@@ -899,9 +904,9 @@ that has entries lists both.
      that no entry names are not an error (plan A11), unless their `activation` is `ALWAYS` or
      `BY_DEFAULT` and they have parameters without a `default`: no entry can reach them, so
      each such attachment
-     that its `enableIf` does not disable for every Step that is not stopped gets one error
-     at its `envParameterDefinitions`, as in step 1, and those parameters are not reported per
-     Step.
+     gets one error at its `envParameterDefinitions`, as in step 1, whatever its `enableIf` or
+     group, when it applies to some Step that is not stopped, and those parameters are not
+     reported per Step.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
@@ -925,21 +930,23 @@ that has entries lists both.
 3. A Step with an error from §7.4.1 steps 1–4 (here, or in job creation) is stopped: none of
    the rest of this step, or steps 6–8 below, is done for it, and it counts as entering no
    Environment (see [Error order](#error-order)). For every other Step:
-   its Sessions enter every attachment with `activation: ALWAYS` or from an Environment
-   Template that does not list ENV_PARAMS, every one with
-   `BY_DEFAULT` that a disabled entry of the Step does not decline (its own `enableIf` is then
-   not evaluated for the Step, and no value check applies), and
+   every attachment with `activation: ALWAYS` or from an Environment
+   Template that does not list ENV_PARAMS applies to it, and so does every one with
+   `BY_DEFAULT` that a disabled entry of the Step does not decline (a declined one does not
+   apply: its own `enableIf` is not evaluated for the Step, and no check applies), and
    each one with `activation: ON_REQUEST` that one of its enabled entries refers to (§3.2.1,
    after item 5). A
-   Job Template without ENV_PARAMS has no entries, so its Steps never enter an
+   Job Template without ENV_PARAMS has no entries, so its Steps never request an
    `ON_REQUEST` attachment (§1.2 item 3). Every Step gets effective values for every
-   attachment it enters that declares parameters, from its entry if one refers to it and from
-   the `default`s otherwise, with the same conversion and checks as for a Job Environment, and
-   then the attachments and the Job Environments the Step would enter are decided in the Job's
-   Environment order, attached ones first: each one's group (see
-   [Exclusive groups](#exclusive-groups-env_params)) and own `enableIf`, with the values that
-   are known (see [Disabled Environments](#environment-parameter-values-env_params)); a
-   disabled one is not entered, its values are not checked, and it is not held to constraint 7.
+   attachment that applies to it and declares parameters, from its entry if one refers to it
+   and from the `default`s otherwise, with the same conversion and checks as for a Job
+   Environment. Constraint 7 is checked for every attachment and Job Environment that applies
+   to the Step, under §7.4.1 step 5, whatever its own `enableIf` or `exclusiveGroup`. Then the
+   attachments and the Job Environments are decided in the Job's Environment order, attached
+   ones first: each one's group (see [Exclusive groups](#exclusive-groups-env_params)) and own
+   `enableIf`, with the Step's concrete values (see [Disabled
+   Environments](#environment-parameter-values-env_params)); a disabled one is not entered and
+   its values are not checked.
    An `ALWAYS` attachment whose `enableIf` is `false` for the Step is an error instead (see
    [Environment enableIf](#environment-enableif-env_params)).
    (A Step whose entry names an ambiguous attachment is stopped, so the one mistake is not
@@ -947,7 +954,7 @@ that has entries lists both.
    attachment does not declare is an error (constraint 5), including any key of a
    `required: true` entry for an attachment that declares no parameters, such as one written
    before ENV_PARAMS (a `required: false` entry's are ignored, step 2); and a parameter
-   without a `default` of an attachment the Step enters that the
+   without a `default` of an attachment that applies to the Step that the
    Step does not supply is an error at `JobTemplate -> steps[i]` (constraint 7 over the
    combined Job, §3.2.1 last paragraph). The lists in these messages are capped as template
    validation caps them (at most 50 names and 512 characters, the first name always listed,
@@ -972,9 +979,9 @@ that has entries lists both.
    than one Environment defining wrap hooks is an error at `JobTemplate -> steps[i]` naming
    them, the attached ones with their document. Template validation checks the Job Template's
    own layers that are certainly entered, by entries and Environments whose `enableIf` is
-   absent or a boolean scalar (see [validation.md](validation.md)); this check also covers an
-   `enableIf` expression, on an entry or an Environment, and the attached Environments
-   (prototype plan R8).
+   known there (§7.6 rule 5; see [validation.md](validation.md)); this check also covers an
+   `enableIf` that is not known there, on an entry or an Environment, and the attached
+   Environments (prototype plan R8).
 8. Each Step gets its combined host requirements (see
    [Combined host requirements](#combined-host-requirements-env_params)), the last stage of
    §7.4.
@@ -1004,9 +1011,9 @@ them in key order, and in the order they were filed within a key:
 | `Step2` | an entry's `enableIf` that fails; a duplicate entry | the entry's index |
 | `Step3` | an entry that names no Environment while required, or names several | the entry's index |
 | `Step4` | a disabled entry for an `ALWAYS` Environment | the entry's index |
-| `Step5` | an entry's undeclared key (constraint 5) | the Environment's place in the Job's Environment order (from step 5 on, an error is about an Environment, so it is ordered by the Environment, not by the entry that names it) |
+| `Step5` | an entry's undeclared key (constraint 5); constraint 7, for every Environment that applies to the Step, superseded or disabled included (by the first Environment the message names); an unreachable attachment's parameters | the Environment's place in the Job's Environment order (from step 5 on, an error is about an Environment, so it is ordered by the Environment, not by the entry that names it); an unreachable attachment's error, about no Step, by the attachment |
 | `Step6` | an Environment's own `enableIf` that fails, or an `ALWAYS` one's that is `false`; a Step Environment's `enableIf` that fails | as for step 5, Step Environments after every Job Environment |
-| `Step7` | the value checks and constraint 7 (by the first Environment the message names); the single-layer rule; an unreachable attachment's parameters | as for step 5; the single-layer rule after the Step's Environments; an unreachable attachment's error, about no Step, by the attachment |
+| `Step7` | the value checks (constraint 6); the single-layer rule | as for step 5; the single-layer rule after the Step's Environments |
 | `Step8` | an Environment's resolved `hostRequirements`; a combination's conflict | as for step 5; the conflict after the Step's Environments |
 
 An error that names several Steps (a failed `enableIf`, resolved once per distinct set of
@@ -1043,10 +1050,13 @@ order, and the shape then depends only on the inputs, never on which of these er
 The warnings (`CreatedJob::warnings`) have the same paths.
 
 For example, take the Job Environment `Lic`, whose `enableIf` is `Param.UseLic`, with `Seats`
-without a `default`, and a Step `S` with the entry `{environment: Lic}`, which supplies none,
-and the entry `{environment: Missing}`, required by default, which no Environment defines.
-Before, the Job Template's own pass found the constraint 7 error and stopped, so
-`openjd run` reported only (after its `ERROR: ` prefix):
+without a `default`, and a Step `S` with the entry `{environment: Lic, enableIf:
+"Param.UseLic"}`, which supplies none, and the entry `{environment: Missing}`, required by
+default, which no Environment defines. (With the entry `{environment: Lic}`, Lic applies to `S`
+whatever its own `enableIf`, so template validation rejects the template for the missing
+`Seats`, §3.2 constraint 7; the entry's `enableIf`, not known at template validation, leaves
+Lic to job creation.) Before, the Job Template's own pass found the constraint 7 error and
+stopped, so `openjd run` reported only (after its `ERROR: ` prefix):
 
 ```
 Model validation error: 1 validation error for JobTemplate
@@ -1077,9 +1087,10 @@ validation accepts has no `environment:` entries and no Environment `enableIf`,
 and no Step is stopped. (A template built or edited in code can still carry entries; they are
 checked, and a Step with a step 1–4 error is stopped, as with `ENV_PARAMS`.) What does apply is filed under
 the same keys: the template-validation-style re-checks (`Validation`), and, from the attached
-Environment Templates, their literal `default`s (`Validation`), an attachment's own `enableIf`
-(`Step6`), its values and constraint 7, the single-layer rule over each Step's set and an
-unreachable attachment's parameters (`Step7`), and its resolved `hostRequirements` (`Step8`).
+Environment Templates, their literal `default`s (`Validation`), an attachment's constraint 7
+and an unreachable attachment's parameters (`Step5`), its own `enableIf` (`Step6`), its values
+and the single-layer rule over each Step's set (`Step7`), and its resolved `hostRequirements`
+(`Step8`).
 The caller limits are checked after the submission stage, as above. The aborts (a Step's own
 host requirements or parameter space, a failed step-level `let`, a caller limit) keep their
 forms.
@@ -1096,7 +1107,7 @@ for a Step that a step 1–4 error now stops, that error in place of the Step's 
   §7.4.1 order. Before, the Job Template's own errors were reported alone, for `JobTemplate`,
   and the attachments were applied only when it had none.
 - The attachments' errors are in §7.4.1 order rather than the order they were found (an
-  attachment's `enableIf` that fails, step 6, before its constraint 7 errors, step 7).
+  attachment's constraint 7 errors, step 5, before its `enableIf` that fails, step 6).
 - A caller limit is reported only when the attachments add no error. Before, it was checked
   before they were applied.
 
@@ -1126,10 +1137,12 @@ JobTemplate -> steps[0]:
 #### Environment enableIf (ENV_PARAMS)
 
 An Environment's own `enableIf` (Template Schemas §4 item 6) is an expression field of type
-`bool`, decided for each Step whose Sessions would otherwise enter the Environment: a Step
-Environment's by the expression-field checker's `resolve`, and a Job or attached
-Environment's by `resolve_progressive`, with the Step's unknown values unresolved, once per
-distinct set of known values. A boolean scalar is its value. Where it is
+`bool`, decided for each Step that the Environment applies to: a Step Environment's by the
+expression-field checker's `resolve`, and a Job or attached Environment's by `resolve` too,
+with the Step's concrete values, once per distinct set of the values it reads, and not at all
+for a Step when it reads a value that is missing, fails to resolve, or does not convert
+(§3.2.2 item 2). A boolean scalar is its value. It never decides constraint 7, which holds for
+the Step whatever the `enableIf` is (§3.2 constraint 7). Where it is
 `false` for a Step, that Step's Sessions do not enter the Environment: it is not in the
 Step's sets, so it is not entered or exited, sets no `variables`, is not in the stack, gets
 no values, and adds no host requirements (which are not resolved for that Step). Two places
@@ -1151,20 +1164,23 @@ decide it, by what the expression can read:
   in its step 3, for each Step, the attachments first and then the Job Environments, in the
   Job's Environment order. A superseded one's is not evaluated (see
   [Exclusive groups](#exclusive-groups-env_params)). It is decided after the Step's effective
-  values are computed and before their checks and constraint 7, the single-layer rule, and
-  host requirements (§7.4.1). It is evaluated under its document's template-scope profile, with the
-  caller's budgets and the POSIX path format, in its `hostRequirements` scope (the merged Job
-  Parameters, `Job.Name`, `Job.EnvNames`, its `Env.RawParam.*` of any type, and its non-PATH
-  `Env.Param.*`, each known or `unresolved[T]`). A `false` leaves the
+  values are computed and constraint 7 is checked (§7.4.1 step 5), and before the value
+  checks, the single-layer rule, and host requirements (§7.4.1 steps 7 and 8). It is evaluated
+  under its document's template-scope profile, with the caller's budgets and the POSIX path
+  format, in its `hostRequirements` scope (the merged Job Parameters, `Job.Name`,
+  `Job.EnvNames`, and, of the parameters it reads, its `Env.RawParam.*` of any type and its
+  non-PATH `Env.Param.*`, each bound to its concrete value). One that reads a value that has
+  none is `EnableIf::NotEvaluated`: the Environment is not disabled for the Step, and that
+  value's error (constraint 7, or the value's own) fails job creation. A `false` leaves the
   Environment out of the Step's entered list and values, so `job::Step::environments` and
   `environment_parameters` leave it out, and its values for the Step are not checked. An error
   is reported at `<environment path> -> enableIf` with "Resolved for Step 'A'." (or "Steps 'A'
   and 'B'") appended, filed under §7.4.1 step 6 and the first Step it names. The Environment
   is then checked for those Steps as if it is not disabled, so their other mistakes are
-  reported in the same run (plan 4 A40, revised): its values and constraint 7, the
-  single-layer rule, the unreachable-attachment check for an attachment (whose message then
-  says the `enableIf` could not be evaluated, in place of "does not disable it"), and its
-  combined host requirements.
+  reported in the same run (plan 4 A40, revised): its values, the single-layer rule, and its
+  combined host requirements. Its constraint 7 and, for an unreachable attachment, the
+  unreachable-attachment check do not depend on the `enableIf`, so they are reported either
+  way.
 
 An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 4, §3.2.2 item 6).
 `DeclaringEnvironment::decide` records each Step its `enableIf` is `false` for and treats
@@ -1173,15 +1189,15 @@ checked as entered, and the Step's other mistakes for it are reported in the sam
 `report_enable_if_errors` then reports one error for the Environment at `<environment
 path> -> enableIf` naming every such Step: "Environment 'Lic' has activation ALWAYS, so it
 cannot be disabled, but its enableIf is false for Step 'B' (Template Schemas §4 item 4)."
-(or "for Steps 'B' and 'C'"), filed under §7.4.1 step 6. A literal `false` is rejected earlier, at template
-validation. A `true` or unresolved result is not this error. An unresolved result also
-treats the Step as entering it, and since whether it disables the Environment does not
-arise, a constraint 7 message for it carries no unresolved note, as at template validation
-and in `check_environment_templates`.
+(or "for Steps 'B' and 'C'"), filed under §7.4.1 step 6. An `enableIf` known to be `false`
+at template validation, a constant expression such as `"false"` included (§7.6 rule 5), is
+rejected earlier, there. A `true` result is not this error, nor is an `enableIf` that is not
+evaluated, which also treats the Step as entering it.
 
 `Job.EnvNames` lists every Job Environment whatever its `enableIf` (§7.3.1). A disabled
-Environment is not held to constraint 7 for the Step, and the Step's values for it are not
-checked (§3.2.2), which replaces plan 3's A33. `Step::same_environments`,
+Environment is still held to constraint 7 for every Step it applies to (§3.2 constraint 7,
+§3.2.2 item 4), but the Step's values for it are not checked (§3.2.2 item 3), which replaces
+plan 3's A33. `Step::same_environments`,
 which decides whether a Session can go from one Step to the next without exiting and
 entering Job Environments, compares the final sets. `CreatedJob::disabled_environments`
 records, per Step, the Environments an `enableIf` disabled (Job Environments by document and
@@ -1196,27 +1212,30 @@ statuses](#environment-statuses-env_params)).
 #### Exclusive groups (ENV_PARAMS)
 
 An Environment's `exclusiveGroup` (Template Schemas §4 item 7) is applied for each Step with
-the Environments' own `enableIf`, before the value checks and constraint 7 (§7.4.1 step 6,
-before step 7). The Environments the Step's Sessions would otherwise enter are taken in the
+the Environments' own `enableIf`, after constraint 7 and before the value checks (§7.4.1
+step 6, between steps 5 and 7). The Environments that apply to the Step are taken in the
 Job's Environment order: the attached Environments in attachment order, then the
 `jobEnvironments` in written order. One whose group an earlier one that remains in the Step's
 set already has is superseded, and its `enableIf` is not evaluated for the Step, so an
-`enableIf` that would fail or be unresolved there is no error (JB-154). Any other has its
-`enableIf` decided, and takes its group when the result does not disable it (`true`,
-unresolved, or failed). Superseding disables an Environment for the Step (§3.2.2): they are left out of `job::Step::environments` and
-`environment_parameters`, their values for the Step are not checked (constraint 6) and they
-are not held to constraint 7, their `hostRequirements` are not resolved for the Step, the
+`enableIf` that would fail there is no error (JB-154). Any other has its `enableIf` decided,
+and takes its group when the result does not disable it (`true`, not evaluated, or failed).
+Superseding disables an Environment for the Step (§3.2.2): they are left out of
+`job::Step::environments` and `environment_parameters`, their values for the Step are not
+checked (constraint 6), their `hostRequirements` are not resolved for the Step, the
 single-layer rule does not count them, and `CreatedJob::disabled_environments` lists them with
-the ones an `enableIf` disabled, in Job order. Constraint 5 still applies to the Step's entry
-for one (`values_for_step` reports it before the group is applied), as do the checks of an
-entry as written at template validation. An `ALWAYS` Environment has no group for the rule
+the ones an `enableIf` disabled, in Job order. They still apply to the Step, so constraint 7
+holds for them (reported under step 5, before the group is applied). Constraint 5 still
+applies to the Step's entry for one (`values_for_step` reports it before the group is
+applied), as do the checks of an entry as written at template validation. An `ALWAYS` Environment has no group for the rule
 (`Environment::group`), since it cannot be disabled; template validation rejects one with a
 group.
 
 The attached Environments come first in the Job's Environment order, so a group that spans the
 two documents cannot be settled from the Job Template alone. So job creation proper decides no
-group: `resolve_step_entries` computes the Step's values for each Job Environment its Sessions
-would enter by their `activation` and leaves them, undecided, in `StepSelection::deferred`.
+group: `resolve_step_entries` computes the Step's values for each Job Environment that
+applies to it by its `activation` and leaves them, undecided, in `StepSelection::deferred`.
+The submission stage reports each one's constraint 7 under step 5 before it applies any
+group.
 The submission stage (`apply_environment_templates`) then decides each Step's Environments in
 the Job's Environment order with one map of taken groups, each to the position in that order
 of the Environment that took it, the one a later member's `superseded_by` names:
@@ -1229,10 +1248,11 @@ of the Environment that took it, the one a later member's `superseded_by` names:
   Environment took is superseded, without its `enableIf` being evaluated, and its status for
   the Step set to `Superseded`; any other has its `enableIf` decided, and one it disables gets
   the status `Disabled`, while one it does not
-  disable takes its group and is committed, its errors at the Job Template's paths, its
-  constraint 7 names reported in an error at `steps[i]` (`JobTemplate -> steps[i]` with
-  attachments) with the jobEnvironments wording, and
-  its values placed among the Step's Job Environment values in written order.
+  disable takes its group and is committed, its errors at the Job Template's paths, and
+  its values placed among the Step's Job Environment values in written order. Every Job
+  Environment that applies to the Step, whatever its status, has its constraint 7 names
+  reported in an error at `steps[i]` (`JobTemplate -> steps[i]` with attachments) with the
+  jobEnvironments wording.
 
 So a group's first is the same whichever documents its members come from, and a mistake of a
 grouped Job Environment is reported in the same form whether or not an attachment shares its
@@ -1376,8 +1396,8 @@ the attachment index (`Attachments`), the name resolution of an entry (`match_en
 sorting of a Step's missing parameters (`sort_missing`), so they report the same conditions
 with the same messages and paths, except as items 4 and 5 say for the
 wrap-layer rule and host requirements, as item 3 says for a Step's constraint 7 error (it
-leaves out the Environments it cannot know the Step enters, such as one an earlier
-undetermined one of its group may supersede, so job creation's message can list more), and
+leaves out the attachments it cannot know apply to the Step, such as one an entry whose
+`enableIf` is not known may name, so job creation's message can list more), and
 for the order and number of errors: job creation reports them in §7.4.1 order and takes no
 step after step 4 for a Step with an error from steps 1–4 (see
 [Error order](#error-order)), while this function reports every violation it is
@@ -1385,22 +1405,18 @@ certain of, in its own order (so it can report a Step's value errors that job cr
 reports only once the Step's step 1–4 errors are fixed):
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
-   for an unreachable attachment is reported only when its own `enableIf` is absent or `true`,
-   or certainly unresolved with no values supplied (see
-   [validation.md](validation.md#pass-11-env_params-gating)), since one with `false` is not entered and
-   one with any other expression is undetermined (§7.6 rule 5), and only when some Step is
-   known to enter it after the group rule of item 3 (it is entered by its `activation` and
-   `enableIf` alone, and no earlier attachment of its `exclusiveGroup` is known to be entered
-   or undetermined for that Step). That error is reported after item 3's errors (job creation
-   reports it after every Step's step 7 errors, the single-layer rule included);
+   for an unreachable attachment is reported when it applies to some Step (by its
+   `activation`, since no entry decides it), whatever its own `enableIf` or `exclusiveGroup`
+   (§3.2 constraint 7). That error is reported after item 3's errors (job creation files it
+   under step 5, after every Step's step 5 errors);
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
-   template-validation error), with `required` defaulting to `true`. An entry whose `enableIf`
-   is `false` is matched as step 2 matches a disabled entry: it declines a `BY_DEFAULT`
-   attachment, which items 3–5 then leave out for its Step, is the error for an `ALWAYS`
-   one, and has no effect on one whose Environment Template does not list ENV_PARAMS. One
-   whose `enableIf` is an expression (even a constant one such
-   as `"true"`) is enabled or not only
+   template-validation error), with `required` defaulting to `true`. Whether an entry is
+   enabled is what its `enableIf` is known to be (`KnownEnableIfs`, as template validation
+   knows it; §7.6 rule 5). An entry known to be disabled is matched as step 2 matches a
+   disabled entry: it declines a `BY_DEFAULT` attachment, which items 3–5 then leave out for
+   its Step, is the error for an `ALWAYS` one, and has no effect on one whose Environment
+   Template does not list ENV_PARAMS. One whose `enableIf` is not known is enabled or not only
    when the Job is created, so every attachment it may name is skipped for its Step. Its name
    is resolved either way (Template Schemas §3.2.1), so a name that two or more attachments
    define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.6 rule 5).
@@ -1411,30 +1427,33 @@ reports only once the Step's step 1–4 errors are fixed):
    literal converted and checked as at submission (type and constraints; a PATH value of any
    form is used as given, §4.5 item 3), and a format string checked only against the
    single-expression rule for a list-typed parameter; and constraint 7, over the attachments
-   the Step enters (every `ALWAYS` one, every `BY_DEFAULT` one it does not decline, and each
-   `ON_REQUEST` one an enabled entry refers to). The value checks and constraint 7 are made only for an attachment with
-   `activation: ALWAYS`, which cannot be disabled, or whose own `enableIf` is absent or
-   `true`, or certainly unresolved with the Step's values (see
-   [validation.md](validation.md#pass-11-env_params-gating); the constraint 7 message then carries the
-   unresolved note): one whose `enableIf` is `false` is disabled, and one whose `enableIf` is
-   any other expression is undetermined, so a violation need not hold whatever it resolves to
-   (§3.2.2, §7.6 rule 5). They are also made only for an attachment no earlier attachment of
-   its `exclusiveGroup` may supersede: each attachment's state for the Step (entered when it
-   is entered and its `enableIf` is as above; not entered when it is not entered or its
-   `enableIf` is the scalar `false`; undetermined otherwise, including an attachment an
-   expression entry may name) goes through `apply_exclusive_groups` (§4, after item 10), and
-   only a known-entered result is checked. An attachment no entry can reach (named like a
-   Job Environment, or ambiguous) is entered by its `activation` and `enableIf` alone, whatever
+   that apply to the Step (every `ALWAYS` one, every `BY_DEFAULT` one it does not decline, and
+   each `ON_REQUEST` one an enabled entry refers to), whatever each one's own `enableIf` or
+   `exclusiveGroup` (§3.2 constraint 7). The value checks are made only for an attachment
+   known not to be disabled for the Step (§3.2.2): one with `activation: ALWAYS`, which cannot
+   be disabled, or whose own `enableIf` is known to be `true` (§7.6 rule 5,
+   `known_environment_template_enable_if`), or reads a literal value of the Step's, supplied
+   or the `default`, that does not convert, so it is not evaluated at job creation (§3.2.2
+   item 2, `enable_if_reads_unconvertible_literal`; see
+   [validation.md](validation.md#pass-11-env_params-gating)). One whose `enableIf` is known
+   to be `false` is disabled, and any other is undetermined, so a violation need not hold
+   whatever it resolves to. They are also made only for an attachment no earlier attachment
+   of its `exclusiveGroup` may supersede: each attachment's state for the Step (entered when it
+   applies and its `enableIf` is as above; not entered when it does not apply or its
+   `enableIf` is known to be `false`; undetermined otherwise, including an attachment an entry
+   whose `enableIf` is not known may name) goes through `apply_exclusive_groups` (§4, after
+   item 10), and only a known-entered result is checked. An attachment no entry can reach
+   (named like a Job Environment, or ambiguous) applies by its `activation` alone, whatever
    entries name it, and its values are not checked (job creation stops a Step whose entry
-   names an ambiguous attachment, so it reports less for that Step). The Job
-   Template's own Environments come after the attachments, so they supersede none. Constraint
-   5 is checked for every attachment. The same value checks and constraint 7 are made for each
-   Job Environment with an `exclusiveGroup` that the Step is known to enter after the
-   attachments (its state from its `activation`, its `enableIf`, certainly unresolved
-   included, and the Step's entry as written), since template validation left them out; they
-   are reported at the Job Template's paths with the jobEnvironments wording, as job creation
-   reports them. With no attachments, every such Job Environment first in its group is
-   checked;
+   names an ambiguous attachment, so it reports less for that Step). The Job Template's own
+   Environments come after the attachments, so they supersede none. Constraint 5 is checked
+   for every attachment. The same value checks are made for each Job Environment with an
+   `exclusiveGroup` that the Step is known to enter after the attachments (its state from its
+   `activation`, its known `enableIf` or one that reads an unconvertible literal, and the
+   Step's entry as known), since template validation left them out; they are reported at the
+   Job Template's paths, as job creation reports them. Their constraint 7 does not depend on
+   the group, so template validation checks it. With no attachments, every such Job
+   Environment first in its group is checked;
 4. the `WRAP_ACTIONS` single-layer rule (`check_attached_wrap_layers`), for each Step (a
    Step whose only wrapping layers are the Job Template's own ungrouped Environments and its
    Step Environments passed template validation, which counts them the same way, so it adds
@@ -1443,23 +1462,23 @@ reports only once the Step's step 1–4 errors are fixed):
    Environment Template that does not list ENV_PARAMS, whatever the Step's entry for one says
    (`template::Environment::known_state_in`), those with
    `BY_DEFAULT` for which the Step has no entry or an enabled one (a disabled entry declines
-   it, and an expression entry may), and the `ON_REQUEST` ones an enabled entry resolved to;
-   Job Environments in the same way, with an entry enabled by an absent or boolean-scalar
-   `enableIf`; then the Step's Step Environments; each only when its own `enableIf`
-   is absent or the scalar `true` (one with the scalar `false` is not entered, and one with
-   an expression is decided at job creation), or it is `ALWAYS`, which is entered whatever
+   it, and an entry whose `enableIf` is not known may), and the `ON_REQUEST` ones an enabled
+   entry resolved to; Job Environments in the same way, with an entry enabled by an `enableIf`
+   known to be `true`; then the Step's Step Environments; each only when its own `enableIf`
+   is known to be `true` (one known to be `false` is not entered, and any other is decided at
+   job creation), or it is `ALWAYS`, which is entered whatever
    its `enableIf` and the Step's entries (`template::Environment::known_state`, given
    what the Step's entry is known to be, `template::KnownEntry`), and, for one with an
    `exclusiveGroup`, only when every earlier Environment of its group, attached or the Job
    Template's own, is known not to be entered (`certainly_entered_per_step`, which applies
    `apply_exclusive_groups` over the attachments and then the Job Environments). Job
    creation's message is reused (`wrap_layers_message`), but it lists only
-   the layers the Step certainly enters, so when an `enableIf` expression on an entry or an
-   Environment brings in another one, job creation's message counts and lists more;
+   the layers the Step certainly enters, so when an `enableIf` not known here, on an entry or
+   an Environment, brings in another one, job creation's message counts and lists more;
 5. the §3.3.3 combination over literal requirements
    (`host_requirements::check_literal_combinations`): for each Step, the requirements of its
    own `hostRequirements` and of each Environment its Sessions certainly enter (as in item 4,
-   so an Environment whose own `enableIf` is not absent or `true` is left out, unless it is
+   so an Environment whose own `enableIf` is not known to be `true` is left out, unless it is
    `ALWAYS`, and so is one an earlier one of its group may supersede)
    whose format strings are all literals (`literal_part`; an `anyOf` or `allOf` written as
    one expression is never literal), resolved with an empty symbol table
@@ -1474,7 +1493,7 @@ reports only once the Step's step 1–4 errors are fixed):
    where `openjd run` names another source with the same bound. An attachment that
    declares parameters and that an ambiguous entry of the Step names is left out, since job
    creation computes no values for it and so skips its requirements. An `ALWAYS` attachment that
-   an entry with an `enableIf` expression names is kept, since the Step's Sessions enter it
+   an entry whose `enableIf` is not known names is kept, since the Step's Sessions enter it
    either way; a `BY_DEFAULT` one is left out, since the entry may decline it. A conflict that involves
    only the Job Template's own requirements (a Job Environment's with its Step's, no
    attachment) is reported here too, though `openjd check` without `--environment` and

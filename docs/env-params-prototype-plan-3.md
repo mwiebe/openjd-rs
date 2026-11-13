@@ -8,6 +8,10 @@ and orders the remaining work into three PRs. It changes no code. Each PR is mad
 `BY_DEFAULT`, the default. Where this plan says `ALWAYS`, today's name for that behavior is `BY_DEFAULT`; see
 `specs/model/template-types.md`.)
 
+(Later superseded: spec `bb03379` makes an `enableIf` expression known at template validation when its value does not
+depend on the values unknown there (§7.6 rule 5), so a constant expression such as `"true"` is known there, not
+decided only at job creation as D5 says; see `specs/model/validation.md`.)
+
 [Plan 2](env-params-prototype-plan-2.md) is the context: it covers `runScope`, Environment `hostRequirements`, entry
 `enableIf`, `Job.EnvNames`, and the §7.4 order, all now implemented. Its decisions P1–P8, inventory items, and
 ambiguities A23–A32 still hold except where [Where this plan supersedes plan 2](#where-this-plan-supersedes-plan-2)

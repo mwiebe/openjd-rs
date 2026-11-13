@@ -545,14 +545,18 @@ Ternary: `x if condition else y`. Evaluates the condition unconstrained
 (see [Target Type Propagation](#target-type-propagation)) and asserts it
 is bool-compatible, then evaluates only the selected branch with the
 parent target type. When the condition is unresolved, both branches are
-evaluated speculatively (see above) and the result is an `Unresolved`
-carrying only a type: the union of both branch types when both succeed;
-the other branch's type when exactly one fails with a value error (a
-runtime with the condition resolved may never take the failing branch);
-a compound error carrying both as sub-errors when both fail. A budget
-error or a name that resolves nowhere in either branch propagates
-immediately. Because the result
-carries no value, every branch value is released.
+evaluated speculatively (see above). When both give the same known value
+(the same type, equal, and for a float the same text, element by element in
+a list; `identical`), that value is the result, since a run gives it
+whichever branch it takes (2026-02 "Conditional Expressions with Unknown
+Conditions": `c if U else c` is `c`), and the other branch's value is
+released. Otherwise the result is an `Unresolved` carrying only a type: the
+union of both branch types when both succeed; the other branch's type when
+exactly one fails with a value error (a runtime with the condition resolved
+may never take the failing branch); a compound error carrying both as
+sub-errors when both fail. A budget error or a name that resolves nowhere in
+either branch propagates immediately. Because an `Unresolved` result carries
+no value, every branch value is then released.
 
 ### Call (`eval_call`)
 Handles both function calls (`len(x)`) and method calls (`x.upper()`).

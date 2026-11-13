@@ -39,22 +39,25 @@
 //! - §3.2 constraints 2–4 and 8 for every `environment:`
 //!   entry, and the forms of a literal value that no parameter type accepts
 //!   (an object, `null`, a list nested too deeply);
-//! - §3.2 item 3.2: an entry whose `enableIf` is the literal `false` and that
-//!   names a `jobEnvironments` entry with `activation: ALWAYS` is an error,
-//!   naming the Step and the Environment;
+//! - §3.2 item 3.2: an entry whose `enableIf` is known to be `false` (§7.6
+//!   rule 5) and that names a `jobEnvironments` entry with `activation:
+//!   ALWAYS` is an error, naming the Step and the Environment;
 //! - §3.2 constraints 5 and 6 (against literal values) for entries that
-//!   name a `jobEnvironments` entry of the same Job Template, unless their
-//!   `enableIf` is `false`; and constraint 7 over each Step's Environment
-//!   set, for entries whose `enableIf` is absent or a boolean scalar (the
-//!   checked-at paragraph; §7.6 item 1), where a `false` one declines a
-//!   `BY_DEFAULT` Environment (§3.2 item 3.2). Constraints 6 and 7 are checked
-//!   only for an Environment with `activation: ALWAYS`, which cannot be
-//!   disabled (§3.2.2 item 6), or whose own `enableIf` is absent or `true`, or
-//!   certainly unresolved for the Step ([`enable_if_certainly_unresolved`]): they
-//!   do not apply to a Step for which it is disabled (§3.2.2), so for one
-//!   whose `enableIf` is `false` they never apply, and for one whose
-//!   `enableIf` is an expression a violation is not certain here (§7.6
-//!   rule 5).
+//!   name a `jobEnvironments` entry of the same Job Template and whose
+//!   `enableIf` is known to be `true`, constraint 6 only for an ungrouped
+//!   Environment with `activation: ALWAYS` or whose own `enableIf` is known
+//!   to be `true`: it does not apply to a Step for which the Environment is
+//!   disabled (§3.2.2);
+//! - §3.2 constraint 7 over the `jobEnvironments` entries that apply to
+//!   each Step, by their `activation` and the Step's entries alone, for
+//!   entries whose `enableIf` is known (the checked-at paragraph; §7.6 rule
+//!   5), where a disabled one declines a `BY_DEFAULT` Environment (§3.2
+//!   item 3.2). An Environment's own `enableIf` and `exclusiveGroup` do not
+//!   matter: a Step must supply its parameters without a `default`
+//!   whatever they are.
+//!
+//! Each `enableIf` is known as [`KnownEnableIfs`] gives it, the same value
+//! that passes 8 and 10 read.
 //!
 //! §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and
 //! `environment`) is checked with the other dependency rules in pass 6. Format-string
@@ -72,6 +75,8 @@ use crate::template::{
     EnvironmentTemplate, FlexFloat, FlexInt, JobTemplate, RangeExprLengthCheck, StepDependency,
 };
 use crate::types::{JobParameterType, ModelExtension, ValidationContext};
+
+use super::format_strings::KnownEnableIfs;
 
 /// §4 item 3 constraint 2 and §3.2 constraint 4: at most 50 definitions
 /// on an Environment and at most 50 entries in a `parameters` map. Fixed
@@ -102,21 +107,20 @@ struct JobEnvIndex<'a> {
     activation: EnvironmentActivation,
     /// Whether the Environment is known at template validation not to be
     /// disabled for any Step: its `activation` is `ALWAYS`, which cannot be
-    /// disabled (§3.2.2 item 6), or its own `enableIf` (§4 item 6) is
-    /// absent or `true`. Constraints 6 and 7 do not apply to a Step for which it is
-    /// disabled (§3.2.2), so for any other Environment (a literal `false`,
-    /// disabled; an expression, undetermined) they are not checked here
-    /// (§7.6 rule 5): a violation need not hold whatever the `enableIf`
-    /// resolves to, since `false` would remove it. The exception is an
-    /// `enableIf` that is certainly unresolved for the Step
-    /// ([`enable_if_certainly_unresolved`]), which is checked per entry.
-    certainly_enabled: bool,
+    /// disabled (§3.2.2 item 6), or its own `enableIf` (§4 item 6) is known
+    /// to be `true` (§7.6 rule 5). Constraint 6 does not apply to a Step
+    /// for which it is disabled (§3.2.2), so for any other Environment (one
+    /// known to be `false`, disabled; any other, undetermined) it is not
+    /// checked here: a violation need not hold whatever the `enableIf`
+    /// resolves to, since `false` would remove it. Constraint 7 does not
+    /// read this (§3.2 constraint 7).
+    not_disabled: bool,
     /// Whether the Environment has an `exclusiveGroup` (§4 item 7). Before
     /// the Environment Templates are known, an attached Environment of its
     /// group may come first in the Job's Environment order and supersede
     /// it, which disables it for the Step (§3.2.2), so it is never known to
-    /// be entered here (§4, after item 10), and constraints 6 and 7 are left
-    /// to job creation for it.
+    /// be entered here (§4, after item 10), and constraint 6 is left to job
+    /// creation for it. Constraint 7 does not read this either.
     grouped: bool,
     /// The definitions by name; for a duplicated name, the first.
     defs: HashMap<&'a str, &'a EnvironmentParameterDefinition>,
@@ -127,7 +131,7 @@ struct JobEnvIndex<'a> {
 }
 
 impl<'a> JobEnvIndex<'a> {
-    fn new(env: &'a Environment) -> Self {
+    fn new(env: &'a Environment, enabled: Option<bool>) -> Self {
         let mut defs = HashMap::new();
         let mut names = Vec::new();
         for d in env.env_parameter_definitions.iter().flatten() {
@@ -139,7 +143,8 @@ impl<'a> JobEnvIndex<'a> {
         Self {
             env,
             activation: env.activation(),
-            certainly_enabled: env.certainly_not_disabled(),
+            not_disabled: env.activation() == EnvironmentActivation::Always
+                || enabled == Some(true),
             grouped: env.group().is_some(),
             defs,
             names,
@@ -184,15 +189,12 @@ pub(crate) fn capped_name_list<'n>(names: impl Iterator<Item = &'n str>, total: 
 /// The §3.2 constraint 7 message for one Step: `missing` yields
 /// `(environment label, parameter name)` pairs grouped by label, in
 /// order, and `total` is how many there are. `why` says which Environments
-/// the Step's Sessions enter, and cites the rule. A label in `disabled`
-/// names an Environment the Step has an `environment:` entry for whose
-/// `enableIf` disabled it (§3.2 item 3.2), which its group says, since a
-/// reader would otherwise take the Step's entry as enabled. A label in
-/// `unresolved` names an Environment whose own `enableIf` (§4 item 6) was
-/// unresolved for the Step, which its group also says: the `enableIf`
-/// depends on a value that is missing or does not convert, so it does not
-/// disable the Environment (§3.2.2), and a reader who expected it to be
-/// `false` would otherwise not see why the parameters are required.
+/// apply to the Step, and cites the rule. A label in `disabled` names an
+/// Environment the Step has an `environment:` entry for whose `enableIf`
+/// disabled it (§3.2 item 3.2), which its group says, since a reader would
+/// otherwise take the Step's entry as enabled. The message also says that
+/// the Environments' own `enableIf` does not matter, since constraint 7 is
+/// checked whatever it is (§3.2 constraint 7).
 ///
 /// One error per Step, so the report grows with the number of Steps and
 /// not with Steps times parameters. The list holds at most 50 names and
@@ -204,21 +206,13 @@ pub(crate) fn missing_parameters_message<'n>(
     total: usize,
     why: &str,
     disabled: &HashSet<&str>,
-    unresolved: &HashSet<&str>,
-    failed: &HashSet<&str>,
 ) -> String {
     let note = |label: &str| {
-        let mut note = String::new();
         if disabled.contains(label) {
-            note.push_str(DISABLED_NOTE);
+            DISABLED_NOTE
+        } else {
+            ""
         }
-        if unresolved.contains(label) {
-            note.push_str(UNRESOLVED_NOTE);
-        }
-        if failed.contains(label) {
-            note.push_str(FAILED_NOTE);
-        }
-        note
     };
     let mut groups: Vec<String> = Vec::new();
     let mut listed = 0usize;
@@ -273,7 +267,8 @@ pub(crate) fn missing_parameters_message<'n>(
     }
     format!(
         "must supply, in an 'environment:' dependency, every parameter without a default of each \
-         Environment its Sessions enter ({why}); missing: {list}."
+         Environment that applies to it ({why}), whatever that Environment's own enableIf is; \
+         missing: {list}."
     )
 }
 
@@ -281,19 +276,6 @@ pub(crate) fn missing_parameters_message<'n>(
 /// when the Step's entry for it is disabled by its `enableIf`.
 const DISABLED_NOTE: &str = " (the Step's 'environment:' dependency for it is disabled by its \
      enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2)";
-
-/// The note [`missing_parameters_message`] adds to an Environment's group
-/// when the Environment's own `enableIf` (§4 item 6) was unresolved for
-/// the Step.
-const UNRESOLVED_NOTE: &str = " (its own enableIf depends on a value that is missing or does \
-     not convert, so it does not disable the Environment; Template Schemas §3.2.2)";
-
-/// The note for an Environment whose own `enableIf` failed to evaluate for
-/// the Step: the failure is reported at the `enableIf`, and the Environment
-/// is checked as if it is not disabled so the Step's other mistakes are
-/// reported in the same run.
-const FAILED_NOTE: &str = " (its own enableIf could not be evaluated for this Step, so the \
-     Environment is checked as if it is not disabled)";
 
 /// The constraint 7 reason for `jobEnvironments` entries, which completes
 /// [`missing_parameters_message`].
@@ -345,6 +327,7 @@ pub(super) fn check_expr_prerequisite(
 pub fn validate_env_params_job_template(
     jt: &JobTemplate,
     ctx: &ValidationContext,
+    known: &KnownEnableIfs,
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::EnvParams);
@@ -359,6 +342,7 @@ pub fn validate_env_params_job_template(
                 &path_index(&envs_path, i),
                 EnvPlacement::Declaring,
                 active,
+                known.job_environment(i),
                 &limits,
                 errors,
             );
@@ -369,10 +353,10 @@ pub fn validate_env_params_job_template(
     // Names are unique within `jobEnvironments` (pass 6), so the first
     // match is the only one in a valid template.
     let mut job_envs: HashMap<&str, JobEnvIndex<'_>> = HashMap::new();
-    for env in jt.job_environments.iter().flatten() {
+    for (k, env) in jt.job_environments.iter().flatten().enumerate() {
         job_envs
             .entry(env.name.as_str())
-            .or_insert_with(|| JobEnvIndex::new(env));
+            .or_insert_with(|| JobEnvIndex::new(env, known.job_environment(k)));
     }
 
     for (i, step) in jt.steps.iter().enumerate() {
@@ -385,6 +369,7 @@ pub fn validate_env_params_job_template(
                     &path_index(&envs_path, j),
                     EnvPlacement::Step,
                     active,
+                    known.step_environment(i, j),
                     &limits,
                     errors,
                 );
@@ -439,6 +424,7 @@ pub fn validate_env_params_job_template(
             };
             check_environment_entry(
                 dep,
+                known.entry(i, j),
                 env_name,
                 &step.name,
                 &dep_path,
@@ -453,7 +439,7 @@ pub fn validate_env_params_job_template(
     }
 
     if active {
-        check_required_parameters_supplied(jt, &job_envs, ctx, errors);
+        check_required_parameters_supplied(jt, &job_envs, known, errors);
     }
 }
 
@@ -470,6 +456,7 @@ pub fn validate_env_params_environment_template(
         &path_field(&[], "environment"),
         EnvPlacement::Declaring,
         active,
+        super::format_strings::known_environment_template_enable_if(et, ctx),
         &limits,
         errors,
     );
@@ -480,12 +467,14 @@ pub fn validate_env_params_environment_template(
 /// §4 item 5 and the paragraph after item 10: where its `hostRequirements`
 /// are permitted; §4 item 7 and the paragraph after item 10: its
 /// `exclusiveGroup`; §4 item 3 and §4.5: its
-/// `envParameterDefinitions`.
+/// `envParameterDefinitions`. `enabled` is what its `enableIf` is known
+/// to be (§7.6 rule 5).
 fn check_environment(
     env: &Environment,
     env_path: &[PathElement],
     placement: EnvPlacement,
     active: bool,
+    enabled: Option<bool>,
     limits: &EffectiveLimits,
     errors: &mut ValidationErrors,
 ) {
@@ -514,12 +503,10 @@ fn check_environment(
                 "is not permitted on a stepEnvironments entry, which only its own Step's \
                  Sessions enter.",
             );
-        } else if env.activation() == EnvironmentActivation::Always
-            && env.literal_enabled() == Some(false)
-        {
+        } else if env.activation() == EnvironmentActivation::Always && enabled == Some(false) {
             // §4 item 4 and §3.2.2 item 6: an `ALWAYS` Environment cannot
-            // be disabled, and a literal `false` is known here (§7.6
-            // rule 5). An expression is decided at job creation.
+            // be disabled, and an `enableIf` known to be `false` is known
+            // here (§7.6 rule 5). Any other is decided at job creation.
             errors.add(
                 &path_field(env_path, "enableIf"),
                 format!(
@@ -685,16 +672,18 @@ fn check_definition(
 }
 
 /// §3.2 constraints 2–6 and 8 for one `environment:` entry of the Step
-/// named `step_name`, and §3.2 item 3.2 for one whose `enableIf` is `false`
-/// that names a Job Environment with `activation: ALWAYS`, an error.
-/// Constraints 5 and 6 apply only to an entry whose `enableIf` is absent or
-/// `true`: a disabled entry's parameters are not checked (§3.2 item 3.2), and
-/// one whose `enableIf` is an expression may be disabled, so job creation
-/// checks it (§7.6 rule 5). Constraint 6 is also skipped for a Job
-/// Environment whose own `enableIf` is not absent or `true` (§3.2.2).
+/// named `step_name`, whose `enableIf` is known to be `known` (§7.6 rule
+/// 5), and §3.2 item 3.2 for one known to be disabled that names a Job
+/// Environment with `activation: ALWAYS`, an error. Constraints 5 and 6
+/// apply only to an entry known to be enabled: a disabled entry's
+/// parameters are not checked (§3.2 item 3.2), and one whose `enableIf` is
+/// not known may be disabled, so job creation checks it (§7.6 rule 5).
+/// Constraint 6 is also skipped for a Job Environment not known not to be
+/// disabled (§3.2.2).
 #[allow(clippy::too_many_arguments)]
 fn check_environment_entry<'a>(
     dep: &'a StepDependency,
+    known: Option<bool>,
     env_name: &'a str,
     step_name: &str,
     dep_path: &[PathElement],
@@ -724,9 +713,9 @@ fn check_environment_entry<'a>(
         );
     }
     // §3.2 item 3.2: a disabled entry for an `ALWAYS` Environment is an
-    // error, known here for a literal `false` on an entry naming a Job
+    // error, known here for an entry known to be disabled that names a Job
     // Environment (§7.6 rule 5); job creation reports the others.
-    if dep.literal_enabled() == Some(false)
+    if known == Some(false)
         && job_env.is_some_and(|e| e.activation == EnvironmentActivation::Always)
     {
         errors.add(
@@ -765,19 +754,20 @@ fn check_environment_entry<'a>(
 
     // A disabled entry's parameters are not checked (§3.2 item 3.2):
     // constraints 5 and 6 apply only to an enabled entry. One whose
-    // `enableIf` is an expression may be disabled, so they are checked for
-    // it only when the Job is created (§7.6 rule 5). Constraints 2–4 and 8,
+    // `enableIf` is not known may be disabled, so they are checked for it
+    // only when the Job is created (§7.6 rule 5). Constraints 2–4 and 8,
     // above, apply to entries as written.
-    let job_env = job_env.filter(|_| dep.literal_enabled() == Some(true));
+    let job_env = job_env.filter(|_| known == Some(true));
     // Constraint 6 applies to the values of an Environment that is not
-    // disabled for the Step (§3.2.2): one whose `enableIf` is absent or
-    // `true`, or certainly unresolved with this entry's values (`job_env`
-    // is `Some` only for a certainly enabled entry, above).
-    // A grouped one may be superseded (§4 item 7), so its values are
-    // checked when the Job is created.
+    // disabled for the Step (§3.2.2): one known not to be, or whose
+    // `enableIf` reads a literal of this entry's that does not convert, so
+    // that it is certainly not evaluated (§3.2.2 item 2). A grouped one may
+    // be superseded (§4 item 7), so its values are checked when the Job is
+    // created.
     let values_checked = job_env.is_some_and(|e| {
         !e.grouped
-            && (e.certainly_enabled || enable_if_certainly_unresolved(e.env, Some(&params.0), ctx))
+            && (e.not_disabled
+                || enable_if_reads_unconvertible_literal(e.env, Some(&params.0), ctx))
     });
 
     // Constraint 5 for a Job Environment that declares no parameters.
@@ -856,34 +846,27 @@ fn check_environment_entry<'a>(
 }
 
 /// §3.2 constraint 7, for Job Environments: every Step supplies every
-/// parameter without a `default` of every `jobEnvironments` entry its
-/// Sessions enter. They enter every entry with `activation: ALWAYS`, every
-/// one with `BY_DEFAULT` that the Step does not decline with a disabled
-/// `environment:` entry (§3.2 item 3.2), and every entry with `activation:
-/// ON_REQUEST` that the Step requests with an enabled `environment:` entry.
+/// parameter without a `default` of every `jobEnvironments` entry that
+/// applies to it. One applies to a Step when its `activation` is `ALWAYS`,
+/// when it is `BY_DEFAULT` and the Step does not decline it with a disabled
+/// `environment:` entry (§3.2 item 3.2), and when it is `ON_REQUEST` and an
+/// enabled entry of the Step requests it. Whether it applies does not
+/// depend on its own `enableIf` (§4 item 6) or its `exclusiveGroup` (§4
+/// item 7), so neither is read here, and a Step that would leave it out by
+/// either is still held to the constraint.
 ///
-/// Whether an entry is enabled is known here only when its `enableIf` is
-/// absent or a boolean scalar (§3.2, checked-at paragraph; §7.6 item 1).
-/// An entry whose `enableIf` is an expression, even a constant one such as
-/// `"true"`, defers the check for its Environment to job creation. An
-/// `enableIf: false` entry supplies nothing: it declines a `BY_DEFAULT`
-/// Environment, which then requires nothing of the Step, and requests no
-/// `ON_REQUEST` one. For an `ALWAYS` Environment it is an error of its own
-/// (reported by `check_environment_entry`); the Environment is still
-/// checked as entered, with every parameter at its `default`, since no Step
-/// can leave it out (§3.2.2 item 6), and the message says the entry is
-/// disabled.
-///
-/// Constraint 7 does not apply to a Step for which the Environment is
-/// disabled (§3.2.2), so only an Environment with `activation: ALWAYS`,
-/// which cannot be disabled (§3.2.2 item 6), or whose own `enableIf` (§4
-/// item 6) is absent or `true`, or certainly unresolved for the Step
-/// ([`enable_if_certainly_unresolved`], with its entry's values), is
-/// checked here, the latter with the unresolved note. Any other one whose
-/// `enableIf` is `false` is disabled for every Step; one whose `enableIf` is any other
-/// expression is undetermined, and disabled it requires nothing, so a
-/// violation need not hold whatever it resolves to (§7.6 rule 5) and the
-/// check is left to job creation.
+/// So the check needs only what the Step's entries are known to be (§7.6
+/// rule 5; [`KnownEnableIfs::entry`]). An entry known to be enabled
+/// supplies its values and requests an `ON_REQUEST` Environment; one known
+/// to be disabled supplies nothing and declines a `BY_DEFAULT` one, and for
+/// an `ALWAYS` one is an error of its own (reported by
+/// `check_environment_entry`), with the Environment still checked as
+/// applying, every parameter at its `default`, and the message saying the
+/// entry is disabled. An entry whose `enableIf` is not known leaves its
+/// Environment to job creation for the Step: enabled it may supply the
+/// values, and disabled it declines a `BY_DEFAULT` or `ON_REQUEST` one (and
+/// is an error for an `ALWAYS` one), so a violation need not hold whatever
+/// it resolves to.
 ///
 /// Linear: a Step costs O(its entries), plus O(50) to list the missing
 /// names when there are any. An Environment name or a parameter name that
@@ -892,23 +875,16 @@ fn check_environment_entry<'a>(
 fn check_required_parameters_supplied(
     jt: &JobTemplate,
     job_envs: &HashMap<&str, JobEnvIndex<'_>>,
-    ctx: &ValidationContext,
+    known: &KnownEnableIfs,
     errors: &mut ValidationErrors,
 ) {
     // Distinct Job Environment names in written order, with their
     // `activation` and required parameters.
     struct Required<'a> {
-        index: &'a JobEnvIndex<'a>,
         env: &'a str,
         label: String,
         activation: EnvironmentActivation,
         names: Vec<&'a str>,
-        /// The Environment's own `enableIf` is an expression: it counts for
-        /// a Step only where it is certainly unresolved.
-        conditional: bool,
-        /// For a conditional one, whether it counts for a Step without an
-        /// enabled entry for it, which supplies nothing.
-        counts_without_entry: bool,
     }
     let mut required: Vec<Required<'_>> = Vec::new();
     let mut seen = HashSet::new();
@@ -919,18 +895,6 @@ fn check_required_parameters_supplied(
         let Some(index) = job_envs.get(env.name.as_str()) else {
             continue;
         };
-        // Disabled for every Step. An `ALWAYS` one cannot be disabled
-        // (§3.2.2 item 6; `check_environment` reports its `false`), so it
-        // is checked as entered.
-        if !index.certainly_enabled && env.literal_enabled() == Some(false) {
-            continue;
-        }
-        // Never known to be entered here: an Environment of its group may
-        // come first and supersede it (§4 item 7), so job creation checks
-        // it.
-        if index.grouped {
-            continue;
-        }
         let names: Vec<&str> = index
             .names
             .iter()
@@ -940,40 +904,35 @@ fn check_required_parameters_supplied(
         if names.is_empty() {
             continue;
         }
-        let conditional = !index.certainly_enabled;
-        // An `ON_REQUEST` Environment is entered only through an entry.
-        let counts_without_entry = !conditional
-            || (index.activation == EnvironmentActivation::ByDefault
-                && enable_if_certainly_unresolved(index.env, None, ctx));
         required.push(Required {
-            index,
             env: env.name.as_str(),
             label: format!("'{}'", env.name),
             activation: index.activation,
             names,
-            conditional,
-            counts_without_entry,
         });
     }
     if required.is_empty() {
         return;
     }
     let by_name: HashMap<&str, &Required<'_>> = required.iter().map(|r| (r.env, r)).collect();
+    // What a Step with no entry for them misses: every `ALWAYS` and
+    // `BY_DEFAULT` Environment's names.
     let all_count: usize = required
         .iter()
-        .filter(|r| r.activation != EnvironmentActivation::OnRequest && r.counts_without_entry)
+        .filter(|r| r.activation != EnvironmentActivation::OnRequest)
         .map(|r| r.names.len())
         .sum();
     for (i, step) in jt.steps.iter().enumerate() {
         // The first entry for each Job Environment with required
         // parameters, matched on the `environment` key as written, so an
         // entry that also has `dependsOn` (reported by pass 6) does not add
-        // a second, cascading error here.
-        let mut entries: HashMap<&str, &StepDependency> = HashMap::new();
-        for d in step.dependencies.iter().flatten() {
+        // a second, cascading error here; with what its `enableIf` is known
+        // to be.
+        let mut entries: HashMap<&str, (&StepDependency, Option<bool>)> = HashMap::new();
+        for (j, d) in step.dependencies.iter().flatten().enumerate() {
             if let Some(env) = d.environment.as_deref() {
                 if by_name.contains_key(env) {
-                    entries.entry(env).or_insert(d);
+                    entries.entry(env).or_insert((d, known.entry(i, j)));
                 }
             }
         }
@@ -983,99 +942,58 @@ fn check_required_parameters_supplied(
                 .filter(|n| d.parameters.as_ref().is_some_and(|p| p.get(n).is_some()))
                 .count()
         };
-        // Whether the Environment of an entry enabled by `enableIf: true`
-        // (or no `enableIf`) counts for this Step: always, unless its own
-        // `enableIf` is an expression, which counts only where it is
-        // certainly unresolved with the entry's values. One evaluation per
-        // entry.
-        let counts_with: HashMap<&str, bool> = entries
-            .iter()
-            .filter(|(_, d)| d.literal_enabled() == Some(true))
-            .map(|(env, d)| {
-                let r = by_name[env];
-                let counts = !r.conditional
-                    || enable_if_certainly_unresolved(
-                        r.index.env,
-                        d.parameters.as_ref().map(|p| &p.0),
-                        ctx,
-                    );
-                (*env, counts)
-            })
-            .collect();
         // Count the missing names from the Step's entries alone: every
-        // counted `ALWAYS` or `BY_DEFAULT` Environment's names start missing; an enabled
-        // entry replaces that with what it leaves missing, if its
-        // Environment counts, and adds the names of an `ON_REQUEST` one it
-        // requests; a disabled entry declines a `BY_DEFAULT` one; an
-        // expression entry `enableIf` defers its Environment.
+        // `ALWAYS` and `BY_DEFAULT` Environment's names start missing; an
+        // entry known to be enabled replaces that with what it leaves
+        // missing, and adds the names of an `ON_REQUEST` one it requests;
+        // one known to be disabled declines a `BY_DEFAULT` one; any other
+        // entry defers its Environment.
         let mut missing = all_count;
-        for (env, d) in &entries {
+        for (env, (d, k)) in &entries {
             let r = by_name[env];
-            let base = if r.activation != EnvironmentActivation::OnRequest && r.counts_without_entry
-            {
-                r.names.len()
-            } else {
+            let base = if r.activation == EnvironmentActivation::OnRequest {
                 0
+            } else {
+                r.names.len()
             };
-            match d.literal_enabled() {
+            match k {
                 None => missing -= base,
                 Some(false) => {
                     if r.activation == EnvironmentActivation::ByDefault {
                         missing -= base;
                     }
                 }
-                Some(true) => {
-                    missing -= base;
-                    if counts_with[env] {
-                        missing += r.names.len() - supplied(d, r);
-                    }
-                }
+                Some(true) => missing = missing - base + r.names.len() - supplied(d, r),
             }
         }
         if missing == 0 {
             continue;
         }
-        // Whether `r` counts for this Step, and the entry parameters that
-        // supply its names.
-        let entered = |r: &Required<'_>| {
-            let entry = entries.get(r.env).copied();
-            match entry.map(StepDependency::literal_enabled) {
-                Some(None) => (false, None),
-                Some(Some(true)) => (
-                    counts_with[r.env],
-                    entry.and_then(|d| d.parameters.as_ref()),
-                ),
-                // Declined (§3.2 item 3.2).
-                Some(Some(false)) if r.activation == EnvironmentActivation::ByDefault => {
-                    (false, None)
-                }
-                None | Some(Some(false)) => (
-                    r.activation != EnvironmentActivation::OnRequest && r.counts_without_entry,
-                    None,
-                ),
+        // Whether `r` applies to this Step as far as is known, and the
+        // entry parameters that supply its names.
+        let applies = |r: &Required<'_>| match entries.get(r.env) {
+            Some((_, None)) => (false, None),
+            Some((d, Some(true))) => (true, d.parameters.as_ref()),
+            // Declined (§3.2 item 3.2).
+            Some((_, Some(false))) if r.activation == EnvironmentActivation::ByDefault => {
+                (false, None)
+            }
+            None | Some((_, Some(false))) => {
+                (r.activation != EnvironmentActivation::OnRequest, None)
             }
         };
-        // The `ALWAYS` Environments whose entry a scalar `enableIf: false`
-        // disabled: their names are missing although the entry lists them.
+        // The `ALWAYS` Environments whose entry is known to be disabled:
+        // their names are missing although the entry lists them.
         let disabled: HashSet<&str> = required
             .iter()
             .filter(|r| {
                 r.activation == EnvironmentActivation::Always
-                    && entries
-                        .get(r.env)
-                        .is_some_and(|d| d.literal_enabled() == Some(false))
+                    && entries.get(r.env).is_some_and(|(_, k)| *k == Some(false))
             })
             .map(|r| r.label.as_str())
             .collect();
-        // The ones that count only because their `enableIf` is certainly
-        // unresolved, which the message says.
-        let unresolved: HashSet<&str> = required
-            .iter()
-            .filter(|r| r.conditional && entered(r).0)
-            .map(|r| r.label.as_str())
-            .collect();
         let missing_pairs = required.iter().flat_map(|r| {
-            let (counts, params) = entered(r);
+            let (counts, params) = applies(r);
             r.names
                 .iter()
                 .filter(move |n| counts && !params.is_some_and(|p| p.get(n).is_some()))
@@ -1083,42 +1001,32 @@ fn check_required_parameters_supplied(
         });
         errors.add(
             &path_index(&path_field(&[], "steps"), i),
-            missing_parameters_message(
-                missing_pairs,
-                missing,
-                EVERY_JOB_ENVIRONMENT,
-                &disabled,
-                &unresolved,
-                &HashSet::new(),
-            ),
+            missing_parameters_message(missing_pairs, missing, EVERY_JOB_ENVIRONMENT, &disabled),
         );
     }
 }
 
-/// Whether `env`'s own `enableIf` (§4 item 6) is certainly unresolved for
-/// a Step that supplies `supplied` (its enabled `environment:` entry's
-/// `parameters`, if any), before job creation (§3.2.2, §7.6 rule 5).
+/// Whether `env`'s own `enableIf` (§4 item 6) is known before job creation
+/// not to be evaluated for a Step that supplies `supplied` (its enabled
+/// `environment:` entry's `parameters`, if any), so that the Environment is
+/// certainly not disabled for it (§3.2.2 item 2): the `enableIf` is an
+/// expression that reads (references) a parameter whose value for the Step
+/// is a literal, supplied or the `default`, that does not convert to its
+/// type. Job creation does not evaluate such an `enableIf`, whatever the
+/// Job Parameters are, so a check that applies only to an Environment that
+/// is not disabled fails then if it fails here.
 ///
-/// That holds when the expression reads only `Env.Param.*` and
-/// `Env.RawParam.*` of the Environment, every value it reads is a literal
-/// (supplied, or the `default`) or has no value at all, and progressive
-/// evaluation with the literals that convert and `unresolved[T]` for the
-/// rest gives an unresolved result. Job creation evaluates it with exactly
-/// those values, so the result is the same there: whatever the Job
-/// Parameters are, the Environment is not disabled for the Step, and a
-/// check that applies only to an Environment that is not disabled fails at
-/// job creation if it fails here. A known result (`true` or `false`), as of
-/// a constant expression, stays unknown before job creation (§7.6 rule 5),
-/// so this returns `false` for it, and for anything else that cannot be
-/// decided here (a format-string value or `default`, another symbol, a
-/// parse or evaluation error).
-pub(crate) fn enable_if_certainly_unresolved(
+/// A missing value is not counted: it is a constraint 7 error already, and
+/// the Step's other values are checked at job creation once it is fixed.
+/// `false` for anything else that cannot be decided here (a format-string
+/// value or `default`, an expression that does not parse).
+pub(crate) fn enable_if_reads_unconvertible_literal(
     env: &Environment,
     supplied: Option<&std::collections::BTreeMap<String, EnvironmentParameterValue>>,
     ctx: &ValidationContext,
 ) -> bool {
-    use crate::template::expr_field::{self, ExprFieldEval};
-    let Some(field) = &env.enable_if else {
+    use crate::template::expr_field::{self, ExprField, ExprFieldEval};
+    let Some(field @ ExprField::Expression(_)) = &env.enable_if else {
         return false;
     };
     let profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
@@ -1133,8 +1041,7 @@ pub(crate) fn enable_if_certainly_unresolved(
         return false;
     };
     let defs = env.env_parameter_definitions.as_deref().unwrap_or(&[]);
-    let mut symtab = openjd_expr::SymbolTable::new();
-    for symbol in &symbols {
+    symbols.iter().any(|symbol| {
         let Some(rest) = symbol
             .strip_prefix("Env.Param.")
             .or_else(|| symbol.strip_prefix("Env.RawParam."))
@@ -1145,49 +1052,16 @@ pub(crate) fn enable_if_certainly_unresolved(
         let Some(def) = defs.iter().find(|d| d.name() == name) else {
             return false;
         };
-        let pt = def.job_param_type();
-        // A path type is in scope only as `Env.RawParam.*`, its unmapped
-        // string (the Job Parameter form `convert_literal_value` returns).
-        let is_path = matches!(pt, JobParameterType::Path | JobParameterType::ListPath);
-        if is_path && symbol.starts_with("Env.Param.") {
-            return false;
-        }
-        let written = supplied.and_then(|p| p.get(name)).or(def.default.as_ref());
-        let value = match written {
-            Some(EnvironmentParameterValue::FormatString(_)) => return false,
+        match supplied.and_then(|p| p.get(name)).or(def.default.as_ref()) {
             Some(EnvironmentParameterValue::Literal(lit)) => {
                 let mut scratch = ValidationErrors::default();
-                convert_literal_value(def, lit, &[], &mut scratch).0
+                convert_literal_value(def, lit, &[], &mut scratch)
+                    .0
+                    .is_none()
             }
-            None => None,
-        };
-        // A RANGE_EXPR literal is the `range_expr` its text parses to, as
-        // job creation and the Session have it.
-        let value = value.unwrap_or_else(|| {
-            openjd_expr::ExprValue::unresolved(if is_path {
-                pt.raw_expr_type()
-            } else {
-                pt.expr_type()
-            })
-        });
-        let forms: &[&str] = if is_path {
-            &["Env.RawParam"]
-        } else {
-            &["Env.Param", "Env.RawParam"]
-        };
-        for form in forms {
-            if symtab
-                .set(&format!("{form}.{name}"), value.clone())
-                .is_err()
-            {
-                return false;
-            }
+            _ => false,
         }
-    }
-    matches!(
-        expr_field::resolve_progressive(field, &openjd_expr::ExprType::BOOL, &symtab, &ev),
-        Ok(None)
-    )
+    })
 }
 
 /// §4.1 `<EnvironmentName>` for the `environment` key of a dependency
@@ -1508,17 +1382,11 @@ mod tests {
     #[test]
     fn missing_parameters_list_counts_every_character_up_to_512() {
         let msg = |pairs: &[(&str, &str)], total: usize| {
-            missing_parameters_message(
-                pairs.iter().copied(),
-                total,
-                "X",
-                &HashSet::new(),
-                &HashSet::new(),
-                &HashSet::new(),
-            )
+            missing_parameters_message(pairs.iter().copied(), total, "X", &HashSet::new())
         };
         let prefix = "must supply, in an 'environment:' dependency, every parameter without a \
-                      default of each Environment its Sessions enter (X); missing: ";
+                      default of each Environment that applies to it (X), whatever that \
+                      Environment's own enableIf is; missing: ";
         // One group: "'n1', 'n2' of Environment 'E'" is 243 + 244 + 25 = 512
         // characters, so both names fit; one more character does not.
         let (n1, n2) = ("p".repeat(243), "q".repeat(244));
@@ -1550,14 +1418,7 @@ mod tests {
         // 'E'<note>" is 512 bytes, so both names fit; one more does not.
         let disabled: HashSet<&str> = ["'E'"].into_iter().collect();
         let noted = |pairs: &[(&str, &str)], total: usize| {
-            missing_parameters_message(
-                pairs.iter().copied(),
-                total,
-                "X",
-                &disabled,
-                &HashSet::new(),
-                &HashSet::new(),
-            )
+            missing_parameters_message(pairs.iter().copied(), total, "X", &disabled)
         };
         let room = 512 - DISABLED_NOTE.len() - "'', '' of Environment 'E'".len();
         let (n1, n2) = ("p".repeat(room / 2), "q".repeat(room - room / 2));
@@ -1577,40 +1438,6 @@ mod tests {
             noted(&[("'A'", "a"), ("'E'", "e")], 2),
             format!("{prefix}'a' of Environment 'A'; 'e' of Environment 'E'{DISABLED_NOTE}.")
         );
-        // The unresolved note counts too, alone and after the disabled
-        // note: both names fit in exactly 512 bytes, one more does not.
-        let unresolved: HashSet<&str> = ["'E'"].into_iter().collect();
-        for (disabled, notes) in [
-            (HashSet::new(), UNRESOLVED_NOTE.to_string()),
-            (
-                disabled.clone(),
-                format!("{DISABLED_NOTE}{UNRESOLVED_NOTE}"),
-            ),
-        ] {
-            let with = |pairs: &[(&str, &str)], total: usize| {
-                missing_parameters_message(
-                    pairs.iter().copied(),
-                    total,
-                    "X",
-                    &disabled,
-                    &unresolved,
-                    &HashSet::new(),
-                )
-            };
-            let room = 512 - notes.len() - "'', '' of Environment 'E'".len();
-            let (n1, n2) = ("p".repeat(room / 2), "q".repeat(room - room / 2));
-            let list = format!("'{n1}', '{n2}' of Environment 'E'{notes}");
-            assert_eq!(list.len(), 512);
-            assert_eq!(
-                with(&[("'E'", &n1), ("'E'", &n2)], 2),
-                format!("{prefix}{list}.")
-            );
-            let n2 = format!("{n2}q");
-            assert_eq!(
-                with(&[("'E'", &n1), ("'E'", &n2)], 2),
-                format!("{prefix}'{n1}' of Environment 'E'{notes}; and 1 more.")
-            );
-        }
         // The first name is listed however long it is.
         let long = "z".repeat(600);
         assert_eq!(

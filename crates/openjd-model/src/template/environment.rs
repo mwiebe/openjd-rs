@@ -53,10 +53,14 @@ pub struct Environment {
     /// for a Job Environment or an Environment Template, exactly its
     /// `hostRequirements` scope; for a Step
     /// Environment, the Step's template scope. Job creation resolves it once
-    /// for each Step whose Sessions would otherwise enter the Environment
-    /// and for which no earlier Environment of its `exclusiveGroup`
-    /// supersedes it, with that Step's effective values, and a Step for
-    /// which it is `false` does not enter it; see
+    /// for each Step that the Environment applies to (§3.2 constraint 7) and
+    /// for which no earlier Environment of its `exclusiveGroup` supersedes
+    /// it, with that Step's concrete effective values (§3.2.2 item 2; it is
+    /// not evaluated, and does not disable the Environment, when it reads a
+    /// value that is missing, fails to resolve, or does not convert), and a
+    /// Step for which it is `false` does not enter it. It never decides
+    /// constraint 7: such a Step must supply every parameter without a
+    /// `default` whatever the field is. See
     /// [`literal_enabled`](Self::literal_enabled).
     #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
     pub enable_if: Option<ExprField>,
@@ -66,10 +70,11 @@ pub struct Environment {
     /// group and whose `enableIf` is not `false` for it, only the first in
     /// the Job's Environment order (§1.1 item 7) is entered; the others are
     /// *superseded* for the Step, which disables them for it (§3.2.2), so
-    /// they are not held to constraint 7 and the Step's values for them are
-    /// not checked. Job creation takes them in that order, and once one is
-    /// entered, it does not evaluate the `enableIf` of the later ones for
-    /// the Step (§7.4.1 step 6, before the checks of step 7). Template
+    /// the Step's values for them are not checked. They still apply to the
+    /// Step, so constraint 7 still holds for them (§3.2 constraint 7). Job
+    /// creation takes them in that order, and once one is entered, it does
+    /// not evaluate the `enableIf` of the later ones for the Step (§7.4.1
+    /// step 6, before the value checks of step 7). Template
     /// validation checks that the value is an `<Identifier>` (§7.1), and
     /// rejects the field without `ENV_PARAMS`, on a `stepEnvironments`
     /// entry, and on an Environment with `activation: ALWAYS` (constraint
@@ -100,11 +105,13 @@ impl Environment {
         self.activation.unwrap_or_default()
     }
 
-    /// Whether `enableIf` is known before the Job is created (§4, after item
-    /// 10; §7.6 item 1): `Some(true)` when it is absent or the boolean
-    /// scalar `true`, `Some(false)` for the scalar `false`, and `None`
-    /// otherwise, an expression included (even a constant one such as
-    /// `"true"`, which is evaluated when the Job is created).
+    /// The value of `enableIf` as written, when it is a literal (§7.6 item
+    /// 1): `Some(true)` when it is absent or the boolean scalar `true`,
+    /// `Some(false)` for the scalar `false`, and `None` for an expression.
+    /// Template validation knows more than this: an expression whose value
+    /// does not depend on the values unknown there, such as `"true"` or
+    /// `"Param.F and false"`, is known too (§7.6 rule 5), and every check
+    /// before job creation reads that value, not this one.
     #[must_use]
     pub fn literal_enabled(&self) -> Option<bool> {
         match &self.enable_if {
@@ -113,41 +120,38 @@ impl Environment {
         }
     }
 
-    /// Whether the Environment is known before the Job is created not to
-    /// be disabled for any Step: its `activation` is `ALWAYS`, which cannot
-    /// be disabled (§3.2.2 item 6; its `enableIf` being `false` for a Step
-    /// is an error of its own), or its `enableIf` is absent or `true`.
-    pub(crate) fn certainly_not_disabled(&self) -> bool {
-        self.activation() == EnvironmentActivation::Always || self.literal_enabled() == Some(true)
-    }
-
     /// Whether a Step's Sessions are known before the Job is created to enter
-    /// the Environment (§4, after item 10), where `entry` is what the Step's
-    /// `environment:` entry
-    /// for it is known to be: always for `ALWAYS`, which cannot be disabled
-    /// or declined (§3.2.2 item 6); for `BY_DEFAULT` when its `enableIf`
-    /// is absent or `true` and the Step has no entry for it or an enabled
-    /// one (a disabled entry declines it, and an expression may, §3.2 item
-    /// 3.2); and for `ON_REQUEST` when its `enableIf` is absent or `true` and
-    /// an enabled entry requests it.
+    /// the Environment (§4, after item 10), where `enabled` is what its own
+    /// `enableIf` is known to be (§7.6 rule 5; `Some(true)` when absent) and
+    /// `entry` what the Step's `environment:` entry for it is known to be:
+    /// always for `ALWAYS`, which cannot be disabled or declined (§3.2.2
+    /// item 6); for `BY_DEFAULT` when its `enableIf` is known to be `true`
+    /// and the Step has no entry for it or one known to be enabled (a
+    /// disabled entry declines it, and an undetermined one may, §3.2 item
+    /// 3.2); and for `ON_REQUEST` when its `enableIf` is known to be `true`
+    /// and an entry known to be enabled requests it.
     ///
     /// This is before the `exclusiveGroup` rule (§4 item 7); see
     /// [`known_state`](Self::known_state) and [`apply_exclusive_groups`].
-    pub(crate) fn certainly_entered(&self, entry: KnownEntry) -> bool {
-        self.known_state(entry) == Known::Entered
+    /// It is not what constraint 7 reads: whether an Environment applies to
+    /// a Step does not depend on its `enableIf` or its group (§3.2
+    /// constraint 7).
+    pub(crate) fn certainly_entered(&self, enabled: Option<bool>, entry: KnownEntry) -> bool {
+        self.known_state(enabled, entry) == Known::Entered
     }
 
     /// What is known before the Job is created about whether a Step's
-    /// Sessions enter the Environment, where `entry` is what the Step's
-    /// `environment:` entry for it is known to be (§4, after item 10, its
-    /// first three bullets), before the `exclusiveGroup` rule: entered as
+    /// Sessions enter the Environment, where `enabled` is what its own
+    /// `enableIf` is known to be and `entry` what the Step's `environment:`
+    /// entry for it is known to be (§4, after item 10, its first three
+    /// bullets), before the `exclusiveGroup` rule: entered as
     /// [`certainly_entered`](Self::certainly_entered) describes; not
-    /// entered when its own `enableIf` is the scalar `false` (unless it is
+    /// entered when its own `enableIf` is known to be `false` (unless it is
     /// `ALWAYS`, which cannot be disabled), when it is `BY_DEFAULT` and a
-    /// disabled entry declines it, or when it is `ON_REQUEST` and no
-    /// enabled entry requests it; and undetermined otherwise.
-    pub(crate) fn known_state(&self, entry: KnownEntry) -> Known {
-        self.known_state_in(true, entry)
+    /// disabled entry declines it, or when it is `ON_REQUEST` and no entry
+    /// known to be enabled requests it; and undetermined otherwise.
+    pub(crate) fn known_state(&self, enabled: Option<bool>, entry: KnownEntry) -> Known {
+        self.known_state_in(true, enabled, entry)
     }
 
     /// [`known_state`](Self::known_state) for an Environment of a document
@@ -155,7 +159,12 @@ impl Environment {
     /// document that does not list it behaves as `ALWAYS` with no
     /// `enableIf`, and a disabled entry has no effect on it (§4 item 4,
     /// §3.2 item 3.2), so it is known to be entered whatever `entry` is.
-    pub(crate) fn known_state_in(&self, lists_env_params: bool, entry: KnownEntry) -> Known {
+    pub(crate) fn known_state_in(
+        &self,
+        lists_env_params: bool,
+        enabled: Option<bool>,
+        entry: KnownEntry,
+    ) -> Known {
         let activation = self.activation();
         if !lists_env_params || activation == EnvironmentActivation::Always {
             return Known::Entered;
@@ -168,7 +177,7 @@ impl Environment {
             (_, KnownEntry::Undetermined) => None,
             _ => Some(false),
         };
-        match (requested, self.literal_enabled()) {
+        match (requested, enabled) {
             (Some(false), _) | (_, Some(false)) => Known::NotEntered,
             (Some(true), Some(true)) => Known::Entered,
             _ => Known::Undetermined,
@@ -239,39 +248,28 @@ pub(crate) fn apply_exclusive_groups<'g>(
 pub(crate) enum KnownEntry {
     /// The Step has no entry for the Environment.
     Absent,
-    /// An entry whose `enableIf` is absent or the boolean scalar `true`.
+    /// An entry whose `enableIf` is absent or known to be `true`.
     Enabled,
-    /// An entry whose `enableIf` is the boolean scalar `false`: it
+    /// An entry whose `enableIf` is known to be `false`: it
     /// requests nothing, declines a `BY_DEFAULT` Environment, is an error
     /// for an `ALWAYS` one, and has no effect on one from a document that
     /// does not list `ENV_PARAMS`.
     Disabled,
-    /// An entry whose `enableIf` is an expression, even a constant one,
-    /// decided when the Job is created.
+    /// An entry whose `enableIf` is not known before the Job is created
+    /// (§7.6 rule 5), decided then.
     Undetermined,
 }
 
 impl KnownEntry {
-    /// What `dep`, a Step's entry for an Environment, is known to be;
-    /// [`Absent`](Self::Absent) for `None`.
-    pub(crate) fn of(dep: Option<&super::StepDependency>) -> Self {
-        match dep.map(super::StepDependency::literal_enabled) {
-            None => Self::Absent,
-            Some(Some(true)) => Self::Enabled,
-            Some(Some(false)) => Self::Disabled,
-            Some(None) => Self::Undetermined,
+    /// The state of an entry whose `enableIf` is known to be `known`
+    /// (§7.6 rule 5): `Some(true)` enabled, `Some(false)` disabled, `None`
+    /// undetermined.
+    pub(crate) fn from_known(known: Option<bool>) -> Self {
+        match known {
+            Some(true) => Self::Enabled,
+            Some(false) => Self::Disabled,
+            None => Self::Undetermined,
         }
-    }
-
-    /// What `step`'s first well-formed `environment:` entry naming `name`
-    /// is known to be (a second one is a constraint 3 error).
-    pub(crate) fn in_step(step: &super::StepTemplate, name: &str) -> Self {
-        Self::of(
-            step.dependencies
-                .iter()
-                .flatten()
-                .find(|d| d.environment() == Some(name)),
-        )
     }
 }
 
@@ -288,8 +286,9 @@ pub enum EnvironmentActivation {
     /// (§4 item 4, §3.2.2 item 6), and so is a Step's disabled
     /// `environment:` entry for it (§3.2 item 3.2). Each is reported naming
     /// the Step and the Environment: at template validation when it is
-    /// known then (a literal `false`, on the Environment, or on an entry
-    /// naming a Job Environment), otherwise when the Job is created. An
+    /// known then (an `enableIf` known to be `false`, §7.6 rule 5, such as
+    /// the scalar or `"false"`, on the Environment, or on an entry naming
+    /// a Job Environment), otherwise when the Job is created. An
     /// Environment from a document that does not list `ENV_PARAMS` behaves
     /// as `ALWAYS`, but a disabled entry for it has no effect and is not an
     /// error (see [`Environment::activation`]).

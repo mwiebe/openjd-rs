@@ -8,13 +8,15 @@
 //! `BY_DEFAULT`, the default, is entered by every Step's Sessions except a
 //! Step for which the Environment's own `enableIf` is `false`. `ALWAYS`
 //! cannot be disabled: its `enableIf` being `false` for a Step is an
-//! error, reported at template validation for a literal `false` and at
-//! job creation for an expression, naming the Step and the Environment.
+//! error, reported at template validation for an `enableIf` known there to
+//! be `false` (the scalar or an expression such as `"false"`, §7.6 rule 5)
+//! and at job creation for any other, naming the Step and the Environment.
 //! Because an `ALWAYS` Environment is entered or the Job is rejected, the
 //! checks made before job creation that depend on whether a Step enters
-//! it (constraint 7, the `WRAP_ACTIONS` single-layer rule, the unreachable
-//! attachment, combined host requirements) treat it as entered whatever
-//! its `enableIf`.
+//! it (the `WRAP_ACTIONS` single-layer rule, combined host requirements)
+//! treat it as entered whatever its `enableIf`. Constraint 7 and the
+//! unreachable attachment's error do not depend on any Environment's
+//! `enableIf` (§3.2 constraint 7).
 
 use openjd_model::job::{Document, EnvironmentRef, Job};
 use openjd_model::template::EnvironmentTemplate;
@@ -113,12 +115,18 @@ fn an_always_environment_with_a_literal_false_enable_if_is_rejected() {
 
 #[test]
 fn a_literal_true_or_an_expression_enable_if_on_always_is_valid() {
-    // JT-172: an expression is decided when the Job is created, and a
-    // `true` result is not an error.
+    // JT-172: an expression that is not known at template validation is
+    // decided when the Job is created, and a `true` result is not an
+    // error.
     job_ok(&one_env("ALWAYS", "true"));
     job_ok(&one_env("ALWAYS", "\"Job.Name == 'J'\""));
-    // A constant expression is still an expression, not a scalar.
-    job_ok(&one_env("ALWAYS", "\"false\""));
+    // A constant expression is known at template validation (§7.6 rule
+    // 5): "true" is valid, and "false" is rejected as the scalar is.
+    job_ok(&one_env("ALWAYS", "\"true\""));
+    job_err(
+        &one_env("ALWAYS", "\"false\""),
+        &[&literal_false("jobEnvironments[0]", "Lic")],
+    );
     env_ok(
         "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
          environment: {name: Lic, activation: ALWAYS, enableIf: \"Job.Name != ''\", \
@@ -160,17 +168,26 @@ fn constraint_7_treats_an_always_environment_as_entered_at_template_validation()
         &required_unsupplied("ALWAYS"),
         &[
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-           default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+           default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
            activation BY_DEFAULT that the Step does not decline, and each one \
-           with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of \
+           with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of \
            Environment 'Lic'.",
         ],
     );
-    // BY_DEFAULT: the enableIf may disable Lic for the Step, so the check
-    // waits for job creation (§7.6 rule 5), where it is false and Lic is
-    // not entered.
-    let created = create_ok(&required_unsupplied("BY_DEFAULT"), &[]);
-    assert_eq!(entered(&created.job, 0), Vec::<String>::new());
+    // BY_DEFAULT: the enableIf may disable Lic for the Step, but Lic
+    // applies to it whatever the enableIf, so the missing parameter is as
+    // certain (§3.2 constraint 7).
+    job_err(
+        &required_unsupplied("BY_DEFAULT"),
+        &[
+            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
+           default of each Environment that applies to it (every jobEnvironments entry with \
+           activation ALWAYS, each one with activation BY_DEFAULT that the Step does not \
+           decline, and each one with activation ON_REQUEST that the Step requests; Template \
+           Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: \
+           'Product' of Environment 'Lic'.",
+        ],
+    );
 }
 
 /// Two wrapping Job Environments of `activation`, each with an
@@ -406,32 +423,28 @@ fn an_unreachable_always_attachment_with_required_parameters_is_always_rejected(
     // check_environment_templates reports it before any value is known.
     let err = check(SHADOWING_JOB, &[&unreachable("ALWAYS")]).unwrap_err();
     assert_errors(&err.to_string(), "Submission", &[unreachable_error]);
-    // BY_DEFAULT (JB-123): disabled for every Step, it needs no values.
-    create_ok(SHADOWING_JOB, &[&unreachable("BY_DEFAULT")]);
-    check(SHADOWING_JOB, &[&unreachable("BY_DEFAULT")]).unwrap();
-    // BY_DEFAULT whose enableIf is true (JB-124): entered, so rejected,
-    // and the message names BY_DEFAULT.
-    let enabled = unreachable("BY_DEFAULT").replace("default: 'no'", "default: 'yes'");
-    create_err(
-        SHADOWING_JOB,
-        &[&enabled],
-        "Submission",
-        &[
-            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\t\
+    // BY_DEFAULT, with its enableIf false (JB-123) or true (JB-124): it
+    // applies to every Step whatever the enableIf (§3.2 constraint 7), so
+    // it is rejected either way, and the message says so.
+    let by_default = "EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\t\
            Environment 'Lic' has the same name as a jobEnvironments entry of the Job Template, so \
            no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
            parameters without a default that no Step can supply: Product. Its activation is \
-           BY_DEFAULT and its enableIf does not disable it, so Sessions enter it, and the \
-           submission is rejected (§3.2.1).",
-        ],
-    );
+           BY_DEFAULT, so it applies to every Step whatever its enableIf and exclusiveGroup (§3.2 \
+           constraint 7), and the submission is rejected (§3.2.1).";
+    let enabled = unreachable("BY_DEFAULT").replace("default: 'no'", "default: 'yes'");
+    for att in [unreachable("BY_DEFAULT"), enabled] {
+        create_err(SHADOWING_JOB, &[&att], "Submission", &[by_default]);
+        let err = check(SHADOWING_JOB, &[&att]).unwrap_err();
+        assert_errors(&err.to_string(), "Submission", &[by_default]);
+    }
 }
 
 #[test]
-fn check_environment_templates_treats_an_always_attachment_as_entered() {
+fn check_environment_templates_holds_an_attachment_to_constraint_7_whatever_its_enable_if() {
     // Constraint 7 for an attachment whose enableIf is an expression over
-    // its own Job Parameter: certain for ALWAYS, undetermined for
-    // BY_DEFAULT.
+    // its own Job Parameter: certain for ALWAYS and for BY_DEFAULT, which
+    // apply to the Step whatever the enableIf (§3.2 constraint 7).
     let att = |activation: &str| unreachable(activation).replace("name: Lic\n", "name: Conda\n");
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               steps:\n- name: A\n  script: {actions: {onRun: {command: x}}}\n";
@@ -441,13 +454,25 @@ fn check_environment_templates_treats_an_always_attachment_as_entered() {
         "Submission",
         &[
             "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-           parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+           parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
            activation BY_DEFAULT that the Step does not decline, and each one \
-           with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Product' of \
+           with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Product' of \
            Environment 'Conda' (EnvironmentTemplate[0]).",
         ],
     );
-    check(jt, &[&att("BY_DEFAULT")]).unwrap();
+    let err = check(jt, &[&att("BY_DEFAULT")]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
+           parameter without a default of each Environment that applies to it (every attached \
+           Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step \
+           does not decline, and each one with activation ON_REQUEST that the Step requests; \
+           Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: \
+           'Product' of Environment 'Conda' (EnvironmentTemplate[0]).",
+        ],
+    );
 }
 
 // ── Checks before job creation that treat ALWAYS as entered ─────────
@@ -467,14 +492,25 @@ fn constraint_7_holds_an_always_environment_with_a_literal_false_enable_if() {
         &[
             &literal_false("jobEnvironments[0]", "Lic"),
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-             default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+             default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment \
+             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'P' of Environment \
              'Lic'.",
         ],
     );
-    // BY_DEFAULT: disabled for every Step, so nothing is required.
-    job_ok(&src.replace("activation: ALWAYS", "activation: BY_DEFAULT"));
+    // BY_DEFAULT: disabled for every Step, but it applies to Step A, which
+    // must supply P whatever the enableIf (§3.2 constraint 7).
+    job_err(
+        &src.replace("activation: ALWAYS", "activation: BY_DEFAULT"),
+        &[
+            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
+           default of each Environment that applies to it (every jobEnvironments entry with \
+           activation ALWAYS, each one with activation BY_DEFAULT that the Step does not \
+           decline, and each one with activation ON_REQUEST that the Step requests; Template \
+           Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: \
+           'P' of Environment 'Lic'.",
+        ],
+    );
 }
 
 #[test]
@@ -629,28 +665,25 @@ fn check_environment_templates_combines_an_always_environments_literal_host_requ
 }
 
 #[test]
-fn an_unresolved_enable_if_of_an_always_environment_gets_no_unresolved_note() {
+fn a_missing_parameter_an_enable_if_reads_is_reported_alike_for_always_and_by_default() {
     // Lic's enableIf reads Product, which has no default and which no Step
-    // supplies, so it is unresolved (§3.2.2 item 5). For ALWAYS whether it
-    // disables Lic does not arise: template validation,
-    // check_environment_templates, and job creation report the missing
-    // parameter alike, without the unresolved note. BY_DEFAULT gets the
-    // note at every stage.
-    let note = " (its own enableIf depends on a value that is missing or does not convert, so it \
-                does not disable the Environment; Template Schemas §3.2.2)";
-    let missing = |prefix: &str, reason: &str, env: &str, noted: bool| {
+    // supplies. The missing value is a constraint 7 error whatever the
+    // enableIf (§3.2 constraint 7), and the enableIf is not evaluated with
+    // it (§3.2.2 item 2): template validation, check_environment_templates,
+    // and job creation report it alike, for ALWAYS and for BY_DEFAULT.
+    let missing = |prefix: &str, reason: &str, env: &str| {
         format!(
             "{prefix}steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
-             without a default of each Environment its Sessions enter (every {reason} with \
+             without a default of each Environment that applies to it (every {reason} with \
              activation ALWAYS, each one with activation BY_DEFAULT that the Step does not \
              decline, and each one with activation ON_REQUEST that the Step requests; Template \
-             Schemas {}); missing: 'Product' of Environment {env}{}.",
+             Schemas {}), whatever that Environment's own enableIf is; missing: 'Product' of \
+             Environment {env}.",
             if reason == "jobEnvironments entry" {
                 "§3.2 constraint 7"
             } else {
                 "§3.2.1"
             },
-            if noted { note } else { "" }
         )
     };
     // A Job Environment, at template validation (which then stops job
@@ -664,10 +697,10 @@ fn an_unresolved_enable_if_of_an_always_environment_gets_no_unresolved_note() {
              steps:\n- name: A\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
         )
     };
-    for (activation, noted) in [("ALWAYS", false), ("BY_DEFAULT", true)] {
+    for activation in ["ALWAYS", "BY_DEFAULT"] {
         job_err(
             &job(activation),
-            &[&missing("", "jobEnvironments entry", "'Lic'", noted)],
+            &[&missing("", "jobEnvironments entry", "'Lic'")],
         );
     }
     // An attachment, in check_environment_templates and at job creation.
@@ -681,12 +714,11 @@ fn an_unresolved_enable_if_of_an_always_environment_gets_no_unresolved_note() {
     };
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               steps:\n- name: A\n  script: {actions: {onRun: {command: x}}}\n";
-    for (activation, noted) in [("ALWAYS", false), ("BY_DEFAULT", true)] {
+    for activation in ["ALWAYS", "BY_DEFAULT"] {
         let expected = missing(
             "JobTemplate -> ",
             "attached Environment",
             "'Lic' (EnvironmentTemplate[0])",
-            noted,
         );
         let err = check(jt, &[&att(activation)]).unwrap_err();
         assert_errors(&err.to_string(), "Submission", &[&expected]);
@@ -719,7 +751,7 @@ fn an_always_attachment_named_like_a_step_environment_says_always() {
                  Environment 'X' (EnvironmentTemplate[0]): S. It has the same name as a \
                  stepEnvironments entry of this Step, so no 'environment:' dependency of this \
                  Step can reach it (Template Schemas §3.2.1 item 5), and its activation is \
-                 {activation}, so this Step's Sessions enter it."
+                 {activation}, so it applies to this Step (§3.2 constraint 7)."
             )],
         );
     }

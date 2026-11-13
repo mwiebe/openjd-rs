@@ -591,8 +591,8 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     submission(jt, &[SEATS_ENV], &[]).apply_err(&[
-        "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Server' of Environment 'License' (EnvironmentTemplate[0]).",
-        "JobTemplate -> steps[2]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Seats', 'Server' of Environment 'License' (EnvironmentTemplate[0]).",
+        "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Server' of Environment 'License' (EnvironmentTemplate[0]).",
+        "JobTemplate -> steps[2]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Seats', 'Server' of Environment 'License' (EnvironmentTemplate[0]).",
     ]);
 }
 
@@ -1027,13 +1027,13 @@ fn the_missing_parameters_list_spans_attachments_and_stops_at_50_names() {
     let (a, an) = many_params_env("A", 'a', 30, 3);
     let (b, bn) = many_params_env("B", 'b', 30, 3);
     submission(NO_ENTRIES, &[&a, &b], &[]).apply_err(&[&format!(
-        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: {} of Environment 'A' (EnvironmentTemplate[0]); {} of Environment 'B' (EnvironmentTemplate[1]); and 10 more.",
+        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: {} of Environment 'A' (EnvironmentTemplate[0]); {} of Environment 'B' (EnvironmentTemplate[1]); and 10 more.",
         quoted(&an),
         quoted(&bn[..20])
     )]);
     let (b, bn) = many_params_env("B", 'b', 21, 3);
     submission(NO_ENTRIES, &[&a, &b], &[]).apply_err(&[&format!(
-        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: {} of Environment 'A' (EnvironmentTemplate[0]); {} of Environment 'B' (EnvironmentTemplate[1]); and 1 more.",
+        "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: {} of Environment 'A' (EnvironmentTemplate[0]); {} of Environment 'B' (EnvironmentTemplate[1]); and 1 more.",
         quoted(&an),
         quoted(&bn[..20])
     )]);
@@ -1063,7 +1063,7 @@ steps:
             "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Zbad2:\n\tEnvironment {label} declares no parameter 'Zbad2'."
         ),
         &format!(
-            "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: '{}' of Environment {label}; and 49 more.",
+            "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: '{}' of Environment {label}; and 49 more.",
             names[0]
         ),
     ]);
@@ -1238,8 +1238,8 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     submission(jt, &[env], &[]).apply_err(&[
-        "JobTemplate -> steps[0]:\n\tcannot supply the parameters without a default of Environment 'X' (EnvironmentTemplate[0]): S. It has the same name as a stepEnvironments entry of this Step, so no 'environment:' dependency of this Step can reach it (Template Schemas §3.2.1 item 5), and its activation is BY_DEFAULT, so this Step's Sessions enter it.",
-        "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'S' of Environment 'X' (EnvironmentTemplate[0]).",
+        "JobTemplate -> steps[0]:\n\tcannot supply the parameters without a default of Environment 'X' (EnvironmentTemplate[0]): S. It has the same name as a stepEnvironments entry of this Step, so no 'environment:' dependency of this Step can reach it (Template Schemas §3.2.1 item 5), and its activation is BY_DEFAULT, so it applies to this Step (§3.2 constraint 7).",
+        "JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'S' of Environment 'X' (EnvironmentTemplate[0]).",
     ]);
 }
 

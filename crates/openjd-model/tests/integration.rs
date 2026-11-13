@@ -49,6 +49,8 @@ mod test_env_params_external;
 mod test_env_params_host_requirements;
 #[path = "integration/test_env_params_job_creation.rs"]
 mod test_env_params_job_creation;
+#[path = "integration/test_env_params_known_enable_if.rs"]
+mod test_env_params_known_enable_if;
 #[path = "integration/test_env_params_schema.rs"]
 mod test_env_params_schema;
 #[path = "integration/test_env_params_scope.rs"]

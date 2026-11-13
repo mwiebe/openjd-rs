@@ -458,29 +458,50 @@ pub(crate) fn accessed_symbols(
     ev.parse(source).ok().map(|p| p.accessed_symbols().clone())
 }
 
-/// [`resolve`] with some symbols unknown (Expression Language
-/// "Progressive Expression Evaluation"): `symtab` may bind a symbol to an
-/// `unresolved[T]` value, and a result that depends on one is
-/// `Ok(None)`. Template validation has already checked that the
-/// expression's static type fits `target`, so an unresolved result is not
-/// checked further. A known result is checked as [`resolve`] checks it.
-pub(crate) fn resolve_progressive(
+/// The value of an expression field before the stage at which it is
+/// evaluated, when it is *known* there (Template Schemas §7.6 rule 5):
+/// `symtab` binds each value not yet known to `unresolved[T]` of its type.
+/// A scalar that fits `target` is known. An expression is known when it
+/// parses, evaluates, and gives a value that is not unresolved and fits
+/// `target`, by the Expression Language's rules for unknown operands
+/// (2026-02 §2.1.6) and for conditionals with unknown conditions, so
+/// `"true"` and `"Param.F and false"` are known and `"Param.F"` is not.
+/// `None` otherwise, a parse or evaluation error included: template
+/// validation reports those elsewhere, and a field it cannot evaluate is
+/// not known.
+pub(crate) fn known_value(
     field: &ExprField,
     target: &ExprType,
     symtab: &SymbolTable,
     ev: &ExprFieldEval<'_>,
-) -> Result<Option<ExprValue>, String> {
+) -> Option<ExprValue> {
     let ExprField::Expression(source) = field else {
-        return resolve(field, target, symtab, ev).map(Some);
+        return scalar_value(field, target)?.ok();
     };
-    let parsed = ev.parse(source)?;
-    let value = ev
-        .evaluate(&parsed, symtab)
-        .map_err(|e| format!("could not be evaluated: {e}"))?;
+    let parsed = ev.parse(source).ok()?;
+    let value = ev.evaluate(&parsed, symtab).ok()?;
     if value.is_unresolved() {
-        return Ok(None);
+        return None;
     }
-    fit_result(value, target).map(Some)
+    fit_result(value, target).ok()
+}
+
+/// The value of an optional `bool` expression field (an `enableIf`) when
+/// it is known before it is evaluated ([`known_value`]): `Some(true)` when
+/// the field is absent, which is `true`.
+pub(crate) fn known_bool(
+    field: Option<&ExprField>,
+    symtab: &SymbolTable,
+    ev: &ExprFieldEval<'_>,
+) -> Option<bool> {
+    let Some(field) = field else {
+        return Some(true);
+    };
+    match known_value(field, &ExprType::BOOL, symtab, ev)? {
+        ExprValue::Bool(b) => Some(b),
+        // `known_value` returns only values that fit `bool`.
+        _ => None,
+    }
 }
 
 #[cfg(test)]

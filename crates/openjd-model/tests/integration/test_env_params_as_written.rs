@@ -7,7 +7,7 @@
 //! attached `default`, an Environment's own `enableIf` (a Job
 //! Environment's and an attachment's, and the decision cache keyed by the
 //! values), constraints at template validation and in
-//! `check_environment_templates`, `enable_if_certainly_unresolved`,
+//! `check_environment_templates`, `enable_if_reads_unconvertible_literal`,
 //! `hostRequirements` reading `Env.RawParam`, and §3.2.2 equality
 //! (Template Schemas §4.5 item 3 at spec af53020; Expression Language
 //! §1.2.1). A conversion between path formats, or a re-added form check,
@@ -117,7 +117,9 @@ fn an_environments_enable_if_reads_a_backslash_raw_param_as_written() {
 
 /// a Job Environment's own
 /// enableIf reads an empty, URI and relative PATH / LIST[PATH] value as given:
-/// it is `false`, so E is disabled and its missing Q is no error.
+/// it is `false`, so E is disabled. The Step still supplies Q, since E
+/// applies to it and a disabled Environment is held to constraint 7 too
+/// (Template Schemas §3.2 constraint 7).
 #[test]
 fn a_job_environments_enable_if_reads_path_values_of_any_form() {
     for value in ["''", "'s3://b/k'", "'rel/x'"] {
@@ -127,7 +129,7 @@ fn a_job_environments_enable_if_reads_path_values_of_any_form() {
              [{{name: P, type: PATH}}, {{name: L, type: \"LIST[PATH]\"}}, {{name: Q, type: STRING}}]\n  \
              enableIf: \"Env.RawParam.P != {value} or Env.RawParam.L != [{value}]\"\n  \
              variables: {{V: \"{{{{Env.Param.Q}}}}\"}}\n\
-             steps:\n- name: S\n  dependencies: [{{environment: E, parameters: {{P: {value}, L: [{value}]}}}}]\n  \
+             steps:\n- name: S\n  dependencies: [{{environment: E, parameters: {{P: {value}, L: [{value}], Q: q}}}}]\n  \
              script: {{actions: {{onRun: {{command: x}}}}}}\n"
         ));
         assert_eq!(entered(&job, 0), Vec::<String>::new(), "{value}");
@@ -188,11 +190,15 @@ environment:
     }
 }
 
-/// enable_if_certainly_unresolved reads a backslash
-/// literal as written, so the enableIf stays unresolved and the missing
-/// Q is reported by check_environment_templates.
+/// An attachment's enableIf reads a backslash literal that a Step supplies
+/// for a PATH or LIST[PATH] parameter as written (§3.2.2 item 2, §4.5 item
+/// 3). The enableIf compares it with the expression string `'C:\\x'`, whose
+/// value is `C:\x`: the literal `C:\x` is equal, so E is disabled, and the
+/// literal `C:\\x` is not, so E is entered. Without Q,
+/// `check_environment_templates` reports it whatever the enableIf (§3.2
+/// constraint 7).
 #[test]
-fn check_reads_a_backslash_literal_in_an_enable_if_as_written() {
+fn an_attachments_enable_if_reads_a_backslash_literal_as_written() {
     for (defs, cond, supplied) in [
         (
             "{name: P, type: PATH}",
@@ -205,21 +211,45 @@ fn check_reads_a_backslash_literal_in_an_enable_if_as_written() {
             r"{P: ['C:\x']}",
         ),
     ] {
-        let env = env_ok(&format!(
+        let env_src = format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\nenvironment:\n  name: E\n  \
              envParameterDefinitions:\n  - {defs}\n  - {{name: Q, type: STRING}}\n  \
              enableIf: \"{cond} or Env.Param.Q == 'z'\"\n  variables: {{D: \"{{{{Env.Param.Q}}}}\"}}\n"
-        ));
+        );
+        let env = env_ok(&env_src);
         let jt = job_ok(&format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
              steps:\n- name: S\n  dependencies: [{{environment: E, parameters: {supplied}}}]\n  \
              script: {{actions: {{onRun: {{command: x}}}}}}\n"
         ));
-        let err = check(&jt, &[env]).expect_err("expected check to report the missing Q");
+        let err = check(&jt, std::slice::from_ref(&env))
+            .expect_err("expected check to report the missing Q");
         assert!(
             err.to_string().contains("missing: 'Q' of Environment 'E'"),
             "{err}"
         );
+        // Q supplied: the enableIf is evaluated with P as written, equal to
+        // the compared text, so E is disabled.
+        let supplied_q = supplied.replacen('{', "{Q: y, ", 1);
+        let jt = job_ok(&format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             steps:\n- name: S\n  dependencies: [{{environment: E, parameters: {supplied_q}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        ));
+        check(&jt, std::slice::from_ref(&env)).unwrap();
+        let job = apply(&jt, &[env]).unwrap();
+        assert_eq!(job.steps[0].environments, Some(vec![]));
+        // With a second backslash, P differs, the enableIf is true, and E
+        // is entered (`None`: every Environment of the Job).
+        let jt = job_ok(&format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             steps:\n- name: S\n  dependencies: [{{environment: E, parameters: {}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n",
+            supplied_q.replace(r"C:\x", r"C:\\x")
+        ));
+        let envs = [env_ok(&env_src)];
+        let job = apply(&jt, &envs).unwrap();
+        assert_eq!(job.steps[0].environments, None);
     }
 }
 

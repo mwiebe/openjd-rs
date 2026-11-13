@@ -9,14 +9,17 @@
 //! group and whose `enableIf` is not `false` for it, only the first in the
 //! Job's Environment order (attached ones first, then the Job Template's
 //! own) is entered. The others are superseded, which disables them for the
-//! Step (§3.2.2): they are not held to constraint 7 and the Step's values
-//! for them are not checked, though an entry's keys still are. Job creation
-//! takes them in that order, and once one is entered does not evaluate the
-//! later ones' `enableIf` for the Step (§7.4.1 step 6), before those checks
-//! (step 7). Before then, a grouped Environment is known to be entered only
-//! when every earlier one of its group is known not to be (§4, after item
-//! 10), so the Job Template alone, whose attachments are not known, never
-//! counts a grouped Job Environment as entered.
+//! Step (§3.2.2): the Step's values for them are not checked, though an
+//! entry's keys still are. A superseded Environment still applies to the
+//! Step, so it is still held to constraint 7 (§3.2 constraint 7), checked
+//! at §7.4.1 step 5, before the group is decided. Job creation takes the
+//! group's members in order, and once one is entered does not evaluate the
+//! later ones' `enableIf` for the Step (§7.4.1 step 6), before the value
+//! checks (step 7). Before then, a grouped Environment is known to be
+//! entered only when every earlier one of its group is known not to be (§4,
+//! after item 10), so the Job Template alone, whose attachments are not
+//! known, never counts a grouped Job Environment as entered for its value
+//! checks; template validation still holds it to constraint 7.
 
 use openjd_model::job::{AttributeRequirement, Document, EnvironmentRef, HostRequirements, Job};
 use openjd_model::template::EnvironmentTemplate;
@@ -178,7 +181,7 @@ fn missing_named(path: &str, job: bool, label: &str, name: &str) -> String {
     };
     format!(
         "{path}:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-         default of each Environment its Sessions enter ({why}); missing: '{name}' of \
+         default of each Environment that applies to it ({why}), whatever that Environment's own enableIf is; missing: '{name}' of \
          Environment {label}."
     )
 }
@@ -291,53 +294,61 @@ fn a_and_b(a_group: &str, b_group: &str, a_enable_if: &str) -> String {
 
 #[test]
 fn only_the_first_job_environment_of_a_group_is_entered() {
-    // JB-152: B is superseded, so it is disabled for the Step and is not
-    // held to constraint 7.
-    let jt = a_and_b("G", "G", "true");
+    // JB-152: B is superseded, so it is disabled for the Step and its
+    // values are not stored. It still applies to the Step, so the Step
+    // supplies its P (§3.2 constraint 7).
+    let jt = a_and_b("G", "G", "true").replace(
+        STEP,
+        "steps:\n- name: S\n  dependencies: [{environment: B, parameters: {P: p}}]\n  \
+         script: {actions: {onRun: {command: x}}}\n",
+    );
     let created = create_ok(&jt, &[]);
     assert_eq!(entered(&created, 0), ["A"]);
     assert_eq!(disabled(&created, 0), ["B"]);
     assert_eq!(created.job.steps[0].environment_parameters, None);
-    // JB-153: different groups are both entered, and B needs its value.
-    create_err(
-        &a_and_b("G", "H", "true"),
-        &[],
-        "JobTemplate",
-        &[&missing("steps[0]", true, "'B'")],
-    );
-}
-
-#[test]
-fn a_disabled_job_environment_does_not_supersede() {
-    // §4 item 7: only an Environment its enableIf does not disable takes
-    // the group, so B is the group's first for the Step, and is held to
-    // constraint 7.
-    for a_enable_if in ["false", "\"Job.Name == 'other'\""] {
-        create_err(
-            &a_and_b("G", "G", a_enable_if),
-            &[],
-            "JobTemplate",
+    // Without P, template validation reports it, superseded or not; JB-153:
+    // in different groups both are entered.
+    for b_group in ["G", "H"] {
+        job_err(
+            &a_and_b("G", b_group, "true"),
             &[&missing("steps[0]", true, "'B'")],
         );
     }
 }
 
 #[test]
-fn template_validation_never_counts_a_grouped_job_environment_as_entered() {
+fn a_disabled_job_environment_does_not_supersede() {
+    // §4 item 7: only an Environment its enableIf does not disable takes
+    // the group, so B is the group's first for the Step, and is entered.
+    // B applies to the Step whatever A does, so template validation holds
+    // it to constraint 7 (§3.2 constraint 7); the Step supplies its P.
+    for a_enable_if in ["false", "\"Job.Name == 'other'\""] {
+        job_err(
+            &a_and_b("G", "G", a_enable_if),
+            &[&missing("steps[0]", true, "'B'")],
+        );
+        let jt = a_and_b("G", "G", a_enable_if).replace(
+            STEP,
+            "steps:\n- name: S\n  dependencies: [{environment: B, parameters: {P: p}}]\n  \
+             script: {actions: {onRun: {command: x}}}\n",
+        );
+        let created = create_ok(&jt, &[]);
+        assert_eq!(entered(&created, 0), ["B"]);
+        assert_eq!(disabled(&created, 0), ["A"]);
+    }
+}
+
+#[test]
+fn template_validation_holds_a_grouped_job_environment_to_constraint_7_but_not_its_values() {
     // Without the Environment Templates, an attached one of its group may
-    // come first, so neither constraint 7 nor a value check is made for a
-    // grouped Job Environment until the Job is created (§4, after item 10).
-    // B is the group's first, so job creation reports it.
+    // come first, so no value check is made for a grouped Job Environment
+    // until the Job is created (§4, after item 10). Constraint 7 does not
+    // depend on the group (§3.2 constraint 7), so template validation
+    // reports B's missing P, grouped or not.
     let first = a_and_b("H", "G", "true");
-    job_ok(&first);
-    create_err(
-        &first,
-        &[],
-        "JobTemplate",
-        &[&missing("steps[0]", true, "'B'")],
-    );
+    job_err(&first, &[&missing("steps[0]", true, "'B'")]);
     // A literal value of the wrong type for a grouped Environment is
-    // checked at job creation too, where it is entered.
+    // checked at job creation, where it is entered.
     let typed = format!(
         "{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, envParameterDefinitions: \
          [{{name: N, type: INT}}], variables: {{V: a}}}}\n\
@@ -346,7 +357,7 @@ fn template_validation_never_counts_a_grouped_job_environment_as_entered() {
     );
     job_ok(&typed);
     create_err(&typed, &[], "JobTemplate", &[TYPED_ERROR]);
-    // Ungrouped, the same mistake is reported at template validation.
+    // Ungrouped, the missing value is reported at template validation too.
     job_err(
         &first.replace("exclusiveGroup: G, ", ""),
         &[&missing("steps[0]", true, "'B'")],
@@ -357,7 +368,8 @@ fn template_validation_never_counts_a_grouped_job_environment_as_entered() {
 fn values_of_a_superseded_job_environment_are_not_checked_but_its_keys_are() {
     // §3.2.2: a superseded Environment is disabled for the Step, so its
     // values are not checked (constraint 6), but constraint 5 still
-    // applies to the entry.
+    // applies to the entry, and constraint 7 to the Environment (§3.2
+    // constraint 7).
     let jt = |params: &str| {
         format!(
             "{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, variables: {{V: a}}}}\n\
@@ -376,6 +388,7 @@ fn values_of_a_superseded_job_environment_are_not_checked_but_its_keys_are() {
         &[
             "steps[0] -> dependencies[0] -> parameters -> Q:\n\tEnvironment 'B' declares no \
            parameter 'Q'. Declared: N.",
+            &missing_named("steps[0]", true, "'B'", "N"),
         ],
     );
 }
@@ -438,20 +451,27 @@ fn the_first_attached_environment_of_a_group_is_entered() {
 }
 
 #[test]
-fn a_superseded_attachment_is_not_held_to_constraint_7_or_its_values() {
+fn a_superseded_attachment_is_held_to_constraint_7_but_not_its_values() {
     // JB-151: Docker's Image has no default and the Step does not supply
-    // it, but Docker is superseded. A value Conda's definitions would
-    // reject is also not checked for a superseded one.
+    // it. Docker is superseded, but it still applies to the Step, so the
+    // Step must supply Image (§3.2.1, §3.2 constraint 7), whichever comes
+    // first.
     let by_default = |s: &str| s.replace("activation: ON_REQUEST, ", "");
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Conda, parameters: {{Packages: \
          p}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let (conda, docker) = (by_default(&env(CONDA)), by_default(&env(DOCKER)));
-    let created = create_ok(&jt, &[&conda, &docker]);
-    assert_eq!(entered(&created, 0), ["Conda@0"]);
-    check_ok(&jt, &[&conda, &docker]);
-    // With Docker first, it is entered and its Image is required.
+    check_err_same_as_create(
+        &jt,
+        &[&conda, &docker],
+        &[&missing_named(
+            "JobTemplate -> steps[0]",
+            false,
+            "'Docker' (EnvironmentTemplate[1])",
+            "Image",
+        )],
+    );
     check_err_same_as_create(
         &jt,
         &[&docker, &conda],
@@ -462,56 +482,98 @@ fn a_superseded_attachment_is_not_held_to_constraint_7_or_its_values() {
             "Image",
         )],
     );
-    // An entry's keys are still checked for a superseded attachment.
+    // A value Docker's definitions reject is not checked while Docker is
+    // superseded; with Docker first, it is entered and the value rejected.
+    let jt = conda_and_docker("p").replace("Image: img", "Image: bad");
+    let docker = env(&DOCKER.replace("type: STRING}", "type: STRING, allowedValues: [ok]}"));
+    assert_ne!(docker, env(DOCKER));
+    let created = create_ok(&jt, &[&env(CONDA), &docker]);
+    assert_eq!(entered(&created, 0), ["Conda@0"]);
+    assert_eq!(disabled(&created, 0), ["Docker@1"]);
+    create_err(
+        &jt,
+        &[&docker, &env(CONDA)],
+        "Submission",
+        &[
+            "JobTemplate -> steps[0] -> dependencies[1] -> parameters -> Image:\n\tParameter \
+           'Image': value 'bad' is not in allowed values",
+        ],
+    );
+    // An entry's keys are still checked for a superseded attachment, and
+    // the entry, which supplies no Image, still requests Docker, so its
+    // missing Image is reported too.
     let jt = conda_and_docker("p").replace("Image: img", "Tag: img");
     let undeclared = "JobTemplate -> steps[0] -> dependencies[1] -> parameters -> Tag:\n\t\
                       Environment 'Docker' (EnvironmentTemplate[1]) declares no parameter 'Tag'. \
                       Declared: Image.";
-    check_err_same_as_create(&jt, &[&env(CONDA), &env(DOCKER)], &[undeclared]);
+    check_err_same_as_create(
+        &jt,
+        &[&env(CONDA), &env(DOCKER)],
+        &[
+            undeclared,
+            &missing_named(
+                "JobTemplate -> steps[0]",
+                false,
+                "'Docker' (EnvironmentTemplate[1])",
+                "Image",
+            ),
+        ],
+    );
 }
 
 #[test]
 fn an_attached_environment_supersedes_a_job_environment_of_its_group() {
     // §1.1 item 7: the attached Environments come first in the Job's
     // Environment order, so they supersede the Job Template's own. B has a
-    // parameter without a default that no Step supplies.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
-         [{{name: P, type: STRING}}], variables: {{V: b}}}}\n{STEP}"
-    );
+    // parameter without a default, which the Step supplies.
+    let jt = |deps: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+             [{{name: P, type: STRING}}], variables: {{V: b}}}}\n\
+             steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    let supplied = jt("  dependencies: [{environment: B, parameters: {P: p}}]\n");
     let x = |enable_if: &str| {
         env(&format!(
             "name: X, exclusiveGroup: G, enableIf: {enable_if}"
         ))
     };
-    let created = create_ok(&jt, &[&x("true")]);
+    let created = create_ok(&supplied, &[&x("true")]);
     assert_eq!(entered(&created, 0), ["X@0"]);
     assert_eq!(disabled(&created, 0), ["B"]);
-    // X disabled, as a literal or by an expression: B is the group's first
-    // and needs its value, reported at the Job Template's path.
+    // X disabled, as a literal or by an expression: B is the group's first.
     for enable_if in ["false", "\"Job.Name == 'other'\""] {
+        let created = create_ok(&supplied, &[&x(enable_if)]);
+        assert_eq!(entered(&created, 0), ["B"]);
+        assert_eq!(disabled(&created, 0), ["X@0"]);
+    }
+    // An attachment in another group does not supersede B.
+    let created = create_ok(&supplied, &[&env("name: X, exclusiveGroup: H")]);
+    assert_eq!(entered(&created, 0), ["X@0", "B"]);
+    // Without P, B is held to constraint 7 whichever is entered (§3.2
+    // constraint 7): at template validation, and, with an entry whose
+    // enableIf leaves B to job creation, at job creation, at the Job
+    // Template's path, since with an attachment every path starts with its
+    // document.
+    job_err(&jt(""), &[&missing("steps[0]", true, "'B'")]);
+    let deferred = jt("  dependencies: [{environment: B, enableIf: \"Job.Name == 'J'\"}]\n");
+    for enable_if in ["true", "false"] {
         create_err(
-            &jt,
+            &deferred,
             &[&x(enable_if)],
             "Submission",
             &[&missing("JobTemplate -> steps[0]", true, "'B'")],
         );
     }
-    // An attachment in another group does not; with an attachment, every
-    // path starts with its document.
-    create_err(
-        &jt,
-        &[&env("name: X, exclusiveGroup: H")],
-        "Submission",
-        &[&missing("JobTemplate -> steps[0]", true, "'B'")],
-    );
 }
 
 #[test]
 fn a_job_environment_left_for_the_submission_stage_keeps_its_place() {
     // B shares a group with the attachment X, so the submission stage
     // decides it; its values stay in written order among the Job
-    // Environments', and C, superseded by B, is not entered.
+    // Environments', and C, superseded by B, is not entered, though the
+    // Step supplies its P, since C applies to it (§3.2 constraint 7).
     let jt = format!(
         "{HEAD}jobEnvironments:\n\
          - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING, \
@@ -519,7 +581,9 @@ fn a_job_environment_left_for_the_submission_stage_keeps_its_place() {
          - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
          variables: {{V: c}}}}\n\
          - {{name: D, envParameterDefinitions: [{{name: P, type: STRING, default: d}}], \
-         variables: {{V: d}}}}\n{STEP}"
+         variables: {{V: d}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: C, parameters: {{P: c}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let x = env("name: X, exclusiveGroup: G, enableIf: false");
     let created = create_ok(&jt, &[&x]);
@@ -562,30 +626,26 @@ fn a_superseded_environments_host_requirements_are_not_combined() {
 }
 
 #[test]
-fn a_superseded_unreachable_attachment_is_not_an_error() {
+fn a_superseded_unreachable_attachment_is_an_error() {
     // U is named like a Job Environment, so no entry reaches it; it has a
-    // parameter without a default. Superseded by X for every Step, it is
-    // not entered (§3.2.2), so neither check nor job creation reports it.
+    // parameter without a default. It applies to every Step whatever its
+    // group (§3.2 constraint 7), so check and job creation report it,
+    // whether X supersedes it or it comes first.
     let jt = format!("{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n{STEP}");
     let u = env("name: U, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
     let x = env("name: X, exclusiveGroup: G");
-    create_ok(&jt, &[&x, &u]);
-    check_ok(&jt, &[&x, &u]);
-    // First of its group, it is entered.
-    let unreachable = "EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\t\
-                       Environment 'U' has the same name as a jobEnvironments entry of the Job \
-                       Template, so no 'environment:' dependency can reach it (Template Schemas \
-                       §3.2.1 item 4), and it has parameters without a default that no Step can \
-                       supply: P. Its activation is BY_DEFAULT and an earlier Environment of its \
-                       exclusiveGroup does not supersede it, so Sessions enter it, and the \
-                       submission is rejected (§3.2.1).";
-    check_err_same_as_create(&jt, &[&u, &x], &[unreachable]);
+    check_err_same_as_create(&jt, &[&x, &u], &[&unreachable_u(1)]);
+    check_err_same_as_create(&jt, &[&u, &x], &[&unreachable_u(0)]);
 }
 
 // ── Before job creation: check_environment_templates ───────────────
 
 #[test]
-fn check_holds_only_the_known_first_of_a_group_to_constraint_7() {
+fn check_holds_every_member_of_a_group_to_constraint_7() {
+    // A and B share a group and both have P without a default. Both apply
+    // to S whatever A's enableIf and whichever is entered (§3.2.1, §3.2
+    // constraint 7), so check and job creation report both, whether A is
+    // known to be entered, known not to be, or undetermined.
     let jt = format!("{HEAD}{STEP}");
     let a = |enable_if: &str| {
         env(&format!(
@@ -594,39 +654,17 @@ fn check_holds_only_the_known_first_of_a_group_to_constraint_7() {
         ))
     };
     let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
-    // A is known to be entered, so B is known not to be.
-    check_err_same_as_create(
-        &jt,
-        &[&a("true"), &b],
-        &[&missing(
-            "JobTemplate -> steps[0]",
-            false,
-            "'A' (EnvironmentTemplate[0])",
-        )],
-    );
-    // A is known not to be entered, so B is the group's first.
-    check_err_same_as_create(
-        &jt,
-        &[&a("false"), &b],
-        &[&missing(
-            "JobTemplate -> steps[0]",
-            false,
-            "'B' (EnvironmentTemplate[1])",
-        )],
-    );
-    // A is undetermined, so neither is known to be entered.
-    let undetermined = a("\"Job.Name == 'J'\"");
-    check_ok(&jt, &[&undetermined, &b]);
-    create_err(
-        &jt,
-        &[&undetermined, &b],
-        "Submission",
-        &[&missing(
-            "JobTemplate -> steps[0]",
-            false,
-            "'A' (EnvironmentTemplate[0])",
-        )],
-    );
+    for enable_if in ["true", "false", "\"Job.Name == 'J'\""] {
+        check_err_same_as_create(
+            &jt,
+            &[&a(enable_if), &b],
+            &[&missing(
+                "JobTemplate -> steps[0]",
+                false,
+                "'A' (EnvironmentTemplate[0]); 'P' of Environment 'B' (EnvironmentTemplate[1])",
+            )],
+        );
+    }
 }
 
 const WRAP: &str = "script: {actions: {onWrapEnvEnter: {command: x}, onWrapTaskRun: {command: \
@@ -736,8 +774,9 @@ fn check_counts_a_grouped_job_environment_after_the_attachments() {
 fn check_follows_an_earlier_member_known_not_entered_or_undetermined() {
     // A, B and C wrap; A and B are in group G. When A is known not to be
     // entered, B is its group's first, so B and C make two layers. When an
-    // entry whose enableIf is an expression may request A, B is
-    // undetermined, and the rule is left to job creation.
+    // entry whose enableIf reads a Job Parameter, and so is not known
+    // before job creation (§7.6 rule 5), may request A, B is undetermined,
+    // and the rule is left to job creation.
     let jt = format!("{HEAD}{STEP}");
     let (b, c) = (
         wrapping_env("name: B, exclusiveGroup: G"),
@@ -767,8 +806,7 @@ fn check_follows_an_earlier_member_known_not_entered_or_undetermined() {
 fn a_job_environment_decided_by_the_submission_stage_reports_at_job_template_paths() {
     // B shares group G with the attachment X, which is disabled, so the
     // submission stage checks B's values and constraint 7, at the Job
-    // Template's paths, with the jobEnvironments wording and the
-    // unresolved note.
+    // Template's paths, with the jobEnvironments wording.
     let x = env("name: X, exclusiveGroup: G, enableIf: false");
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
@@ -777,68 +815,92 @@ fn a_job_environment_decided_by_the_submission_stage_reports_at_job_template_pat
          script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     check_err_same_as_create(&jt, &[&x], &[DEFERRED_VALUE_ERROR]);
+    // The Step's entry for B has an enableIf that reads Job.Name, so
+    // template validation and check leave B to job creation, which reports
+    // its missing P.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
          [{{name: P, type: STRING}}], enableIf: \"Env.Param.P != ''\", variables: {{V: b}}}}\n\
-         {STEP}"
+         steps:\n- name: S\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
-    check_err_same_as_create(
+    check_ok(&jt, &[&x]);
+    create_err(
         &jt,
         &[&x],
-        &[&format!(
-            "{}{UNRESOLVED_NOTE}.",
-            missing("JobTemplate -> steps[0]", true, "'B'").trim_end_matches('.')
-        )],
+        "Submission",
+        &[&missing("JobTemplate -> steps[0]", true, "'B'")],
     );
 }
 
 const DEFERRED_VALUE_ERROR: &str = "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> \
                                     N:\n\tParameter 'N': value 1 is less than minimum 5";
 
-const UNRESOLVED_NOTE: &str = " (its own enableIf depends on a value that is missing or does \
-                               not convert, so it does not disable the Environment; Template \
-                               Schemas §3.2.2)";
-
 #[test]
-fn an_unresolved_enable_if_does_not_disable_so_it_supersedes() {
+fn an_enable_if_that_reads_a_missing_value_does_not_disable_so_it_supersedes() {
     // §4 item 7: only an enableIf that is false lets the next one in. A's
-    // enableIf reads its Q, which has no value, so it is unresolved and A
-    // is entered: B is superseded and only A's Q is missing.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n\
-         - {{name: A, exclusiveGroup: G, envParameterDefinitions: [{{name: Q, type: STRING}}], \
-         enableIf: \"Env.Param.Q != ''\", variables: {{V: a}}}}\n\
-         - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
-         variables: {{V: b}}}}\n{STEP}"
-    );
-    job_ok(&jt);
+    // enableIf reads its Q, which has no value, so it is not evaluated
+    // (§7.4.1 step 6) and A is entered: B is superseded, so B's value below
+    // its minimum is not checked, and only A's Q is missing. S's entry for
+    // A has an enableIf that reads Job.Name, so template validation leaves
+    // A to job creation.
+    let jt = |a_entry: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n\
+             - {{name: A, exclusiveGroup: G, envParameterDefinitions: [{{name: Q, type: STRING}}], \
+             enableIf: \"Env.Param.Q != ''\", variables: {{V: a}}}}\n\
+             - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}, \
+             {{name: N, type: INT, minValue: 5, default: 5}}], variables: {{V: b}}}}\n\
+             steps:\n- name: S\n  dependencies: [{{environment: B, parameters: {{P: p, N: 1}}}}\
+             {a_entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    let deferred = jt(", {environment: A, enableIf: \"Job.Name == 'J'\"}");
+    job_ok(&deferred);
     create_err(
-        &jt,
+        &deferred,
         &[],
         "JobTemplate",
-        &[&format!(
-            "{}{UNRESOLVED_NOTE}.",
-            missing_named("steps[0]", true, "'A'", "Q").trim_end_matches('.')
-        )],
+        &[&missing_named("steps[0]", true, "'A'", "Q")],
     );
+    // Without that entry, template validation reports the missing Q,
+    // whatever A's enableIf is (§3.2 constraint 7).
+    job_err(&jt(""), &[&missing_named("steps[0]", true, "'A'", "Q")]);
 }
 
 #[test]
 fn an_ambiguous_attachment_takes_its_group() {
     // Two attachments define Amb (§3.2.1 item 3); the entry naming it is
-    // rejected. Amb would be entered, so B, later in its group, is not
-    // checked either, and only the ambiguity is reported.
+    // rejected. Amb would be entered, so check does not check the value of
+    // B, later in its group, and reports only the ambiguity; job creation
+    // stops S after the ambiguous entry, so it reports only the ambiguity
+    // too. With Amb in another group, B is its group's first, so check
+    // rejects B's value.
     let jt = format!(
-        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
-         {{actions: {{onRun: {{command: x}}}}}}\n"
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}, {{environment: B, \
+         parameters: {{N: 1}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
-    let amb = env("name: Amb, exclusiveGroup: G");
-    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let b = env(
+        "name: B, exclusiveGroup: G, envParameterDefinitions: [{name: N, type: INT, minValue: \
+         5, default: 5}]",
+    );
     let ambiguous = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
                      Environment 'Amb', which 2 attached Environment Templates define \
                      (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
                      exactly one (Template Schemas §3.2.1 item 3).";
+    let amb = env("name: Amb, exclusiveGroup: G");
     check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous]);
+    let amb = env("name: Amb, exclusiveGroup: H");
+    check_err_and_create_err(
+        &jt,
+        &[&amb, &amb, &b],
+        &[
+            ambiguous,
+            "JobTemplate -> steps[0] -> dependencies[1] -> parameters -> N:\n\tParameter 'N': \
+             value 1 is less than minimum 5",
+        ],
+        &[ambiguous],
+    );
 }
 
 #[test]
@@ -906,64 +968,75 @@ fn a_grouped_job_environments_wrap_hooks_still_need_the_extension() {
 }
 
 #[test]
-fn check_holds_a_grouped_job_environment_first_in_its_group_to_constraint_7() {
-    // With the attachments known, J is its group's first unless X, attached
+fn a_grouped_job_environment_is_held_to_constraint_7_whether_or_not_it_is_first() {
+    // J applies to S whatever its group (§3.2 constraint 7), so template
+    // validation reports its missing N. With S's entry for J left to job
+    // creation by an enableIf that reads Job.Name, job creation reports it
+    // too, whether J is its group's first (U is ungrouped) or X, attached
     // in its group, comes first.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, envParameterDefinitions: \
-         [{{name: N, type: INT}}], variables: {{V: j}}}}\n{STEP}"
-    );
+    let jt = |deps: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, envParameterDefinitions: \
+             [{{name: N, type: INT}}], variables: {{V: j}}}}\n\
+             steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    job_err(&jt(""), &[&missing_named("steps[0]", true, "'J'", "N")]);
+    let deferred = jt("  dependencies: [{environment: J, enableIf: \"Job.Name == 'J'\"}]\n");
     let u = env("name: U");
-    let err = check(&jt, &[&u]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
-    );
-    create_err(
-        &jt,
-        &[&u],
-        "Submission",
-        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
-    );
     let x = env("name: X, exclusiveGroup: G");
-    check_ok(&jt, &[&x]);
-    let created = create_ok(&jt, &[&x]);
+    for att in [&u, &x] {
+        check_ok(&deferred, &[att]);
+        create_err(
+            &deferred,
+            &[att],
+            "Submission",
+            &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
+        );
+    }
+    // With N supplied, J is entered unless X comes first.
+    let supplied = jt("  dependencies: [{environment: J, parameters: {N: 1}}]\n");
+    let created = create_ok(&supplied, &[&u]);
+    assert_eq!(entered(&created, 0), ["U@0", "J"]);
+    let created = create_ok(&supplied, &[&x]);
     assert_eq!(entered(&created, 0), ["X@0"]);
     assert_eq!(disabled(&created, 0), ["J"]);
 }
 
 #[test]
-fn check_reports_an_unreachable_attachment_first_of_its_group() {
-    // U is named like a Job Environment, so no entry reaches it. Off, of
-    // its group, is known not to be entered, so U is entered.
+fn check_reports_a_grouped_unreachable_attachment_whatever_comes_first() {
+    // U is named like a Job Environment, so no entry reaches it. It applies
+    // to every Step whatever its group (§3.2 constraint 7), so check reports
+    // it as job creation does, whether Off, of its group, is disabled or
+    // entered.
     let jt = format!("{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n{STEP}");
-    let off = env("name: Off, exclusiveGroup: G, enableIf: false");
     let u = env("name: U, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
-    let unreachable = "EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\t\
-                       Environment 'U' has the same name as a jobEnvironments entry of the Job \
-                       Template, so no 'environment:' dependency can reach it (Template Schemas \
-                       §3.2.1 item 4), and it has parameters without a default that no Step can \
-                       supply: P. Its activation is BY_DEFAULT and an earlier Environment of its \
-                       exclusiveGroup does not supersede it, so Sessions enter it, and the \
-                       submission is rejected (§3.2.1).";
-    check_err_same_as_create(&jt, &[&off, &u], &[unreachable]);
+    for off in [
+        "name: Off, exclusiveGroup: G, enableIf: false",
+        "name: Off, exclusiveGroup: G",
+    ] {
+        check_err_same_as_create(&jt, &[&env(off), &u], &[&unreachable_u(1)]);
+    }
 }
 
 #[test]
-fn a_failed_entry_enable_if_still_takes_its_group() {
-    // J1's entry's enableIf fails, which fails job creation. J1 may be
-    // entered, so J2, later in its group, adds no error of its own.
-    let jt = format!(
-        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
-         jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
-         - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT}}], \
-         variables: {{V: b}}}}\n\
-         steps:\n- name: S\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == \
-         1\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
-    );
+fn a_failed_entry_enable_if_stops_the_step_of_a_grouped_job_environment() {
+    // J1's entry's enableIf fails, which fails job creation and stops S
+    // (§7.4.1 step 2), so J2's value below its minimum is not checked. J2
+    // applies to S whatever its group, so S supplies its N; without it,
+    // template validation reports it (§3.2 constraint 7).
+    let jt = |j2_entry: &str| {
+        format!(
+            "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+             jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
+             - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT, \
+             minValue: 5}}], variables: {{V: b}}}}\n\
+             steps:\n- name: S\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == \
+             1\"}}{j2_entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
     create_err(
-        &jt,
+        &jt(", {environment: J2, parameters: {N: 1}}"),
         &[],
         "JobTemplate",
         &[
@@ -971,15 +1044,16 @@ fn a_failed_entry_enable_if_still_takes_its_group() {
            bounds for list of length 1",
         ],
     );
+    job_err(&jt(""), &[&missing_named("steps[0]", true, "'J2'", "N")]);
 }
 
 #[test]
-fn check_decides_a_grouped_job_environment_as_template_validation_would() {
-    // With no attachment of its group, J is its group's first. Whether the
-    // Step enters it is decided from its enableIf and the Step's entry as
-    // written: entered when its enableIf is certainly unresolved (with the
-    // unresolved note), and undetermined when it is another expression or
-    // the entry's enableIf is one.
+fn a_grouped_job_environment_is_held_to_constraint_7_unless_its_entry_is_unknown() {
+    // With no attachment of its group, J is its group's first. Whatever its
+    // enableIf, it applies to S (§3.2 constraint 7), so template validation
+    // reports its missing values when S's entries for it are known: none,
+    // or one without an enableIf, which supplies P. One whose enableIf is
+    // an expression leaves J to job creation, and check leaves it too.
     let jt = |enable_if: &str, deps: &str| {
         format!(
             "{HEAD}jobEnvironments:\n- {{name: C, variables: {{V: c}}}}\n- {{name: J, \
@@ -988,44 +1062,37 @@ fn check_decides_a_grouped_job_environment_as_template_validation_would() {
              steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
         )
     };
+    for enable_if in ["\"Env.Param.P != ''\"", "\"Job.Name == 'other'\""] {
+        job_err(
+            &jt(enable_if, ""),
+            &[&missing_named("steps[0]", true, "'J'", "P', 'Q")],
+        );
+    }
+    job_err(
+        &jt(
+            "\"Env.Param.P != ''\"",
+            "  dependencies: [{environment: J, parameters: {P: x}}]\n",
+        ),
+        &[&missing_named("steps[0]", true, "'J'", "Q")],
+    );
     // U is not entered (no entry requests it), so a wrong index into the
     // Step's states would read a state other than J's.
     let u = env("name: U, activation: ON_REQUEST");
-    let unresolved = jt("\"Env.Param.P != ''\"", "");
-    let err = check(&unresolved, &[&u]).expect_err("expected check to fail");
-    let names = "every jobEnvironments entry with activation ALWAYS, each one with activation \
-                 BY_DEFAULT that the Step does not decline, and each one with activation \
-                 ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7";
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[&format!(
-            "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-             parameter without a default of each Environment its Sessions enter ({names}); \
-             missing: 'P', 'Q' of Environment 'J'{UNRESOLVED_NOTE}."
-        )],
-    );
-    // The entry supplies P, so the enableIf is known to be true, which
-    // stays undetermined before job creation; job creation finds Q missing.
-    let known = jt(
+    let deferred = jt(
         "\"Env.Param.P != ''\"",
-        "  dependencies: [{environment: J, parameters: {P: x}}]\n",
+        "  dependencies: [{environment: J, enableIf: \"Job.Name == 'J'\"}]\n",
     );
-    check_ok(&known, &[&u]);
+    check_ok(&deferred, &[&u]);
     create_err(
-        &known,
+        &deferred,
         &[&u],
         "Submission",
-        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "Q")],
-    );
-    // Another expression, or an entry whose enableIf is an expression.
-    check_ok(&jt("\"Job.Name == 'other'\"", ""), &[&u]);
-    check_ok(
-        &jt(
-            "\"Env.Param.P != ''\"",
-            "  dependencies: [{environment: J, enableIf: \"Job.Name == 'J'\"}]\n",
-        ),
-        &[&u],
+        &[&missing_named(
+            "JobTemplate -> steps[0]",
+            true,
+            "'J'",
+            "P', 'Q",
+        )],
     );
 }
 
@@ -1050,16 +1117,15 @@ fn unreachable_u(doc: usize) -> String {
         "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
          'U' has the same name as a jobEnvironments entry of the Job Template, so no \
          'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
-         parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT \
-         and an earlier Environment of its exclusiveGroup does not supersede it, so Sessions \
-         enter it, and the submission is rejected (§3.2.1)."
+         parameters without a default that no Step can supply: P. {WHATEVER}, and the \
+         submission is rejected (§3.2.1)."
     )
 }
 
 #[test]
-fn an_unreachable_attachment_one_step_enters_is_an_error() {
-    // S1 requests A, which then supersedes U for S1; S0 does not, so S0's
-    // Sessions enter U.
+fn an_unreachable_attachment_superseded_for_one_step_is_an_error() {
+    // S1 requests A, which then supersedes U for S1; S0 does not. U applies
+    // to both whatever its group (§3.2 constraint 7), so it is an error.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\nsteps:\n- name: S0\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: \
@@ -1073,25 +1139,48 @@ fn an_unreachable_attachment_one_step_enters_is_an_error() {
 #[test]
 fn an_attachment_an_expression_entry_may_request_is_undetermined() {
     // Whether the entry requests A is decided at job creation, so B may be
-    // superseded and is not checked before then; here it is.
+    // superseded, and its values are not checked before then; here it is
+    // superseded, so its value below its minimum is not checked at all.
     let jt = format!(
         "{HEAD}parameterDefinitions: [{{name: UseA, type: STRING, default: 'yes'}}]\n\
          steps:\n- name: S\n  dependencies: [{{environment: A, enableIf: \"Param.UseA == \
-         'yes'\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+         'yes'\"}}, {{environment: B, parameters: {{N: 1}}}}]\n  script: {{actions: {{onRun: \
+         {{command: x}}}}}}\n"
     );
     let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
-    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let b = env(
+        "name: B, exclusiveGroup: G, envParameterDefinitions: [{name: N, type: INT, minValue: \
+         5, default: 5}]",
+    );
     check_ok(&jt, &[&a, &b]);
     let created = create_ok(&jt, &[&a, &b]);
     assert_eq!(entered(&created, 0), ["A@0"]);
+    assert_eq!(disabled(&created, 0), ["B@1"]);
+    // B applies to S whatever A does, so a parameter without a default is
+    // reported by check and job creation alike (§3.2.1, §3.2 constraint 7).
+    let b = env(
+        "name: B, exclusiveGroup: G, envParameterDefinitions: [{name: N, type: INT, minValue: \
+         5, default: 5}, {name: P, type: STRING}]",
+    );
+    check_err_same_as_create(
+        &jt,
+        &[&a, &b],
+        &[&missing(
+            "JobTemplate -> steps[0]",
+            false,
+            "'B' (EnvironmentTemplate[1])",
+        )],
+    );
 }
 
 #[test]
-fn an_ambiguous_attachment_is_entered_by_its_activation_alone() {
-    // No entry resolves to an ambiguous Amb. An ON_REQUEST one is not
-    // entered, so B is its group's first; a BY_DEFAULT one whose enableIf
-    // is false is not entered either; a BY_DEFAULT one is, so B is
-    // superseded.
+fn an_ambiguous_attachment_does_not_lift_constraint_7_from_its_group() {
+    // No entry resolves to an ambiguous Amb. Whether Amb is entered (a
+    // BY_DEFAULT one), is not (an ON_REQUEST one, or one whose enableIf is
+    // false), B of its group still applies to S (§3.2 constraint 7), so
+    // check reports B's missing P. The ambiguous entry stops S after
+    // §7.4.1 step 4 at job creation, so job creation reports the ambiguity
+    // alone.
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
          {{actions: {{onRun: {{command: x}}}}}}\n"
@@ -1109,9 +1198,8 @@ fn an_ambiguous_attachment_is_entered_by_its_activation_alone() {
     for amb in [
         "name: Amb, activation: ON_REQUEST, exclusiveGroup: G",
         "name: Amb, exclusiveGroup: G, enableIf: false",
+        "name: Amb, exclusiveGroup: G",
     ] {
-        // The ambiguous entry stops the Step after §7.4.1 step 4 at job
-        // creation, so B's missing P is reported by check only.
         let amb = env(amb);
         check_err_and_create_err(
             &jt,
@@ -1120,15 +1208,13 @@ fn an_ambiguous_attachment_is_entered_by_its_activation_alone() {
             &[ambiguous],
         );
     }
-    let amb = env("name: Amb, exclusiveGroup: G");
-    check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous]);
 }
 
 #[test]
-fn only_the_first_ambiguous_copy_of_a_group_is_an_unreachable_error() {
-    // Every Step's entry for Amb is ambiguous, so no Step decides either
-    // copy. Ungrouped, both are entered and both need P; in one group, the
-    // second copy is superseded.
+fn every_ambiguous_copy_is_an_unreachable_error_whatever_its_group() {
+    // Every Step's entry for Amb is ambiguous. Both copies apply to S
+    // whatever their group (§3.2 constraint 7), so check reports both,
+    // ungrouped or in one group, and with an expression entry naming it.
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
          {{actions: {{onRun: {{command: x}}}}}}\n"
@@ -1137,49 +1223,32 @@ fn only_the_first_ambiguous_copy_of_a_group_is_an_unreachable_error() {
                      Environment 'Amb', which 2 attached Environment Templates define \
                      (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
                      exactly one (Template Schemas §3.2.1 item 3).";
-    let unreachable = |doc: usize, how: &str| {
-        format!(
-            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
-             Environment 'Amb' is defined by 2 attached Environment Templates \
-             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' \
-             dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters \
-             without a default that no Step can supply: P. {how}, and the submission is \
-             rejected (§3.2.1)."
-        )
-    };
     let every = "Its activation is BY_DEFAULT, so every Session enters it";
-    let grouped = "Its activation is BY_DEFAULT and an earlier Environment of its \
-                   exclusiveGroup does not supersede it, so Sessions enter it";
-    let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
-    // At job creation the ambiguous entry stops S, the only Step, after
-    // §7.4.1 step 4, so only the ambiguity is reported there.
-    check_err_and_create_err(
-        &jt,
-        &[&amb, &amb],
-        &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
-        &[ambiguous],
-    );
-    let amb =
+    let ungrouped = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
+    let grouped =
         env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
-    check_err_and_create_err(
-        &jt,
-        &[&amb, &amb],
-        &[ambiguous, &unreachable(0, grouped)],
-        &[ambiguous],
-    );
-    // With an expression entry naming it, no Step decides it either, and it
-    // is still an error, without a group.
     let expr = jt.replace(
         "[{environment: Amb}]",
         "[{environment: Amb, enableIf: \"Job.Name == 'J'\"}]",
     );
-    let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
-    check_err_and_create_err(
-        &expr,
-        &[&amb, &amb],
-        &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
-        &[ambiguous],
-    );
+    // At job creation the ambiguous entry stops S, the only Step, after
+    // §7.4.1 step 4, so only the ambiguity is reported there.
+    for (jt, amb, how) in [
+        (&jt, &ungrouped, every),
+        (&jt, &grouped, WHATEVER),
+        (&expr, &ungrouped, every),
+    ] {
+        check_err_and_create_err(
+            jt,
+            &[amb, amb],
+            &[
+                ambiguous,
+                &unreachable_amb(0, (0, 1), how),
+                &unreachable_amb(1, (0, 1), how),
+            ],
+            &[ambiguous],
+        );
+    }
 }
 
 /// A Job Template whose grouped Job Environment J declares a PATH `D`,
@@ -1228,29 +1297,25 @@ fn check_applies_the_value_checks_to_a_grouped_job_environment() {
     let err = check(&constrained, &[]).expect_err("expected check to fail");
     assert_errors(&err.to_string(), "JobTemplate", &[not_allowed]);
     create_err(&constrained, &[], "JobTemplate", &[not_allowed]);
-    // An enableIf whose evaluation exceeds the caller's limit is not
-    // certainly unresolved, so J is not known to be entered.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, envParameterDefinitions: \
-         [{{name: P, type: STRING}}], enableIf: \"Env.Param.P != ''\", variables: {{V: j}}}}\n\
-         {STEP}"
+    // A constant enableIf is known `true` before job creation, so the value
+    // is checked; one whose evaluation exceeds the caller's limit is not
+    // known, so J is not known to be entered and the value is left to job
+    // creation.
+    let constant = constrained.replace(
+        "exclusiveGroup: G, envParameterDefinitions",
+        "exclusiveGroup: G, enableIf: \"1 + 1 == 2\", envParameterDefinitions",
     );
+    assert_ne!(constant, constrained);
     let limited = |c: ValidationContext| {
         c.with_caller_limits(CallerLimits {
             max_eval_operations: Some(1),
             ..Default::default()
         })
     };
-    check_with(&jt, &[], limited).unwrap();
-    let err = check(&jt, &[]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[&format!(
-            "{}{UNRESOLVED_NOTE}.",
-            missing("steps[0]", true, "'J'").trim_end_matches('.')
-        )],
-    );
+    check_with(&constant, &[], limited).unwrap();
+    let err = check(&constant, &[]).expect_err("expected check to fail");
+    assert_errors(&err.to_string(), "JobTemplate", &[not_allowed]);
+    create_err(&constant, &[], "JobTemplate", &[not_allowed]);
 }
 
 // ── Audit round 3 ──────────────────────────────────────────────────
@@ -1279,14 +1344,18 @@ fn ambiguous_amb(step: usize, dep: usize, docs: (usize, usize)) -> String {
     )
 }
 
-const GROUPED_ENTERED: &str = "Its activation is BY_DEFAULT and an earlier Environment of its \
-                               exclusiveGroup does not supersede it, so Sessions enter it";
+/// How the unreachable error says a grouped `BY_DEFAULT` attachment
+/// applies to the Steps (§3.2 constraint 7).
+const WHATEVER: &str = "Its activation is BY_DEFAULT, so it applies to every Step whatever its \
+                        enableIf and exclusiveGroup (§3.2 constraint 7)";
 
 #[test]
-fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
-    // S1 names Amb, so its Sessions enter the first copy, which is its
-    // group's first; S0 requests A, which supersedes both copies for S0.
-    // Either way, some Step enters it.
+fn an_ambiguous_copy_that_applies_to_a_step_not_stopped_is_an_unreachable_error() {
+    // S1 names Amb; S0 requests A, which supersedes both copies for S0.
+    // Both copies apply to every Step whatever their group (§3.2
+    // constraint 7), so check reports both. At job creation the ambiguous
+    // entry stops S1 after §7.4.1 step 4, but S0 is not stopped and both
+    // copies apply to it, so job creation reports both too.
     let amb =
         env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
     let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
@@ -1295,20 +1364,17 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
          {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: [{{environment: Amb}}]\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
-    // At job creation the ambiguous entry stops S1 after §7.4.1 step 4, and
-    // A supersedes both copies for S0, so no Step is known to enter them.
-    check_err_and_create_err(
+    check_err_same_as_create(
         &jt,
         &[&a, &amb, &amb],
         &[
             &ambiguous_amb(1, 0, (1, 2)),
-            &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
+            &unreachable_amb(1, (1, 2), WHATEVER),
+            &unreachable_amb(2, (1, 2), WHATEVER),
         ],
-        &[&ambiguous_amb(1, 0, (1, 2))],
     );
-    // S1 declines X, so it enters the first copy; S2 enters X, which then
-    // supersedes the copies for S2. Any Step entering it counts, not the
-    // last.
+    // S1 declines X and names Amb; S2 names Amb. Both Steps are stopped at
+    // job creation, so only check reports the copies.
     let x = env("name: X, exclusiveGroup: G");
     let jt = format!(
         "{HEAD}steps:\n- name: S1\n  dependencies: [{{environment: X, enableIf: false}}, \
@@ -1322,7 +1388,8 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
         &[
             &ambiguous_amb(0, 1, (1, 2)),
             &ambiguous_amb(1, 0, (1, 2)),
-            &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
+            &unreachable_amb(1, (1, 2), WHATEVER),
+            &unreachable_amb(2, (1, 2), WHATEVER),
         ],
         &[&ambiguous_amb(0, 1, (1, 2)), &ambiguous_amb(1, 0, (1, 2))],
     );
@@ -1330,9 +1397,12 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
 
 #[test]
 fn an_ambiguous_attachment_with_an_enable_if_expression() {
-    // Every Step names Amb, so no Step decides its enableIf. A certainly
-    // unresolved one does not disable it, so both copies are entered; any
-    // other expression may, so neither is known to be.
+    // Every Step names Amb, so no entry reaches either copy, and both apply
+    // to S whatever their enableIf (§3.2 constraint 7): check reports both
+    // copies' unreachable P, for an enableIf that reads P and for one that
+    // reads Job.Name. At job creation the ambiguous entry stops S, the only
+    // Step, after §7.4.1 step 4, so no Step that is not stopped applies
+    // them, and only the ambiguity is reported.
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
          {{actions: {{onRun: {{command: x}}}}}}\n"
@@ -1343,23 +1413,19 @@ fn an_ambiguous_attachment_with_an_enable_if_expression() {
              {enable_if}"
         ))
     };
-    let unresolved = amb("\"Env.Param.P != ''\"");
-    let how = "Its activation is BY_DEFAULT and its enableIf does not disable it, so Sessions \
-               enter it";
-    // At job creation the ambiguous entry stops S, the only Step, after
-    // §7.4.1 step 4, so no Step is known to enter either copy.
-    check_err_and_create_err(
-        &jt,
-        &[&unresolved, &unresolved],
-        &[
-            &ambiguous_amb(0, 0, (0, 1)),
-            &unreachable_amb(0, (0, 1), how),
-            &unreachable_amb(1, (0, 1), how),
-        ],
-        &[&ambiguous_amb(0, 0, (0, 1))],
-    );
-    let other = amb("\"Job.Name == 'J'\"");
-    check_err_same_as_create(&jt, &[&other, &other], &[&ambiguous_amb(0, 0, (0, 1))]);
+    for enable_if in ["\"Env.Param.P != ''\"", "\"Job.Name == 'J'\""] {
+        let amb = amb(enable_if);
+        check_err_and_create_err(
+            &jt,
+            &[&amb, &amb],
+            &[
+                &ambiguous_amb(0, 0, (0, 1)),
+                &unreachable_amb(0, (0, 1), WHATEVER),
+                &unreachable_amb(1, (0, 1), WHATEVER),
+            ],
+            &[&ambiguous_amb(0, 0, (0, 1))],
+        );
+    }
 }
 
 #[test]
@@ -1407,26 +1473,47 @@ fn check_applies_the_single_layer_rule_to_grouped_job_environments() {
 fn a_deferred_job_environment_is_decided_for_every_step() {
     // B shares group G with the attachment X, so the submission stage
     // decides it for each Step: superseded for both when X is entered, and
-    // its missing P reported for both when X is disabled.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
-         [{{name: P, type: INT}}], variables: {{V: b}}}}\nsteps:\n- name: S0\n  script: \
-         {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  script: {{actions: {{onRun: \
-         {{command: x}}}}}}\n"
-    );
-    let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G")]);
+    // entered by both when X is disabled.
+    let jt = |entry: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+             [{{name: P, type: INT}}], variables: {{V: b}}}}\nsteps:\n- name: S0\n  dependencies: \
+             [{entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  \
+             dependencies: [{entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    let supplied = jt("{environment: B, parameters: {P: 1}}");
+    let created = create_ok(&supplied, &[&env("name: X, exclusiveGroup: G")]);
     for step in 0..2 {
         assert_eq!(entered(&created, step), ["X@0"]);
         assert_eq!(disabled(&created, step), ["B"]);
     }
-    check_err_same_as_create(
-        &jt,
+    let created = create_ok(
+        &supplied,
         &[&env("name: X, exclusiveGroup: G, enableIf: false")],
-        &[
-            &missing("JobTemplate -> steps[0]", true, "'B'"),
-            &missing("JobTemplate -> steps[1]", true, "'B'"),
-        ],
     );
+    for step in 0..2 {
+        assert_eq!(entered(&created, step), ["B"]);
+        assert_eq!(disabled(&created, step), ["X@0"]);
+    }
+    // B applies to both Steps either way, so its missing P is reported for
+    // both (§3.2 constraint 7): at job creation, when the entries' enableIf
+    // leaves B to it, superseded or not.
+    let deferred = jt("{environment: B, enableIf: \"Job.Name == 'J'\"}");
+    for x in [
+        "name: X, exclusiveGroup: G",
+        "name: X, exclusiveGroup: G, enableIf: false",
+    ] {
+        create_err(
+            &deferred,
+            &[&env(x)],
+            "Submission",
+            &[
+                &missing("JobTemplate -> steps[0]", true, "'B'"),
+                &missing("JobTemplate -> steps[1]", true, "'B'"),
+            ],
+        );
+    }
 }
 
 #[test]
@@ -1455,9 +1542,10 @@ fn an_ambiguous_entry_in_a_later_step_gets_no_values_there() {
 
 #[test]
 fn an_expression_entry_in_one_step_leaves_another_step_known() {
-    // S0's entry for Conda has an enableIf expression, so Conda is
-    // undetermined for S0 only; S1 has no entry, so its Sessions enter
-    // Conda and its P is missing, before job creation as at it.
+    // S0's entry for Conda has an enableIf that reads a Job Parameter, so
+    // whether Conda applies to S0 is not known before job creation; S1 has
+    // no entry, so Conda applies to S1 and its P is missing, before job
+    // creation as at it.
     let jt = format!(
         "{HEAD}parameterDefinitions: [{{name: Mode, type: STRING, default: 'on'}}]\n\
          steps:\n- name: S0\n  dependencies: [{{environment: Conda, enableIf: \"Param.Mode == \
@@ -1482,14 +1570,17 @@ fn an_expression_entry_in_one_step_leaves_another_step_known() {
 #[test]
 fn a_later_member_does_not_clear_what_an_earlier_one_decided() {
     // A is entered (or undetermined); B, disabled, comes between it and C.
-    // C stays superseded (or undetermined), so check does not hold it to
-    // constraint 7, and job creation enters A.
+    // C stays superseded (or undetermined), so check does not check C's
+    // value below its minimum, and job creation enters A, leaving C
+    // superseded. C applies to S, so S supplies its P (§3.2 constraint 7).
     for a in ["", "enableIf: \"Job.Name == 'J'\", "] {
         let jt = format!(
             "{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, {a}variables: {{V: a}}}}\n\
              - {{name: B, exclusiveGroup: G, enableIf: false, variables: {{V: b}}}}\n\
              - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: \
-             STRING}}], variables: {{V: c}}}}\n{STEP}"
+             STRING}}, {{name: N, type: INT, minValue: 5, default: 5}}], variables: {{V: c}}}}\n\
+             steps:\n- name: S\n  dependencies: [{{environment: C, parameters: {{P: p, N: 1}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
         );
         check_ok(&jt, &[]);
         let created = create_ok(&jt, &[]);
@@ -1524,8 +1615,11 @@ fn a_deferred_job_environments_values_follow_earlier_ones() {
 
 #[test]
 fn check_decides_each_steps_job_environments_with_its_own_entries() {
-    // S1 requests the Job Environment B; S0 does not. Only S1's Sessions
-    // enter B, so only S1 has two wrap layers and only S1 misses B's P.
+    // S1 requests B; S0 does not. Only S1's Sessions enter B, so only S1
+    // has two wrap layers and only S1 misses B's P: as an attachment, by
+    // check and job creation, and as a grouped Job Environment, by template
+    // validation, which holds it to constraint 7 whatever its group (§3.2
+    // constraint 7).
     let two_steps = "steps:\n- name: S0\n  script: {actions: {onRun: {command: x}}}\n\
                      - name: S1\n  dependencies: [{environment: B}]\n  script: {actions: \
                      {onRun: {command: x}}}\n";
@@ -1539,12 +1633,21 @@ fn check_decides_each_steps_job_environments_with_its_own_entries() {
                   (EnvironmentTemplate[0]), 'B'. A Session may have at most one Environment \
                   defining wrap hooks (RFC 0008).";
     check_err_same_as_create(&jt, &[&wrapping_env("name: W")], &[layers]);
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n- {{name: B, activation: ON_REQUEST, exclusiveGroup: G, \
-         envParameterDefinitions: [{{name: P, type: STRING}}], variables: {{V: b}}}}\n\
-         {two_steps}"
+    let b = "name: B, activation: ON_REQUEST, exclusiveGroup: G, envParameterDefinitions: \
+             [{name: P, type: STRING}]";
+    check_err_same_as_create(
+        &format!("{HEAD}{two_steps}"),
+        &[&env(b)],
+        &[&missing(
+            "JobTemplate -> steps[1]",
+            false,
+            "'B' (EnvironmentTemplate[0])",
+        )],
     );
-    check_err_same_as_create(&jt, &[], &[&missing("steps[1]", true, "'B'")]);
+    job_err(
+        &format!("{HEAD}jobEnvironments:\n- {{{b}, variables: {{V: b}}}}\n{two_steps}"),
+        &[&missing("steps[1]", true, "'B'")],
+    );
 }
 
 // ── §7.4.1 step 6: a superseded Environment's enableIf is not evaluated ──
@@ -1635,29 +1738,30 @@ fn an_attachment_supersedes_a_job_environment_without_evaluating_its_enable_if()
 }
 
 #[test]
-fn a_job_environment_decided_by_the_submission_stage_notes_a_failed_enable_if() {
+fn a_job_environment_decided_by_the_submission_stage_reports_constraint_7_before_its_failed_enable_if(
+) {
     // X is disabled, so the submission stage evaluates B's enableIf, which
-    // fails. B is then checked as if it is not disabled, so its missing P
-    // is reported with the note, before the enableIf error.
+    // reads only S, whose default converts, and fails. B is then checked as
+    // if it is not disabled. Its missing P (§7.4.1 step 5) is reported,
+    // with no note, before the enableIf error (step 6). S's entry for B has
+    // an enableIf that reads Job.Name, so template validation leaves B to
+    // job creation.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
          [{{name: S, type: STRING, default: abc}}, {{name: P, type: STRING}}], enableIf: \
-         \"int(Env.Param.S) > 0\", variables: {{V: b}}}}\n{STEP}"
+         \"int(Env.Param.S) > 0\", variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let x = env("name: X, exclusiveGroup: G, enableIf: false");
-    let note = " (its own enableIf could not be evaluated for this Step, so the Environment is \
-                checked as if it is not disabled)";
-    create_err(
-        &jt,
-        &[&x],
-        "Submission",
-        &[
-            &format!(
-                "{}{note}.",
-                missing("JobTemplate -> steps[0]", true, "'B'").trim_end_matches('.')
-            ),
-            &failing("JobTemplate -> jobEnvironments[0]"),
-        ],
+    let err = create(&jt, &[&x]).expect_err("expected job creation to fail");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 2 validation errors for Submission\n{}\n{}",
+            missing("JobTemplate -> steps[0]", true, "'B'"),
+            failing("JobTemplate -> jobEnvironments[0]")
+        )
     );
 }
 
@@ -1744,54 +1848,76 @@ fn each_step_decides_which_enable_ifs_of_a_group_are_evaluated() {
 #[test]
 fn a_failed_enable_if_takes_the_group_in_the_create_job_body() {
     // A's enableIf fails, so A remains in the Step's set and B is
-    // superseded: B's missing P is not reported.
-    let jt = format!(
-        "{HEAD}jobEnvironments:\n\
-         - {{name: A, exclusiveGroup: G, {FAILING}, variables: {{V: a}}}}\n\
-         - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
-         variables: {{V: b}}}}\n{STEP}"
+    // superseded: B's value below its minimum is not checked. The Step
+    // supplies B's P, since B applies to it (§3.2 constraint 7); without it,
+    // template validation reports it.
+    let jt = |b_params: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n\
+             - {{name: A, exclusiveGroup: G, {FAILING}, variables: {{V: a}}}}\n\
+             - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}, \
+             {{name: N, type: INT, minValue: 5, default: 5}}], variables: {{V: b}}}}\n\
+             steps:\n- name: S\n  dependencies: [{{environment: B, parameters: {b_params}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    create_err(
+        &jt("{P: p, N: 1}"),
+        &[],
+        "JobTemplate",
+        &[&failing("jobEnvironments[0]")],
     );
-    create_err(&jt, &[], "JobTemplate", &[&failing("jobEnvironments[0]")]);
+    job_err(&jt("{N: 1}"), &[&missing("steps[0]", true, "'B'")]);
 }
 
 #[test]
-fn an_unresolved_enable_if_takes_the_group_in_the_submission_stage() {
+fn an_enable_if_that_reads_a_missing_value_takes_the_group_in_the_submission_stage() {
     // The first member's enableIf reads its Q, which has no value, so it is
-    // unresolved: the member is entered, and the later one, which needs
-    // P, is superseded. Only the first's Q is missing.
+    // not evaluated: the member is entered, and the later one is
+    // superseded, so its value below its minimum is not checked. Both apply
+    // to the Step, so both missing values are reported (§3.2 constraint 7).
     let unresolved = "envParameterDefinitions: [{name: Q, type: STRING}], enableIf: \
                       \"Env.Param.Q != ''\"";
     let x = env(&format!("name: X, exclusiveGroup: G, {unresolved}"));
-    let y = env("name: Y, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let y = env(
+        "name: Y, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}, {name: \
+         N, type: INT, minValue: 5, default: 5}]",
+    );
     create_err(
-        &format!("{HEAD}{STEP}"),
+        &format!(
+            "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Y, parameters: {{N: 1}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        ),
         &[&x, &y],
         "Submission",
-        &[&format!(
-            "{}{UNRESOLVED_NOTE}.",
-            missing_named(
-                "JobTemplate -> steps[0]",
-                false,
-                "'X' (EnvironmentTemplate[0])",
-                "Q"
-            )
-            .trim_end_matches('.')
+        &[&missing_named(
+            "JobTemplate -> steps[0]",
+            false,
+            "'X' (EnvironmentTemplate[0]); 'P' of Environment 'Y' (EnvironmentTemplate[1])",
+            "Q",
         )],
     );
     // The same for deferred Job Environments, after a disabled attachment.
+    // S's entries have an enableIf that reads Job.Name, so template
+    // validation leaves B and C to job creation.
     let jt = format!(
         "{HEAD}jobEnvironments:\n\
          - {{name: B, exclusiveGroup: G, {unresolved}, variables: {{V: b}}}}\n\
-         - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
-         variables: {{V: c}}}}\n{STEP}"
+         - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}, \
+         {{name: N, type: INT, minValue: 5, default: 5}}], variables: {{V: c}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\"}}, \
+         {{environment: C, enableIf: \"Job.Name == 'J'\", parameters: {{N: 1}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     create_err(
         &jt,
         &[&env("name: X, exclusiveGroup: G, enableIf: false")],
         "Submission",
-        &[&format!(
-            "{}{UNRESOLVED_NOTE}.",
-            missing_named("JobTemplate -> steps[0]", true, "'B'", "Q").trim_end_matches('.')
+        &[&missing_named(
+            "JobTemplate -> steps[0]",
+            true,
+            "'B'; 'P' of Environment 'C'",
+            "Q",
         )],
     );
 }
@@ -1853,10 +1979,11 @@ fn every_step_applies_the_group_rule() {
 }
 
 #[test]
-fn a_deferred_job_environments_failed_enable_if_precedes_the_unreachable_attachments() {
-    // B, deferred behind the disabled attachment X, fails its enableIf; U,
-    // attached under a Job Environment's name, has a parameter no Step can
-    // supply. The enableIf error comes first.
+fn the_unreachable_attachments_error_precedes_a_deferred_job_environments_failed_enable_if() {
+    // B, deferred behind the disabled attachment X, fails its enableIf
+    // (§7.4.1 step 6); U, attached under a Job Environment's name, has a
+    // parameter no Step can supply, filed at step 5 after every Step's
+    // errors of step 5. So U's error comes first.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n\
          - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n{STEP}"
@@ -1867,22 +1994,24 @@ fn a_deferred_job_environments_failed_enable_if_precedes_the_unreachable_attachm
     assert_eq!(
         err.to_string(),
         format!(
-            "Model validation error: 2 validation errors for Submission\n{}\n\
+            "Model validation error: 2 validation errors for Submission\n\
              EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment \
              'U' has the same name as a jobEnvironments entry of the Job Template, so no \
              'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it \
              has parameters without a default that no Step can supply: P. Its activation is \
-             BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).",
+             BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\n{}",
             failing("JobTemplate -> jobEnvironments[1]")
         )
     );
 }
 
 #[test]
-fn a_superseded_step_does_not_count_as_deciding_an_unreachable_attachment() {
+fn an_unreachable_attachment_superseded_for_a_step_is_reported_once_with_its_enable_if() {
     // U's enableIf fails for S0. For S1, A comes first in the group and
-    // supersedes U, whose enableIf is not evaluated there. So every Step
-    // that decided U failed to, and the message says so.
+    // supersedes U, whose enableIf is not evaluated there, so the enableIf
+    // error names S0 alone. U applies to both Steps whatever its enableIf
+    // and group (§3.2 constraint 7), so its unreachable P is an error,
+    // filed at §7.4.1 step 5, before the enableIf error (step 6).
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\nsteps:\n- name: S0\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: \
@@ -1894,13 +2023,8 @@ fn a_superseded_step_does_not_count_as_deciding_an_unreachable_attachment() {
     assert_eq!(
         err.to_string(),
         format!(
-            "Model validation error: 2 validation errors for Submission\n{}\n\
-             EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment \
-             'U' has the same name as a jobEnvironments entry of the Job Template, so no \
-             'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it \
-             has parameters without a default that no Step can supply: P. Its activation is \
-             BY_DEFAULT and its enableIf could not be evaluated, so it is checked as if \
-             Sessions enter it, and the submission is rejected (§3.2.1).",
+            "Model validation error: 2 validation errors for Submission\n{}\n{}",
+            unreachable_u(1),
             failing("EnvironmentTemplate[1] -> environment").replace("Step 'S'", "Step 'S0'")
         )
     );
@@ -1916,49 +2040,46 @@ fn s0_and_s1_with(env: &str, params: &str) -> String {
     )
 }
 
-const FAILED_NOTE: &str = " (its own enableIf could not be evaluated for this Step, so the \
-                           Environment is checked as if it is not disabled)";
-
-/// `with_note` with the note before its final period.
-fn noted(message: &str, note: &str) -> String {
-    format!("{}{note}.", message.trim_end_matches('.'))
-}
-
 #[test]
-fn the_enable_if_notes_are_per_step() {
-    // S0 takes S's default, so the enableIf fails (or, reading Q, is
-    // unresolved) and its constraint 7 error carries the note. S1 supplies
-    // a value that makes it true, so its error carries none.
+fn the_enable_if_is_decided_per_step_and_constraint_7_is_reported_for_each() {
+    // The constraint 7 message no longer carries notes about the
+    // Environment's own enableIf (§3.2 constraint 7); what stays per Step
+    // is the enableIf itself. S0 takes S's default, so the enableIf fails
+    // for S0 alone (or, reading the missing Q, is not evaluated for S0); S1
+    // supplies a value that makes it true. Both Steps miss P, reported for
+    // each.
     let x = env("name: X, exclusiveGroup: G, enableIf: false");
     let unresolved_with_p = "envParameterDefinitions: [{name: Q, type: STRING}, {name: P, \
                              type: STRING}], enableIf: \"Env.Param.Q != ''\"";
-    let job = |body: &str| {
-        format!("{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, {body}, variables: {{V: b}}}}\n")
+    // The Steps' entries for B have an enableIf that reads Job.Name, so
+    // template validation leaves B to job creation.
+    let job = |body: &str, params: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, {body}, variables: {{V: b}}}}\n\
+             steps:\n- name: S0\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\"}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n\
+             - name: S1\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\", \
+             parameters: {{{params}}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
     };
     // A deferred Job Environment whose enableIf fails for S0.
     create_err(
-        &format!("{}{}", job(FAILING_WITH_P), s0_and_s1_with("B", "S: '5'")),
+        &job(FAILING_WITH_P, "S: '5'"),
         &[&x],
         "Submission",
         &[
-            &noted(
-                &missing("JobTemplate -> steps[0]", true, "'B'"),
-                FAILED_NOTE,
-            ),
+            &missing("JobTemplate -> steps[0]", true, "'B'"),
             &missing("JobTemplate -> steps[1]", true, "'B'"),
             &failing("JobTemplate -> jobEnvironments[0]").replace("Step 'S'", "Step 'S0'"),
         ],
     );
-    // A deferred Job Environment whose enableIf is unresolved for S0.
+    // A deferred Job Environment whose enableIf reads the missing Q for S0.
     create_err(
-        &format!("{}{}", job(unresolved_with_p), s0_and_s1_with("B", "Q: q")),
+        &job(unresolved_with_p, "Q: q"),
         &[&x],
         "Submission",
         &[
-            &noted(
-                &missing_named("JobTemplate -> steps[0]", true, "'B'", "Q', 'P"),
-                UNRESOLVED_NOTE,
-            ),
+            &missing_named("JobTemplate -> steps[0]", true, "'B'", "Q', 'P"),
             &missing("JobTemplate -> steps[1]", true, "'B'"),
         ],
     );
@@ -1969,13 +2090,10 @@ fn the_enable_if_notes_are_per_step() {
         &[&y(FAILING_WITH_P)],
         "Submission",
         &[
-            &noted(
-                &missing(
-                    "JobTemplate -> steps[0]",
-                    false,
-                    "'Y' (EnvironmentTemplate[0])",
-                ),
-                FAILED_NOTE,
+            &missing(
+                "JobTemplate -> steps[0]",
+                false,
+                "'Y' (EnvironmentTemplate[0])",
             ),
             &missing(
                 "JobTemplate -> steps[1]",
@@ -1990,14 +2108,11 @@ fn the_enable_if_notes_are_per_step() {
         &[&y(unresolved_with_p)],
         "Submission",
         &[
-            &noted(
-                &missing_named(
-                    "JobTemplate -> steps[0]",
-                    false,
-                    "'Y' (EnvironmentTemplate[0])",
-                    "Q', 'P",
-                ),
-                UNRESOLVED_NOTE,
+            &missing_named(
+                "JobTemplate -> steps[0]",
+                false,
+                "'Y' (EnvironmentTemplate[0])",
+                "Q', 'P",
             ),
             &missing(
                 "JobTemplate -> steps[1]",
@@ -2028,12 +2143,15 @@ fn a_deferred_job_environments_values_are_kept_for_every_step() {
 #[test]
 fn within_a_step_the_attachments_errors_come_before_the_deferred_ones() {
     // Y (group H) is attached and missing P; B, deferred behind the
-    // disabled X, has a value below its minimum and is missing P.
+    // disabled X, is missing P and has a value below its minimum. The
+    // constraint 7 errors (§7.4.1 step 5), Y's then B's, come before B's
+    // value (step 7). S's entry for B has an enableIf that reads Job.Name,
+    // so template validation leaves B to job creation.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
          [{{name: N, type: INT, minValue: 5}}, {{name: P, type: STRING}}], variables: {{V: b}}}}\n\
-         steps:\n- name: S\n  dependencies: [{{environment: B, parameters: {{N: 1}}}}]\n  \
-         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+         steps:\n- name: S\n  dependencies: [{{environment: B, enableIf: \"Job.Name == 'J'\", \
+         parameters: {{N: 1}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let y = env("name: Y, exclusiveGroup: H, envParameterDefinitions: [{name: P, type: STRING}]");
     let x = env("name: X, exclusiveGroup: G, enableIf: false");
@@ -2041,9 +2159,9 @@ fn within_a_step_the_attachments_errors_come_before_the_deferred_ones() {
     assert_eq!(
         err.to_string(),
         format!(
-            "Model validation error: 3 validation errors for Submission\n{}\n\
+            "Model validation error: 3 validation errors for Submission\n{}\n{}\n\
              JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': \
-             value 1 is less than minimum 5\n{}",
+             value 1 is less than minimum 5",
             missing(
                 "JobTemplate -> steps[0]",
                 false,
@@ -2055,26 +2173,41 @@ fn within_a_step_the_attachments_errors_come_before_the_deferred_ones() {
 }
 
 #[test]
-fn a_failed_entry_enable_if_takes_its_group_for_every_step() {
-    // As a_failed_entry_enable_if_still_takes_its_group, for two Steps:
-    // neither Step reports J2's missing N.
-    let jt = format!(
-        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
-         jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
-         - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT}}], \
-         variables: {{V: b}}}}\nsteps:\n\
-         - name: S0\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}]\n  \
-         script: {{actions: {{onRun: {{command: x}}}}}}\n\
-         - name: S1\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}]\n  \
-         script: {{actions: {{onRun: {{command: x}}}}}}\n"
-    );
+fn a_failed_entry_enable_if_stops_every_step_it_fails_for() {
+    // As a_failed_entry_enable_if_stops_the_step_of_a_grouped_job_environment,
+    // for two Steps: each reports its entry's error, and neither J2's
+    // value. Without J2's N, template validation reports it for both.
+    let jt = |j2_entry: &str| {
+        format!(
+            "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+             jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
+             - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT, \
+             minValue: 5}}], variables: {{V: b}}}}\nsteps:\n\
+             - name: S0\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}\
+             {j2_entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+             - name: S1\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}\
+             {j2_entry}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
     let failed = |step: usize| {
         format!(
             "steps[{step}] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out \
              of bounds for list of length 1"
         )
     };
-    create_err(&jt, &[], "JobTemplate", &[&failed(0), &failed(1)]);
+    create_err(
+        &jt(", {environment: J2, parameters: {N: 1}}"),
+        &[],
+        "JobTemplate",
+        &[&failed(0), &failed(1)],
+    );
+    job_err(
+        &jt(""),
+        &[
+            &missing_named("steps[0]", true, "'J2'", "N"),
+            &missing_named("steps[1]", true, "'J2'", "N"),
+        ],
+    );
 }
 
 #[test]

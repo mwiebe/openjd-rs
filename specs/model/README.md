@@ -118,8 +118,9 @@ Currently implements `2023-09` with extensions:
   Environment resolution against the attached Environment Templates
   (`create_job_with_environment_templates`; see
   [job-creation.md](job-creation.md#environment-parameter-values-env_params)), each
-  Environment's own `enableIf` per Step with the values that are known, before the checks
-  of the values and constraint 7, which a disabled Environment escapes (see
+  Environment's own `enableIf` per Step with the Step's concrete values, after constraint 7,
+  which holds for every Environment that applies to the Step whatever its `enableIf` or group,
+  and before the checks of the values, which a disabled Environment escapes (see
   [job-creation.md](job-creation.md#environment-enableif-env_params)), with each
   `exclusiveGroup` (§4 item 7), which supersedes, and so disables, all but the first of a
   group's Environments a Step would enter, without evaluating their `enableIf` (see

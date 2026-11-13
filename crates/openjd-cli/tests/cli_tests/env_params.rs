@@ -1119,9 +1119,9 @@ fn check_with_environments_names_a_disabled_entry_in_the_missing_parameters_erro
          would decline Environment 'Req' ({env}), whose activation is ALWAYS: no Step can leave \
          out an ALWAYS Environment (Template Schemas §3.2 item 3.2).\n\
          JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-         parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+         parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
          activation BY_DEFAULT that the Step does not decline, and each one \
-         with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'N' of Environment 'Req' ({env}) (the \
+         with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'N' of Environment 'Req' ({env}) (the \
          Step's 'environment:' dependency for it is disabled by its enableIf, so it supplies \
          nothing; Template Schemas §3.2 item 3.2)."
     );
@@ -2238,24 +2238,44 @@ fn check_does_not_list_an_on_request_environment_a_disabled_entry_names() {
 // ── Plan 4: disabled Environments and RANGE_EXPR parameters ─────────
 
 #[test]
-fn a_disabled_environment_needs_no_values() {
-    // Template Schemas §3.2.2: an Environment disabled for a Step is not
-    // held to constraint 7, and its values are not checked. Lic's Product
-    // has no default and no Step supplies it; S supplies an out-of-range
-    // Seats.
+fn a_disabled_environment_is_held_to_constraint_7_but_its_values_are_not_checked() {
+    // Template Schemas §3.2.2: the values of an Environment disabled for a
+    // Step are not checked. It still applies to the Step, so the Step must
+    // supply its parameters without a default whatever its enableIf (§3.2
+    // constraint 7). Lic's Product has no default; S supplies an
+    // out-of-range Seats, and Product only in the second template.
     let dir = tempfile::tempdir().unwrap();
-    let job = write_file(
-        &dir,
-        "job.yaml",
-        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-         parameterDefinitions: [{name: Use, type: STRING, default: 'no'}]\n\
-         jobEnvironments:\n- name: Lic\n  enableIf: \"Param.Use == 'yes'\"\n  \
-         envParameterDefinitions:\n  - {name: Product, type: STRING}\n  \
-         - {name: Seats, type: INT, minValue: 1, default: 1}\n  \
-         script: {actions: {onEnter: {command: echo, args: [ENTER, Lic]}}}\n\
-         steps:\n- name: S\n  dependencies: [{environment: Lic, parameters: {Seats: 0}}]\n  \
-         script: {actions: {onRun: {command: echo, args: [TASK]}}}\n",
+    let template = |params: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             parameterDefinitions: [{{name: Use, type: STRING, default: 'no'}}]\n\
+             jobEnvironments:\n- name: Lic\n  enableIf: \"Param.Use == 'yes'\"\n  \
+             envParameterDefinitions:\n  - {{name: Product, type: STRING}}\n  \
+             - {{name: Seats, type: INT, minValue: 1, default: 1}}\n  \
+             script: {{actions: {{onEnter: {{command: echo, args: [ENTER, Lic]}}}}}}\n\
+             steps:\n- name: S\n  dependencies: [{{environment: Lic, parameters: {params}}}]\n  \
+             script: {{actions: {{onRun: {{command: echo, args: [TASK]}}}}}}\n"
+        )
+    };
+    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
+                   without a default of each Environment that applies to it (every \
+                   jobEnvironments entry with activation ALWAYS, each one with activation \
+                   BY_DEFAULT that the Step does not decline, and each one with activation \
+                   ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), \
+                   whatever that Environment's own enableIf is; missing: 'Product' of \
+                   Environment 'Lic'.\n";
+    // Without Product: rejected by check, though Lic is disabled for S.
+    let unsupplied = write_file(&dir, "unsupplied.yaml", &template("{Seats: 0}"));
+    let (code, _stdout, stderr) = run_cli(&["check", &unsupplied]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("Model validation error: 1 validation error for JobTemplate\n"),
+        "{stderr}"
     );
+    assert!(stderr.contains(missing), "{stderr}");
+    // With Product: valid, and Lic, disabled, is not entered and its Seats
+    // not checked.
+    let job = write_file(&dir, "job.yaml", &template("{Seats: 0, Product: p}"));
     let (code, stdout, stderr) = run_cli(&["check", &job]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(
@@ -2275,25 +2295,15 @@ fn a_disabled_environment_needs_no_values() {
         ),
         "{stdout}"
     );
-    // Enabled, both checks apply.
+    // Enabled, the value check applies too.
     let (code, _stdout, stderr) = run_cli(&["run", &job, "-p", "Use=yes"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("Model validation error: 2 validation errors for JobTemplate\n"),
+        stderr.contains("Model validation error: 1 validation error for JobTemplate\n"),
         "{stderr}"
     );
     assert!(
         stderr.contains("steps[0] -> dependencies[0] -> parameters -> Seats:\n\tParameter 'Seats': value 0 is less than minimum 1"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(
-            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
-             a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
-             activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; \
-             Template Schemas §3.2 constraint 7); missing: 'Product' of Environment 'Lic'.\n"
-        ),
         "{stderr}"
     );
 }

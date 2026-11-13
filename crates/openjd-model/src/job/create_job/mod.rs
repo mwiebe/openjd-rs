@@ -156,21 +156,26 @@ pub fn create_job(
 /// 5. the Step gets its effective values for each Environment in its set
 ///    (an entry's undeclared key is an error here, constraint 5, except that
 ///    an attachment that declares no parameters ignores a `required: false`
-///    entry's `parameters`, with a warning, §3.2.1 item 1);
+///    entry's `parameters`, with a warning, §3.2.1 item 1), and constraint 7
+///    is checked for every Environment in the set, whatever its own
+///    `enableIf` or `exclusiveGroup`: the Step must supply each parameter
+///    without a `default` (§3.2 constraint 7, §7.4.1 step 5);
 /// 6. the Environments are taken in the Job's Environment order: one whose
 ///    `exclusiveGroup` (§4 item 7) an earlier one that remains in the Step's
 ///    set already has is superseded, which disables it for the Step, and its
 ///    own `enableIf` is not evaluated; for any other, its own `enableIf`
-///    (§4 item 6) is decided with the values that are known (a missing or
-///    unconvertible value is `unresolved[T]`; §3.2.2), and one that is
-///    `false` is left out of the Step's set and values, or, for an `ALWAYS`
-///    one, is an error naming the Step (§3.2.2 item 6), while one it does
-///    not disable takes its group. Each Step Environment's own `enableIf`
-///    is decided too, and a disabled one is left out of
+///    (§4 item 6) is evaluated with the Step's concrete values (§3.2.2 item
+///    2), unless it reads a value that is missing, fails to resolve, or
+///    does not convert, when it is not evaluated and does not disable the
+///    Environment (that value is an error already). One that is `false` is
+///    left out of the Step's set and values, or, for an `ALWAYS` one, is an
+///    error naming the Step (§3.2.2 item 6), while one it does not disable
+///    takes its group. Each Step Environment's own `enableIf` is decided
+///    too, and a disabled one is left out of
 ///    [`job::Step::step_environments`];
 /// 7. for the Environments that remain in each Step's set, each value is
-///    checked against its definition, constraint 7 is checked, and so is
-///    the `WRAP_ACTIONS` single-layer rule;
+///    checked against its definition, and so is the `WRAP_ACTIONS`
+///    single-layer rule;
 /// 8. each Environment's `hostRequirements` (`ENV_PARAMS`, §4 item 5) are
 ///    resolved for each Step whose Sessions enter it, with that Step's
 ///    effective values, and combined with the Step's own into the Step's

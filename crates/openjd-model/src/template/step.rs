@@ -474,12 +474,13 @@ impl StepDependency {
         self.target().is_some()
     }
 
-    /// Whether the entry is enabled, when that is known before the Job is
-    /// created: `Some(true)` when `enableIf` is absent or the boolean
+    /// Whether the entry is enabled, as written, when `enableIf` is a
+    /// literal (§7.6 item 1): `Some(true)` when it is absent or the boolean
     /// scalar `true`, `Some(false)` for the scalar `false`, and `None` for
-    /// any other value, an expression included, even a constant one such
-    /// as `"true"`, whose value is known only when the Job is created
-    /// (§3.2, checked-at paragraph; §7.6 item 1).
+    /// an expression. Template validation knows more than this: an
+    /// expression whose value does not depend on the values unknown there,
+    /// such as `"true"` or `"Param.F or true"`, is known too (§7.6 rule 5),
+    /// and every check before job creation reads that value, not this one.
     #[must_use]
     pub fn literal_enabled(&self) -> Option<bool> {
         match &self.enable_if {

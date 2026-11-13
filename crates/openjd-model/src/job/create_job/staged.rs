@@ -48,12 +48,13 @@ pub(crate) enum Stage {
     /// Step 4: the Step's set of Environments from `activation` and its
     /// entries (a disabled entry for an `ALWAYS` Environment).
     Step4,
-    /// Step 5: the Step's effective values (the entries' keys).
+    /// Step 5: the Step's effective values (the entries' keys) and
+    /// constraint 7 over the Environments that apply to it.
     Step5,
     /// Step 6: each Environment's own `enableIf`, and the groups.
     Step6,
-    /// Step 7: constraint 7, the other checks of the values, and the
-    /// checks over the Step's set, such as the single-layer rule.
+    /// Step 7: the checks of the values (constraint 6), and the checks
+    /// over the Step's set, such as the single-layer rule.
     Step7,
     /// Step 8: the Environments' `hostRequirements` and their combination.
     Step8,

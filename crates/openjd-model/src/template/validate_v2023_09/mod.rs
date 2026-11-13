@@ -212,17 +212,21 @@ pub(crate) fn validate_job_template(
     // Pass 7: FEATURE_BUNDLE_1 (validate or reject)
     feature_bundle_1::validate_feature_bundle_1(jt, ctx, &mut errors);
 
+    // What each `enableIf` is known to be here (§7.6 rule 5), which every
+    // check below that depends on one reads.
+    let known = format_strings::known_enable_ifs(jt, ctx);
+
     // Pass 8: Format strings (base or EXPR profile)
-    format_strings::validate_format_strings(jt, ctx, &mut errors);
+    format_strings::validate_format_strings(jt, ctx, &known, &mut errors);
 
     // Pass 9: TASK_CHUNKING (validate or reject)
     task_chunking::validate_task_chunking(jt, ctx, &mut errors);
 
     // Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
-    wrap_actions::validate_wrap_actions_job_template(jt, ctx, &mut errors);
+    wrap_actions::validate_wrap_actions_job_template(jt, ctx, &known, &mut errors);
 
     // Pass 11: ENV_PARAMS (validate or reject)
-    env_params::validate_env_params_job_template(jt, ctx, &mut errors);
+    env_params::validate_env_params_job_template(jt, ctx, &known, &mut errors);
 
     errors.into_result("JobTemplate")
 }

@@ -111,6 +111,7 @@ pub(super) fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut Vali
 pub fn validate_wrap_actions_job_template(
     jt: &JobTemplate,
     ctx: &ValidationContext,
+    known: &super::format_strings::KnownEnableIfs,
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
@@ -130,16 +131,17 @@ pub fn validate_wrap_actions_job_template(
     // stepEnvironments) must be <= 1.
     //
     // Whether a Step requests or declines an Environment is known here only
-    // for an entry whose `enableIf` is absent or a boolean scalar; an entry
-    // whose `enableIf` is an expression neither requests an `ON_REQUEST`
-    // Environment nor certainly leaves a `BY_DEFAULT` one entered, so
-    // neither is counted, and job creation checks the Step's resolved set
-    // (§3.2, checked-at paragraph). A `BY_DEFAULT` one a scalar
-    // `enableIf: false` entry declines is not entered. The same holds
-    // for an Environment's own `enableIf` (ENV_PARAMS, §4, after item 10): an
-    // Environment whose `enableIf` is absent or `true` is counted, one with
-    // the scalar `false` is not entered, and one with an expression (even a
-    // constant one) is not counted here and is decided at job creation.
+    // for an entry whose `enableIf` is known (absent, a boolean scalar, or
+    // an expression whose value is known, §7.6 rule 5); any other entry
+    // neither requests an `ON_REQUEST` Environment nor certainly leaves a
+    // `BY_DEFAULT` one entered, so neither is counted, and job creation
+    // checks the Step's resolved set (§3.2, checked-at paragraph). A
+    // `BY_DEFAULT` one an entry known to be disabled declines is not
+    // entered. The same holds for an Environment's own `enableIf`
+    // (ENV_PARAMS, §4, after item 10): an Environment whose `enableIf` is
+    // known to be `true` is counted, one known to be `false` is not
+    // entered, and any other is not counted here and is decided at job
+    // creation.
     // An `ALWAYS` Environment is counted whatever its `enableIf`: it cannot
     // be disabled, so it is entered or the Job is rejected (§3.2.2 item 6).
     // So only a violation among Environments every relevant Session
@@ -155,7 +157,7 @@ pub fn validate_wrap_actions_job_template(
     // 1. The wrap-defining envs in jobEnvironments: the ALWAYS and
     //    BY_DEFAULT ones a Step may certainly enter, and the names of the
     //    ON_REQUEST ones only requesting Steps' Sessions may.
-    let mut job_wrap_envs: Vec<&Environment> = Vec::new();
+    let mut job_wrap_envs: Vec<(usize, &Environment)> = Vec::new();
     let mut requested_wrap_envs: HashSet<&str> = HashSet::new();
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&[], "jobEnvironments");
@@ -167,12 +169,13 @@ pub fn validate_wrap_actions_job_template(
             // first and supersede it (§4 item 7, and the paragraph after
             // item 10).
             if check_env(env, &path_index(&envs_path, i), active, errors) && env.group().is_none() {
+                let enabled = known.job_environment(i);
                 if env.activation() == EnvironmentActivation::OnRequest {
-                    if env.certainly_entered(KnownEntry::Enabled) {
+                    if env.certainly_entered(enabled, KnownEntry::Enabled) {
                         requested_wrap_envs.insert(env.name.as_str());
                     }
-                } else if env.certainly_entered(KnownEntry::Absent) {
-                    job_wrap_envs.push(env);
+                } else if env.certainly_entered(enabled, KnownEntry::Absent) {
+                    job_wrap_envs.push((i, env));
                 }
             }
         }
@@ -183,10 +186,16 @@ pub fn validate_wrap_actions_job_template(
     let step_entered: Vec<Vec<bool>> = jt
         .steps
         .iter()
-        .map(|step| {
+        .enumerate()
+        .map(|(i, step)| {
             job_wrap_envs
                 .iter()
-                .map(|env| env.certainly_entered(KnownEntry::in_step(step, &env.name)))
+                .map(|(k, env)| {
+                    env.certainly_entered(
+                        known.job_environment(*k),
+                        known.entry_in_step(i, step, &env.name),
+                    )
+                })
                 .collect()
         })
         .collect();
@@ -218,8 +227,9 @@ pub fn validate_wrap_actions_job_template(
             .dependencies
             .iter()
             .flatten()
-            .filter(|d| d.literal_enabled() == Some(true))
-            .filter_map(|d| d.environment())
+            .enumerate()
+            .filter(|(j, _)| known.entry(i, *j) == Some(true))
+            .filter_map(|(_, d)| d.environment())
             .filter(|name| requested_wrap_envs.contains(name))
             .collect();
         let Some(envs) = &step.step_environments else {
@@ -242,7 +252,7 @@ pub fn validate_wrap_actions_job_template(
         let mut step_env_wrap_count = 0usize;
         for (j, env) in envs.iter().enumerate() {
             if check_env(env, &path_index(&envs_path, j), active, errors)
-                && env.literal_enabled() == Some(true)
+                && known.step_environment(i, j) == Some(true)
             {
                 step_env_wrap_count += 1;
             }

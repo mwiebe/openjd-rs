@@ -21,10 +21,10 @@ use crate::env_params_common::{env_err, env_ok, job_err, job_err_with, job_ok, y
 fn must_supply(list: &str) -> String {
     format!(
         "must supply, in an 'environment:' dependency, every parameter without a default of each \
-         Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+         Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
          activation BY_DEFAULT that the Step does not decline, and each one \
          with activation ON_REQUEST that the Step requests; Template Schemas §3.2 \
-         constraint 7); missing: {list}."
+         constraint 7), whatever that Environment's own enableIf is; missing: {list}."
     )
 }
 
@@ -549,8 +549,9 @@ fn a_literal_false_entry_supplies_nothing_and_declines_a_by_default_environment(
 
 #[test]
 fn a_deferred_environment_is_not_listed_as_missing() {
-    // The Step's entry for A has an expression `enableIf`, so only B's
-    // parameter is reported.
+    // The Step's entry for A has an `enableIf` that reads `Job.Name`, unknown
+    // at template validation, so A is deferred to job creation and only B's
+    // parameter is reported (§7.6 rule 5).
     job_err(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -561,7 +562,7 @@ jobEnvironments:
 - {name: B, envParameterDefinitions: [{name: b, type: STRING}], variables: {V: v}}
 steps:
 - name: S
-  dependencies: [{environment: A, enableIf: "true"}]
+  dependencies: [{environment: A, enableIf: "Job.Name == 'J'"}]
   script: {actions: {onRun: {command: x}}}
 "#,
         &[&format!(
@@ -808,15 +809,29 @@ fn a_wrapper_an_entry_does_not_definitely_request_is_not_counted() {
         wrap_env("W1", "activation: ON_REQUEST"),
         wrap_env("W2", "activation: ON_REQUEST"),
     ];
-    // A literal `false` entry requests nothing; an expression one is
-    // checked at job creation.
+    // A literal `false` entry requests nothing; one whose expression reads
+    // a value unknown at template validation (`Job.Name`) is checked at job
+    // creation (§7.6 rule 5).
     job_ok(&wrap_job(
         &envs,
         &format!(
             "- name: A\n  dependencies: [{{environment: W1}}, {{environment: W2, enableIf: false}}]\n{RUN}\
-             - name: B\n  dependencies: [{{environment: W1}}, {{environment: W2, enableIf: \"true\"}}]\n{RUN}"
+             - name: B\n  dependencies: [{{environment: W1}}, {{environment: W2, enableIf: \"Job.Name == 'J'\"}}]\n{RUN}"
         ),
     ));
+    // A constant expression is a concrete bool with every value unknown, so
+    // it is known at template validation: the `"true"` entry requests W2,
+    // and Step B has two wrappers.
+    job_err(
+        &wrap_job(
+            &envs,
+            &format!(
+                "- name: A\n  dependencies: [{{environment: W1}}, {{environment: W2, enableIf: false}}]\n{RUN}\
+                 - name: B\n  dependencies: [{{environment: W1}}, {{environment: W2, enableIf: \"true\"}}]\n{RUN}"
+            ),
+        ),
+        &[&format!("steps[1] -> dependencies:\n\t{SINGLE_LAYER}")],
+    );
 }
 
 #[test]

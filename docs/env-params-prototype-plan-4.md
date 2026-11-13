@@ -9,6 +9,15 @@ this plan says otherwise.
 `BY_DEFAULT`, the default. Where this plan says `ALWAYS`, today's name for that behavior is `BY_DEFAULT`; see
 `specs/model/template-types.md`.)
 
+(Later superseded: spec `bb03379` makes constraint 7 independent of an Environment's own `enableIf` and
+`exclusiveGroup` (§3.2 constraint 7): a Step must supply the parameters without a `default` of every Environment that
+applies to it, disabled or superseded included, checked at job creation in §7.4.1 step 5, before any `enableIf`. An
+`enableIf` expression whose value does not depend on the values unknown at template validation, a constant one
+included, is known there (§7.6 rule 5), and job creation evaluates an Environment's `enableIf` with concrete values
+only, not at all when it reads a value that is missing or does not convert (§3.2.2 item 2). So the "certainly
+unresolved" rule of D1 and A45, and A46's exemption of a disabled unreachable attachment, no longer apply; see
+`specs/model/validation.md` and `specs/model/job-creation.md`.)
+
 ## Sources
 
 * **Normative spec.** `~/projects/rfc-env-params/openjd-specifications-ep`, branch `rfc-env-params` at `bf81141`:

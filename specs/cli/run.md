@@ -357,12 +357,13 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
   the Step's Sessions then do not enter or exit and whose `variables` they do not set; a
   Step Environment whose `enableIf` is `false` is likewise left out of
   `job::Step::step_environments`, so `execute_step` does not enter it;
-- computes every Step's effective values for every attached Environment it would enter
-  that declares parameters (§3.2.2), decides the Environment's own `enableIf` with the values
-  that are known (a missing or unconvertible value is unresolved, and does not disable it),
-  and checks the values against their type and constraints, and constraint 7, only for the
-  Environments it does not disable (constraint 5 for every one), as
-  job creation does for the Job Template's own;
+- computes every Step's effective values for every attached Environment that applies to it
+  and declares parameters (§3.2.2), checks constraint 5 and constraint 7 for every one of
+  them, whatever its own `enableIf` or `exclusiveGroup` (§3.2 constraint 7, §7.4.1 step 5),
+  decides the Environment's own `enableIf` with the Step's concrete values (one that reads a
+  value that is missing or does not convert is not evaluated, and does not disable it, §3.2.2
+  item 2), and checks the values against their type and constraints only for the
+  Environments it does not disable, as job creation does for the Job Template's own;
 - returns warnings, which are printed to stderr as `WARNING: <path>: <message>`: one per
   `required: false` entry that resolves to nothing, one per `required: false` entry whose
   parameters an attached Environment that declares none ignores (§3.2.1 item 1), and one per

@@ -224,7 +224,7 @@ fn an_attached_all_environment_is_entered_by_every_step() {
         REQUESTS_EXT,
         &[&ext("ALWAYS")],
         "Submission",
-        &["JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0])."],
+        &["JobTemplate -> steps[1]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0])."],
     );
 }
 
@@ -428,7 +428,7 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
     let src = ENABLE_IF
         .replace("default: numpy", "minLength: 1")
         .replace("    parameters: {Packages: ffmpeg}\n", "");
-    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Packages' of Environment 'Conda'.";
+    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Packages' of Environment 'Conda'.";
     // Enabled: the requested Environment needs the value.
     let only = src.replace("SCOPE", "ON_REQUEST");
     create_err(&only, &[], "JobTemplate", &[missing]);
@@ -451,26 +451,33 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
 }
 
 #[test]
-fn a_constant_expression_enable_if_defers_constraint_7_to_job_creation() {
-    // §3.2 checked-at paragraph and §7.6 item 1: only an absent enableIf or
-    // a boolean scalar is known at template validation. "true" is the
-    // expression `true`, so template validation accepts the missing value
-    // and job creation, which evaluates it, rejects it; "false" disables
-    // the entry when the Job is created.
+fn a_constant_expression_enable_if_is_decided_at_template_validation() {
+    // §3.2 checked-at paragraph and §7.6 rule 5: template validation
+    // evaluates an expression enableIf with every value unknown, and a
+    // concrete bool result is known. "true" is known, so template
+    // validation rejects the missing value, as for the boolean scalar;
+    // "false" disables the entry, so the Step does not request Conda and
+    // needs no value. An expression that reads a Job Parameter ("on") is
+    // unknown, so template validation accepts the missing value and job
+    // creation, which evaluates it, rejects it.
     let src = ENABLE_IF
         .replace("SCOPE", "ON_REQUEST")
         .replace("default: numpy", "minLength: 1")
         .replace("    parameters: {Packages: ffmpeg}\n", "");
-    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Packages' of Environment 'Conda'.";
-    let constant_true = src.replace("enableIf: \"on\"\n", "enableIf: \"true\"\n");
-    job_ok(&constant_true);
-    create_err(&constant_true, &[], "JobTemplate", &[missing]);
+    let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Packages' of Environment 'Conda'.";
+    job_err(
+        &src.replace("enableIf: \"on\"\n", "enableIf: \"true\"\n"),
+        &[missing],
+    );
+    job_ok(&src);
+    create_err(&src, &[], "JobTemplate", &[missing]);
     // The boolean scalar is decided at template validation.
     job_err(
         &src.replace("enableIf: \"on\"\n", "enableIf: true\n"),
         &[missing],
     );
     let constant_false = src.replace("enableIf: \"on\"\n", "enableIf: \"false\"\n");
+    job_ok(&constant_false);
     let job = create_ok(&constant_false, &[], &[]);
     assert_eq!(job.steps[0].environments, Some(vec![]));
 }
@@ -823,7 +830,7 @@ fn the_early_check_holds_a_requesting_step_to_an_on_request_attachment() {
     assert_errors(
         &err,
         "Submission",
-        &["JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0])."],
+        &["JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0])."],
     );
 }
 
@@ -862,7 +869,7 @@ steps:
         .unwrap_err()
         .to_string();
     let missing = |i: usize| {
-        format!("JobTemplate -> steps[{i}]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0]).")
+        format!("JobTemplate -> steps[{i}]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'Ext' (EnvironmentTemplate[0]).")
     };
     assert_errors(&err, "Submission", &[&missing(1), &missing(2)]);
 }

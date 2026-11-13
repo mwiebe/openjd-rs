@@ -164,10 +164,13 @@ is `target().is_some()`). A `step` and a `dependsOn` entry are both `DependencyT
 differing only in the `StepKey`, which no rule reads: `step()` returns the Step name for
 either, so self-dependency, unknown-Step, duplicate, cycle, and job-creation checks treat them
 alike. `environment()` reads the other form; `is_required()` applies
-the default; `literal_enabled()` is `Some(true)` for an absent `enableIf` or the boolean
-scalar `true`, `Some(false)` for `false`, and `None` for any other value, an expression
-included, even a constant one such as `"true"`, whose value job creation decides (§3.2
-checked-at paragraph). `enableIf` is an expression field of type `bool`; see
+the default; `literal_enabled()` is the `enableIf` as written when it is a literal:
+`Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for `false`,
+and `None` for an expression. Template validation knows more than this: an expression whose
+value does not depend on the values unknown there, such as `"true"` or `"Param.F or
+true"`, is known too (§3.2 checked-at paragraph, §7.6 rule 5), and every check before job
+creation reads that value (see [validation.md](validation.md#known-enableif-values-env_params)),
+not `literal_enabled()`. `enableIf` is an expression field of type `bool`; see
 [Expression fields](#expression-fields-75). `on_step(name)` and `on_environment(name)` build an entry, and
 `DependencyTarget`'s `Display` writes it as a template does (`dependsOn: X`, `step: X`,
 `environment: X`); `StepKey::as_str()` is `dependsOn` or `step`. These names follow the `service:` form on the `service-extension`
@@ -250,12 +253,17 @@ context: Template Schemas §7.6, the paragraph after its rules; spec `5535230`):
 - `resolve` (the field's stage) evaluates and returns the value: a `null` result is an error
   unless `G` admits `nulltype`, even on an optional field; an `int` result is widened to
   `float` where only that fits; any other result that does not fit is an error.
-- `resolve_progressive` is `resolve` with a scope in which some symbols are bound to
-  `unresolved[T]` (Expression Language progressive evaluation): a result that depends on one
-  is `Ok(None)`, not checked further (template validation has checked its static type), and a
-  known result is checked as `resolve` checks it. An Environment's own `enableIf` uses it at
-  job creation, with the Step's missing or unconvertible values unknown (Template Schemas
-  §3.2.2).
+- `known_value` is the field's value before its stage, when it is *known* there (Template
+  Schemas §7.6 rule 5): the scope binds each value not yet known to `unresolved[T]` of its
+  type, a scalar that fits is known, and an expression is known when it parses, evaluates,
+  and gives a value that is not unresolved and fits, by the Expression Language's rules for
+  unknown operands (Expression Language §2.1.6 "Unknown operands" and "Conditional
+  Expressions with Unknown Conditions"). A parse or evaluation error gives `None`.
+  `known_bool` applies it to an optional `bool` field (an `enableIf`), with an absent field
+  `Some(true)`. Template validation uses them for every `enableIf` (see
+  [validation.md](validation.md#known-enableif-values-env_params)); job creation evaluates an
+  Environment's own `enableIf` with `resolve` and concrete values only (Template Schemas
+  §3.2.2 item 2).
 
 The checker lives in openjd-model because it is template-field policy built on
 openjd-expr's public type API (`satisfies`, `code`, `params`, `ExprValue::coerce`);
@@ -353,11 +361,15 @@ decides whether a Step's Sessions enter the Environment, and unlike `activation`
 `stepEnvironments` entry included. Pass 11 requires ENV_PARAMS in the document (which
 requires EXPR; see [validation.md](validation.md#entry-points)), and pass 8 checks it in its
 scope (see [validation.md](validation.md#environment-enableif-env_params)). `literal_enabled()` is
-`Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
-scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
-what template validation may count as entered or not (§4, after item 10; §7.6 item 1). Job
-creation resolves it once per Step whose Sessions would otherwise enter the Environment and
-for which it is not superseded (see
+the value as written when it is a literal: `Some(true)` for an absent `enableIf` or the
+boolean scalar `true`, `Some(false)` for the scalar `false`, and `None` for an expression.
+What template validation counts as entered or not reads the known value instead (§4, after
+item 10; §7.6 rule 5), so a constant expression such as `"true"` is known there (see
+[validation.md](validation.md#known-enableif-values-env_params)). It never decides
+constraint 7, which holds for every Step the Environment applies to whatever its `enableIf`
+(§3.2 constraint 7). Job creation resolves it once per Step that the Environment applies to and
+for which it is not superseded, with the Step's concrete values, and not at all when it reads
+one that is missing or does not convert (§3.2.2 item 2; see
 [job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,
 since a disabled Environment is simply left out of the Step's sets.
 
@@ -365,16 +377,17 @@ since a disabled Environment is simply left out of the Step's sets.
 at most one. For each Step, of the Environments its Sessions would enter that share a group
 and whose `enableIf` is not `false` for it, only the first in the Job's Environment order
 (attached ones first, then `jobEnvironments`; §1.1 item 7) is entered, and the others are
-*superseded*, which disables them for the Step (§3.2.2). Job creation takes them in that
-order and does not evaluate a superseded one's `enableIf` (§7.4.1 step 6). It is a plain `String`, so pass 11
+*superseded*, which disables them for the Step (§3.2.2); they still apply to the Step, so
+constraint 7 holds for them (§3.2 constraint 7). Job creation takes them in that order and
+does not evaluate a superseded one's `enableIf` (§7.4.1 step 6). It is a plain `String`, so pass 11
 reports a value that is not an `<Identifier>` (§7.1, at most 64 characters, or 512 with
 `FEATURE_BUNDLE_1`) at its own path. Pass 11 also rejects it without ENV_PARAMS, on a
 `stepEnvironments` entry, and on an Environment whose `activation` is `ALWAYS` (constraint
 1). `group()` (crate-private) is the group the rule applies with: none for an `ALWAYS`
 Environment, so a template that breaks constraint 1 and is created anyway never has its
-`ALWAYS` Environment superseded. Before the Job is created, `known_state(entry)` gives what is
-known about a Step entering the Environment from its `activation`, its `enableIf`, and the
-Step's entry (`Known::Entered`, `NotEntered`, or `Undetermined`; the first three bullets
+`ALWAYS` Environment superseded. Before the Job is created, `known_state(enabled, entry)`
+gives what is known about a Step entering the Environment from its `activation`, what its
+`enableIf` is known to be (`enabled`), and what the Step's entry is known to be (`entry`) (`Known::Entered`, `NotEntered`, or `Undetermined`; the first three bullets
 after §4 item 10), and `apply_exclusive_groups` applies the group bullet to one Step's
 Environments in Job order: a grouped one is entered only when it is entered by its own state
 and every earlier one of its group is known not to be, and is not entered when an earlier one

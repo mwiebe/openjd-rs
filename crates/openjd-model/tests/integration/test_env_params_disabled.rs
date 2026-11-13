@@ -6,15 +6,17 @@
 //! RANGE_EXPR Environment parameters (§4.5).
 //!
 //! An Environment is disabled for a Step when its own `enableIf` is `false` for
-//! the Step, decided with the values that are known: a Step's effective value
-//! that converts to its type is known whether or not it meets its constraints,
-//! and a missing or unconvertible one is `unresolved[T]`. A disabled
-//! Environment is not held to constraint 7, and the Step's values for it are
-//! not checked against their type and constraints, though constraint 5 still
-//! applies. Template validation and `check_environment_templates` check
-//! constraints 6 and 7 only for an Environment whose `enableIf` is absent or
-//! `true` (§7.6 rule 5). Two RANGE_EXPR values are equal when they denote the
-//! same integers.
+//! the Step, evaluated with the Step's concrete values: a Step's effective value
+//! that converts to its type is used whether or not it meets its constraints,
+//! and an `enableIf` that reads a missing or unconvertible one is not
+//! evaluated, so it does not disable the Environment. A disabled Environment
+//! is still held to constraint 7 for every Step it applies to, but the Step's
+//! values for it are not checked against their type and constraints, though
+//! constraint 5 still applies. Template validation and
+//! `check_environment_templates` check constraint 6 only for an Environment
+//! known not to be disabled: its `enableIf` is absent or known `true`, or it
+//! reads a literal value that does not convert (§3.2.2 item 2, §7.6 rule 5).
+//! Two RANGE_EXPR values are equal when they denote the same integers.
 
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
@@ -171,35 +173,42 @@ fn a_failed_resolved_default_is_reported_only_for_a_step_it_is_not_disabled_for(
 
 #[test]
 fn a_failed_enable_if_is_reported_once_and_the_environment_is_still_checked() {
-    // Both Steps lack P, so the enableIf sees the same unresolved value and
+    // Both Steps supply the same P, so the enableIf sees the same values and
     // is evaluated once; its error names both Steps. Which further errors
     // to report is an implementation choice; openjd-rs checks the
-    // Environment as if it is not disabled, so each Step's own mistakes (Q
-    // below its minimum, P missing) are reported in the same run.
-    let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-              parameterDefinitions: [{name: L, type: 'LIST[INT]', default: [1]}]\n\
-              jobEnvironments:\n- name: E\n  enableIf: \"Param.L[5] == 1 or Env.Param.P != ''\"\n  \
-              envParameterDefinitions: [{name: P, type: STRING}, {name: Q, type: INT, minValue: 5, \
-              default: 5}]\n  variables: {V: x}\n\
-              steps:\n- name: A\n  dependencies: [{environment: E, parameters: {Q: 1}}]\n  \
-              script: {actions: {onRun: {command: x}}}\n\
-              - name: B\n  dependencies: [{environment: E, parameters: {Q: 1}}]\n  \
-              script: {actions: {onRun: {command: x}}}\n";
-    // Template validation reports nothing: the enableIf is undetermined, so
-    // the value checks are left to job creation.
-    job_ok(jt);
+    // Environment as if it is not disabled, so each Step's own mistake (Q
+    // below its minimum) is reported in the same run.
+    let jt = |p: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+             jobEnvironments:\n- name: E\n  enableIf: \"Param.L[5] == 1 or Env.Param.P != ''\"\n  \
+             envParameterDefinitions: [{{name: P, type: STRING}}, {{name: Q, type: INT, \
+             minValue: 5, default: 5}}]\n  variables: {{V: x}}\n\
+             steps:\n- name: A\n  dependencies: [{{environment: E, parameters: {{Q: 1{p}}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n\
+             - name: B\n  dependencies: [{{environment: E, parameters: {{Q: 1{p}}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    // Without P, template validation reports constraint 7 for both Steps,
+    // whatever E's enableIf is (§3.2 constraint 7).
     let missing = |step: usize| {
         format!(
             "steps[{step}]:\n\tmust supply, in an 'environment:' dependency, every parameter \
-             without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+             without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'E' (its \
-             own enableIf could not be evaluated for this Step, so the Environment is checked as \
-             if it is not disabled)."
+             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'P' of Environment 'E'."
         )
     };
+    job_err(&jt(""), &[&missing(0), &missing(1)]);
+    // With P, template validation reports nothing: the enableIf reads a Job
+    // Parameter, so it is undetermined, and the value checks are left to
+    // job creation.
+    let jt = jt(", P: p");
+    job_ok(&jt);
     create_err(
-        jt,
+        &jt,
         &[],
         &[],
         "JobTemplate",
@@ -211,8 +220,6 @@ fn a_failed_enable_if_is_reported_once_and_the_environment_is_still_checked() {
              than minimum 5",
             "steps[1] -> dependencies[0] -> parameters -> Q:\n\tParameter 'Q': value 1 is less \
              than minimum 5",
-            &missing(0),
-            &missing(1),
         ],
     );
 }
@@ -265,25 +272,36 @@ fn check_environment_templates_checks_values_only_for_an_attachment_certainly_no
                        Parameter 'Mode': value 'c' is not in allowed values";
     let missing =
         "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-                   parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+                   parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
                    activation BY_DEFAULT that the Step does not decline, and each one \
-                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of \
+                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'P' of \
                    Environment 'Lic' (EnvironmentTemplate[0]).";
-    // `true`: every check.
-    let err = check(jt, &[&env("true")]).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[undeclared, not_allowed, missing],
-    );
-    // `false` or an expression: only constraint 5.
+    // `true`, or the constant expression `"true"`, which is known before
+    // job creation (§7.6 rule 5): every check.
+    for enable_if in ["true", "\"true\""] {
+        let err = check(jt, &[&env(enable_if)]).unwrap_err();
+        assert_errors(
+            &err.to_string(),
+            "Submission",
+            &[undeclared, not_allowed, missing],
+        );
+    }
+    // `false`, or an expression over `Job.Name`, unknown before job
+    // creation: constraint 5, and constraint 7, which holds whatever Lic's
+    // enableIf is (§3.2 constraint 7), but not the value checks.
     for enable_if in ["false", "\"Job.Name == 'J'\""] {
         let err = check(jt, &[&env(enable_if)]).unwrap_err();
-        assert_errors(&err.to_string(), "Submission", &[undeclared]);
+        assert_errors(&err.to_string(), "Submission", &[undeclared, missing]);
     }
-    // Job creation: `false` disables Lic, so only constraint 5; the
+    // Job creation: `false` disables Lic, so constraints 5 and 7 only; the
     // expression is `true`, so every check.
-    create_err(jt, &[&env("false")], &[], "Submission", &[undeclared]);
+    create_err(
+        jt,
+        &[&env("false")],
+        &[],
+        "Submission",
+        &[undeclared, missing],
+    );
     create_err(
         jt,
         &[&env("\"Job.Name == 'J'\"")],
@@ -612,18 +630,21 @@ fn a_computed_range_expr_value_meets_its_length_constraints_as_written_and_canon
 }
 
 #[test]
-fn certainly_unresolved_reads_a_range_expr_literal_in_canonical_form() {
-    // `19-18:-5,13-18` denotes 13 to 19, canonical form `13-19`. Template
-    // validation reads that range_expr, as job creation does, so the
-    // enableIf is known false whatever the missing U is: E is disabled,
-    // and the INT N it does not convert is not checked.
+fn an_enable_if_reads_a_range_expr_literal_in_canonical_form() {
+    // `19-18:-5,13-18` denotes 13 to 19, canonical form `13-19`. Job
+    // creation reads that range_expr, so the enableIf is `false`: E is
+    // disabled, and the INT N it does not read, which does not convert, is
+    // not checked (§7.4.1 step 6). Template validation leaves the enableIf,
+    // which reads R and U, to job creation (§7.6 rule 5), and does not
+    // check N either. U is supplied, since E applies to X whatever its
+    // enableIf is (§3.2 constraint 7).
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               jobEnvironments:\n- name: E\n  \
               enableIf: \"string(Env.Param.R) != '13-19' and Env.Param.U == 1\"\n  \
               envParameterDefinitions:\n  - {name: R, type: RANGE_EXPR}\n  \
               - {name: U, type: INT}\n  - {name: N, type: INT}\n  variables: {V: x}\n\
               steps:\n- name: X\n  dependencies: [{environment: E, parameters: \
-              {R: '19-18:-5,13-18', N: 'x'}}]\n  script: {actions: {onRun: {command: x}}}\n";
+              {R: '19-18:-5,13-18', U: 1, N: 'x'}}]\n  script: {actions: {onRun: {command: x}}}\n";
     job_ok(jt);
     assert_eq!(
         create_ok(jt, &[], &[]).job.steps[0].environments,
@@ -636,9 +657,9 @@ fn a_range_expr_value_that_does_not_parse_is_rejected() {
     let bad = "is not a valid RANGE_EXPR value: Value '1-' is not a valid range expression: \
                Unexpected end of expression: '1-'";
     let at = format!("steps[1] -> dependencies[0] -> parameters -> Frames:\n\t{bad}");
-    // Cache's enableIf reads only Frames, which does not convert for B: it
-    // is certainly unresolved, so Cache is not disabled for B, and template
-    // validation rejects the literal (§3.2.2).
+    // Cache's enableIf reads Frames, which does not convert for B, so it is
+    // not evaluated for B and Cache is not disabled for B: template
+    // validation rejects the literal (§3.2.2 item 2).
     let jt = RANGES.replace("'1,3,5,7,9'", "'1-'");
     job_err(&jt, &[&at]);
     // So it does without the enableIf.
@@ -646,15 +667,14 @@ fn a_range_expr_value_that_does_not_parse_is_rejected() {
         &jt.replace("  enableIf: \"len(Env.Param.Frames) > 3\"\n", ""),
         &[&at],
     );
-    // An enableIf that also reads Job.Name is undetermined at template
-    // validation (§7.6 rule 5); job creation finds it unresolved and
-    // rejects the literal.
+    // An enableIf that also reads Job.Name still reads Frames, so Cache is
+    // certainly not disabled for B either, and template validation rejects
+    // the literal (§3.2.2 item 2).
     let jt = jt.replace(
         "\"len(Env.Param.Frames) > 3\"",
         "\"len(Env.Param.Frames) > 3 and Job.Name != ''\"",
     );
-    job_ok(&jt);
-    create_err(&jt, &[], &[], "JobTemplate", &[&at]);
+    job_err(&jt, &[&at]);
     // A format string is resolved at job creation.
     create_err(
         &RANGES.replace("'1,3,5,7,9'", "\"{{ '1-' }}\""),
@@ -672,13 +692,13 @@ fn a_range_expr_value_that_does_not_parse_is_rejected() {
 // ── Audit round 1 ───────────────────────────────────────────────────
 
 #[test]
-fn an_unreachable_attachment_disabled_by_its_enable_if_needs_no_values() {
+fn an_unreachable_attachment_needs_its_values_whatever_its_enable_if() {
     // §3.2.1 items 3 and 4: no entry can reach an attachment named like a
     // Job Environment or like another attachment. With `activation:
     // BY_DEFAULT` (here, by omission) and a parameter without a default it
-    // rejects the submission, unless its own `enableIf` disables it
-    // (§3.2.2): then no Session enters it. An `ALWAYS` one cannot be
-    // disabled (test_env_params_activation).
+    // rejects the submission whenever it applies to a Step that is not
+    // stopped, whatever its own `enableIf` (§3.2 constraint 7). An `ALWAYS`
+    // one is covered in test_env_params_activation.
     let att = |enable_if: &str| {
         format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
@@ -711,47 +731,30 @@ fn an_unreachable_attachment_disabled_by_its_enable_if_needs_no_values() {
         )
     };
     const EVERY: &str = "Its activation is BY_DEFAULT, so every Session enters it";
-    const NOT_DISABLED: &str =
-        "Its activation is BY_DEFAULT and its enableIf does not disable it, so Sessions enter it";
-    // Without an enableIf: rejected, by check and by job creation.
-    let none = att("");
-    let err = check(shadowed, &[&none]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[&item_4(EVERY)]);
-    create_err(shadowed, &[&none], &[], "Submission", &[&item_4(EVERY)]);
-    create_err(
-        plain,
-        &[&none, &none],
-        &[],
-        "Submission",
-        &[&item_3(0, EVERY), &item_3(1, EVERY)],
-    );
-    // `false`, or an expression that is false: not entered, so valid; check
-    // reports nothing for the expression, which is undetermined there.
-    for enable_if in ["  enableIf: false\n", "  enableIf: \"Job.Name == 'K'\"\n"] {
+    const WHATEVER: &str = "Its activation is BY_DEFAULT, so it applies to every Step whatever \
+                            its enableIf and exclusiveGroup (§3.2 constraint 7)";
+    // Without an enableIf, and with `false`, an expression that is `false`
+    // or `true` for S, or one that reads X, which no Step can supply:
+    // rejected, by check and by job creation.
+    for (enable_if, entered) in [
+        ("", EVERY),
+        ("  enableIf: false\n", WHATEVER),
+        ("  enableIf: \"Job.Name == 'K'\"\n", WHATEVER),
+        ("  enableIf: \"Job.Name == 'J'\"\n", WHATEVER),
+        ("  enableIf: \"Env.Param.X != ''\"\n", WHATEVER),
+    ] {
         let env = att(enable_if);
-        check(shadowed, &[&env]).unwrap();
-        create_ok(shadowed, &[&env], &[]);
-        create_ok(plain, &[&env, &env], &[]);
+        let err = check(shadowed, &[&env]).unwrap_err();
+        assert_errors(&err.to_string(), "Submission", &[&item_4(entered)]);
+        create_err(shadowed, &[&env], &[], "Submission", &[&item_4(entered)]);
+        create_err(
+            plain,
+            &[&env, &env],
+            &[],
+            "Submission",
+            &[&item_3(0, entered), &item_3(1, entered)],
+        );
     }
-    // An expression that is true: rejected at job creation only.
-    let env = att("  enableIf: \"Job.Name == 'J'\"\n");
-    check(shadowed, &[&env]).unwrap();
-    create_err(
-        shadowed,
-        &[&env],
-        &[],
-        "Submission",
-        &[&item_4(NOT_DISABLED)],
-    );
-    // An expression that reads X, which no Step can supply, is unresolved.
-    let env = att("  enableIf: \"Env.Param.X != ''\"\n");
-    create_err(
-        shadowed,
-        &[&env],
-        &[],
-        "Submission",
-        &[&item_4(NOT_DISABLED)],
-    );
 }
 
 #[test]
@@ -824,11 +827,10 @@ fn an_attachments_failed_enable_if_still_reports_missing_parameters_and_host_con
         "Submission",
         &[
             "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-             parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+             parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of Environment 'A' \
-             (EnvironmentTemplate[0]) (its own enableIf could not be evaluated for this Step, so \
-             the Environment is checked as if it is not disabled).",
+             with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'P' of Environment 'A' \
+             (EnvironmentTemplate[0]).",
             enable_if,
         ],
     );
@@ -848,11 +850,12 @@ fn an_attachments_failed_enable_if_still_reports_missing_parameters_and_host_con
 }
 
 #[test]
-fn an_unreachable_attachment_whose_enable_if_fails_is_reported_saying_so() {
-    // A has a Job Environment's name, so no entry can supply P. Its enableIf
-    // fails, and it is checked as if not disabled, so its unreachable
-    // parameter is reported once too, saying the enableIf could not be
-    // evaluated.
+fn an_unreachable_attachment_whose_enable_if_fails_is_reported_with_both_errors() {
+    // A has a Job Environment's name, so no entry can supply P. It applies
+    // to S whatever its enableIf (§3.2 constraint 7), so its unreachable
+    // parameter is reported once, and its enableIf, which reads only N,
+    // a value that converts, is evaluated for S and fails, which is
+    // reported too (§7.4.1 step 6).
     let att = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Gpu\n  envParameterDefinitions: [{name: P, type: STRING}, \
                {name: N, type: INT, default: -1}]\n  enableIf: \"None if Env.Param.N < 0 else \
@@ -871,17 +874,18 @@ fn an_unreachable_attachment_whose_enable_if_fails_is_reported_saying_so() {
             "EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment \
              'Gpu' has the same name as a jobEnvironments entry of the Job Template, so no \
              'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
-             parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT \
-             and its enableIf could not be evaluated, so it is checked as if Sessions enter it, \
-             and the submission is rejected (§3.2.1).",
+             parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, \
+             so it applies to every Step whatever its enableIf and exclusiveGroup (§3.2 \
+             constraint 7), and the submission is rejected (§3.2.1).",
         ],
     );
 }
 
 #[test]
 fn an_attachment_whose_enable_if_is_unresolved_is_entered() {
-    // A's enableIf reads N, which no Step supplies: unresolved, so A is not
-    // disabled. It is held to constraint 7, and it is a layer for the
+    // A's enableIf reads N, which no Step supplies, so it is not evaluated
+    // (§3.2.2 item 2) and A is not disabled. A is held to constraint 7,
+    // which it would be whatever its enableIf, and it is a layer for the
     // single-layer rule.
     let att = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, \
                EXPR]\nenvironment:\n  name: A\n  envParameterDefinitions: [{name: N, type: \
@@ -899,11 +903,10 @@ fn an_attachment_whose_enable_if_is_unresolved_is_entered() {
         "Submission",
         &[
             "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-             parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
+             parameter without a default of each Environment that applies to it (every attached Environment with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'N' of Environment 'A' \
-             (EnvironmentTemplate[0]) (its own enableIf depends on a value that is missing or \
-             does not convert, so it does not disable the Environment; Template Schemas §3.2.2).",
+             with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'N' of Environment 'A' \
+             (EnvironmentTemplate[0]).",
             "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define \
              wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A' \
              (EnvironmentTemplate[0]), 'Outer'. A Session may have at most one Environment \
@@ -913,31 +916,53 @@ fn an_attachment_whose_enable_if_is_unresolved_is_entered() {
 }
 
 #[test]
-fn an_enable_if_of_an_optional_type_is_unresolved_when_it_reads_an_unknown_value() {
-    // `None if Env.Param.N > 0 else true` has static type `bool?`; with N
-    // unknown its value is unresolved, not an error, so constraint 7 reports
-    // the missing N: at template validation, where the enableIf is certainly
-    // unresolved, and, for one that also reads Job.Name (undetermined at
-    // template validation), at job creation.
+fn an_enable_if_of_an_optional_type_that_reads_a_missing_value_is_not_evaluated() {
+    // `None if Env.Param.N > 0 else true` has static type `bool?`. With N
+    // missing, template validation reports the missing N whatever the
+    // enableIf (§3.2 constraint 7), for one that also reads Job.Name too.
+    // At job creation, which this attaches E to reach, an enableIf that
+    // reads a missing value is not evaluated (§7.4.1 step 6), so the
+    // missing N is the only error, with no enableIf error.
+    let body = |enable_if: &str| {
+        format!(
+            "- name: E\n  envParameterDefinitions: [{{name: N, type: INT}}]\n  \
+             enableIf: \"{enable_if}\"\n  variables: {{V: x}}\n"
+        )
+    };
     let jt = |enable_if: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-             jobEnvironments:\n- name: E\n  envParameterDefinitions: [{{name: N, type: INT}}]\n  \
-             enableIf: \"{enable_if}\"\n  variables: {{V: x}}\n\
-             steps:\n- name: A\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+             jobEnvironments:\n{}\
+             steps:\n- name: A\n  script: {{actions: {{onRun: {{command: x}}}}}}\n",
+            body(enable_if)
         )
     };
     let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
-                   without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+                   without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
                    activation BY_DEFAULT that the Step does not decline, and each one \
-                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); \
-                   missing: 'N' of Environment 'E' (its own enableIf depends on a value that is \
-                   missing or does not convert, so it does not disable the Environment; Template \
-                   Schemas §3.2.2).";
-    job_err(&jt("None if Env.Param.N > 0 else true"), &[missing]);
-    let at_creation = jt("None if Env.Param.N > 0 and Job.Name != '' else true");
-    job_ok(&at_creation);
-    create_err(&at_creation, &[], &[], "JobTemplate", &[missing]);
+                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; \
+                   missing: 'N' of Environment 'E'.";
+    let attached_missing = "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' \
+                            dependency, every parameter without a default of each Environment \
+                            that applies to it (every attached Environment with activation \
+                            ALWAYS, each one with activation BY_DEFAULT that the Step does not \
+                            decline, and each one with activation ON_REQUEST that the Step \
+                            requests; Template Schemas §3.2.1), whatever that Environment's own \
+                            enableIf is; missing: 'N' of Environment 'E' (EnvironmentTemplate[0]).";
+    let plain = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                 name: J\nsteps:\n- name: A\n  script: {actions: {onRun: {command: x}}}\n";
+    for enable_if in [
+        "None if Env.Param.N > 0 else true",
+        "None if Env.Param.N > 0 and Job.Name != '' else true",
+    ] {
+        job_err(&jt(enable_if), &[missing]);
+        let env = format!(
+            "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+             environment:\n{}",
+            body(enable_if).replace("- name: E\n  ", "  name: E\n  ")
+        );
+        create_err(plain, &[&env], &[], "Submission", &[attached_missing]);
+    }
 }
 
 #[test]
@@ -1004,11 +1029,14 @@ fn a_path_constraint_is_not_checked_where_the_environment_is_disabled() {
 // ── Audit round 2 ───────────────────────────────────────────────────
 
 #[test]
-fn an_ambiguous_attachment_that_is_disabled_adds_no_error_of_its_own() {
+fn an_ambiguous_attachment_that_is_disabled_is_still_held_to_constraint_7_by_check() {
     // Both attachments named Lic are unreachable (§3.2.1 item 3). The only
-    // Step names Lic, so the entry is rejected as ambiguous and no Step
-    // decides Lic's enableIf; since it is `false`, Lic adds no error for its
-    // parameter without a default.
+    // Step names Lic, so the entry is rejected as ambiguous. Lic is
+    // BY_DEFAULT, so it applies to S whatever its enableIf, here `false`
+    // (§3.2 constraint 7): check, which reports every violation it is
+    // certain of, reports each copy's parameter without a default. Job
+    // creation stops S after the ambiguous entry (§7.4.1 step 3), so no Step
+    // that is not stopped applies Lic, and it reports the ambiguity alone.
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Lic\n  enableIf: false\n  envParameterDefinitions: [{name: P, \
                type: STRING}]\n  variables: {V: x}\n";
@@ -1020,23 +1048,38 @@ fn an_ambiguous_attachment_that_is_disabled_adds_no_error_of_its_own() {
                      'Lic', which 2 attached Environment Templates define (EnvironmentTemplate[0], \
                      EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas \
                      §3.2.1 item 3).";
+    let item_3 = |doc: usize| {
+        format!(
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
+             Environment 'Lic' is defined by 2 attached Environment Templates \
+             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency \
+             can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a \
+             default that no Step can supply: P. Its activation is BY_DEFAULT, so it applies to \
+             every Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the \
+             submission is rejected (§3.2.1)."
+        )
+    };
     create_err(jt, &[env, env], &[], "Submission", &[ambiguous]);
     let err = check(jt, &[env, env]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[ambiguous]);
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[ambiguous, &item_3(0), &item_3(1)],
+    );
 }
 
 #[test]
 fn an_unknown_value_keeps_its_parameters_type() {
-    // §3.2.2: a missing value is `unresolved[T]` of its parameter's type, so
-    // `Env.Param.N + 1` is an unresolved INT, not an error; the Environment
-    // is not disabled, and constraint 7 reports N, for a Job Environment and
-    // for an attachment alike.
+    // At template validation a value not yet known is `unresolved[T]` of
+    // its parameter's type, so `Env.Param.N + 1` is an unresolved INT, not
+    // an error (§7.6 rule 5). At job creation an enableIf that reads the
+    // missing N is not evaluated (§3.2.2 item 2). Either way constraint 7
+    // reports N, for a Job Environment and for an attachment alike.
     let missing = |prefix: &str, label: &str, why: &str| {
         format!(
             "{prefix}steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
-             without a default of each Environment its Sessions enter ({why}); missing: 'N' of \
-             Environment {label} (its own enableIf depends on a value that is missing or does not \
-             convert, so it does not disable the Environment; Template Schemas §3.2.2)."
+             without a default of each Environment that applies to it ({why}), whatever that Environment's own enableIf is; missing: 'N' of \
+             Environment {label}."
         )
     };
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -1177,26 +1220,42 @@ fn a_relative_literal_default_is_accepted_when_its_environment_is_disabled_for_e
 #[test]
 fn steps_that_differ_in_a_path_value_are_decided_separately() {
     // A PATH parameter is in an enableIf's scope as its Env.RawParam (§7.3.2),
-    // so Steps that differ in a PATH value have different known values and are
-    // decided, and reported, separately.
-    let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-              parameterDefinitions: [{name: L, type: 'LIST[INT]', default: [1]}]\n\
-              jobEnvironments:\n- name: E\n  envParameterDefinitions: [{name: D, type: PATH}]\n  \
-              enableIf: \"Param.L[5] == 1\"\n  variables: {V: x}\n\
-              steps:\n- name: A\n  dependencies: [{environment: E, parameters: {D: /a}}]\n  \
-              script: {actions: {onRun: {command: x}}}\n\
-              - name: B\n  dependencies: [{environment: E, parameters: {D: /b}}]\n  \
-              script: {actions: {onRun: {command: x}}}\n";
+    // so Steps that differ in a PATH value the enableIf reads have different
+    // known values and are decided, and reported, separately. A value the
+    // enableIf does not read is not bound (§7.4.1 step 6), so Steps that
+    // differ only in it are decided, and reported, once.
+    let jt = |enable_if: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+             jobEnvironments:\n- name: E\n  envParameterDefinitions: [{{name: D, type: PATH}}]\n  \
+             enableIf: \"{enable_if}\"\n  variables: {{V: x}}\n\
+             steps:\n- name: A\n  dependencies: [{{environment: E, parameters: {{D: /a}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n\
+             - name: B\n  dependencies: [{{environment: E, parameters: {{D: /b}}}}]\n  \
+             script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
     create_err(
-        jt,
+        &jt("Param.L[5] == 1 or Env.RawParam.D == '/a'"),
         &[],
         &[],
         "JobTemplate",
         &[
             "jobEnvironments[0] -> enableIf:\n\tcould not be evaluated: Index 5 out of bounds for \
-           list of length 1. Resolved for Step 'A'.\n  Param.L[5] == 1\n  ~~~~~~~^~~",
+           list of length 1. Resolved for Step 'A'.",
             "jobEnvironments[0] -> enableIf:\n\tcould not be evaluated: Index 5 out of bounds for \
-           list of length 1. Resolved for Step 'B'.\n  Param.L[5] == 1\n  ~~~~~~~^~~",
+           list of length 1. Resolved for Step 'B'.",
+        ],
+    );
+    create_err(
+        &jt("Param.L[5] == 1"),
+        &[],
+        &[],
+        "JobTemplate",
+        &[
+            "jobEnvironments[0] -> enableIf:\n\tcould not be evaluated: Index 5 out of bounds for \
+           list of length 1. Resolved for Steps 'A' and 'B'.\n  Param.L[5] == 1\n  ~~~~~~~^~~",
         ],
     );
 }
@@ -1227,8 +1286,9 @@ fn an_unreachable_attachments_error_follows_the_steps_values() {
 }
 
 #[test]
-fn an_ambiguous_attachment_whose_enable_if_is_true_is_an_error_saying_so() {
-    // §3.2.1 item 3, with an enableIf that does not disable the attachment.
+fn an_ambiguous_attachment_with_an_enable_if_is_an_error_saying_it_applies_whatever_it_is() {
+    // §3.2.1 item 3, with an enableIf: the attachment applies to every Step
+    // whatever its enableIf (§3.2 constraint 7), and the message says so.
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Lic\n  enableIf: \"Job.Name == 'J'\"\n  envParameterDefinitions: \
                [{name: Q, type: STRING}]\n  variables: {V: x}\n";
@@ -1240,8 +1300,9 @@ fn an_ambiguous_attachment_whose_enable_if_is_true_is_an_error_saying_so() {
              Environment 'Lic' is defined by 2 attached Environment Templates \
              (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency \
              can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a \
-             default that no Step can supply: Q. Its activation is BY_DEFAULT and its enableIf does \
-             not disable it, so Sessions enter it, and the submission is rejected (§3.2.1)."
+             default that no Step can supply: Q. Its activation is BY_DEFAULT, so it applies to \
+             every Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the \
+             submission is rejected (§3.2.1)."
         )
     };
     create_err(
@@ -1253,7 +1314,7 @@ fn an_ambiguous_attachment_whose_enable_if_is_true_is_an_error_saying_so() {
     );
 }
 
-// ── Audit round 4: certainly unresolved before job creation ────────
+// ── Audit round 4: what is known before job creation ───────────────
 
 /// A Job Environment `Lic` with the given `enableIf`, a STRING `Mode`
 /// (default `off`), a required STRING `Product`, and an INT `Seats`
@@ -1270,21 +1331,19 @@ fn lic(enable_if: &str, values: &str) -> String {
 }
 
 const LIC_MISSING: &str = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
-                           parameter without a default of each Environment its Sessions enter \
+                           parameter without a default of each Environment that applies to it \
                            (every jobEnvironments entry with activation ALWAYS, each one with \
                            activation BY_DEFAULT that the Step does not decline, and each one \
                            with activation ON_REQUEST that the Step requests; Template Schemas §3.2 \
-                           constraint 7); missing: 'Product' of Environment 'Lic' (its own \
-                           enableIf depends on a value that is missing or does not convert, so it \
-                           does not disable the Environment; Template Schemas §3.2.2).";
+                           constraint 7), whatever that Environment's own enableIf is; missing: 'Product' of Environment 'Lic'.";
 
 #[test]
 fn a_certain_failure_is_reported_at_template_validation() {
-    // §7.6 rule 5's preference: an enableIf that reads only values that
-    // stay unknown at job creation (a missing parameter, a literal that
-    // does not convert) is certainly unresolved, so the Environment is
-    // certainly not disabled, and its checks fail already at template
-    // validation (JB-114's shape).
+    // §7.6 rule 5's preference: a missing value is reported at template
+    // validation whatever the enableIf (§3.2 constraint 7, JB-114's shape),
+    // and a value is checked there when the Environment is certainly not
+    // disabled: its enableIf is known `true`, or reads a literal that does
+    // not convert, so it is never evaluated (§3.2.2 item 2).
     job_err(
         &lic("Env.Param.Product != 'none'", "{Mode: on}"),
         &[LIC_MISSING],
@@ -1297,10 +1356,10 @@ fn a_certain_failure_is_reported_at_template_validation() {
            Cannot parse 'many' as integer",
         ],
     );
-    // A format-string value's type, checked by pass 8, where the enableIf is
-    // certainly unresolved with the entry's values.
+    // A format-string value's type, checked by pass 8 where the enableIf is
+    // known `true`: the constant expression `true`.
     job_err(
-        &lic("Env.Param.Product != ''", "{Seats: \"{{ 'x' }}\"}"),
+        &lic("true", "{Seats: \"{{ 'x' }}\"}"),
         &[
             LIC_MISSING,
             "steps[0] -> dependencies[0] -> parameters -> Seats:\n\tFailed to parse interpolation \
@@ -1308,30 +1367,31 @@ fn a_certain_failure_is_reported_at_template_validation() {
              'x'\n  ^~~",
         ],
     );
+    // An enableIf that reads only the missing Product may still be decided
+    // at job creation for all template validation knows, so the value is
+    // not checked; only the missing value is reported.
+    job_err(
+        &lic("Env.Param.Product != ''", "{Seats: \"{{ 'x' }}\"}"),
+        &[LIC_MISSING],
+    );
 }
 
 #[test]
-fn a_known_enable_if_stays_unknown_before_job_creation() {
-    // §7.6 rule 5: an expression whose value the literals decide, a
-    // constant included, is unknown at template validation, so nothing is
-    // reported there; job creation decides it.
-    for enable_if in ["true", "Env.Param.Mode == 'off'"] {
-        let jt = lic(enable_if, "{Seats: 2}");
-        job_ok(&jt);
-        create_err(
-            &jt,
-            &[],
-            &[],
-            "JobTemplate",
-            &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
-               a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
-               activation BY_DEFAULT that the Step does not decline, and each one \
-               with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of Environment \
-               'Lic'."],
-        );
-    }
+fn a_constant_enable_if_is_known_and_one_over_env_param_waits_for_job_creation() {
+    // §7.6 rule 5: template validation evaluates an enableIf with every
+    // value unknown, Env.Param included, and a concrete bool is known. So
+    // the constant `true` is known: Lic is not disabled, and Seats's value
+    // is checked there. An expression over a value (here a literal Mode) is
+    // unknown there, so the value is left to job creation, which decides it.
+    let seats = "steps[0] -> dependencies[0] -> parameters -> Seats:\n\tis not a valid INT value: \
+                 Cannot parse 'many' as integer";
+    job_err(&lic("true", "{Seats: many, Product: p}"), &[seats]);
+    // `true` with the literals: not disabled, so job creation checks it.
+    let jt = lic("Env.Param.Mode == 'off'", "{Seats: many, Product: p}");
+    job_ok(&jt);
+    create_err(&jt, &[], &[], "JobTemplate", &[seats]);
     // `false` with the literals: disabled, so the Job is created.
-    let jt = lic("Env.Param.Mode == 'on'", "{Seats: 2}");
+    let jt = lic("Env.Param.Mode == 'on'", "{Seats: many, Product: p}");
     job_ok(&jt);
     create_ok(&jt, &[], &[]);
     // A value the enableIf reads that is a format string is known only at
@@ -1373,11 +1433,11 @@ fn range_expr_values_compare_by_value() {
 
 #[test]
 fn an_entry_that_may_be_disabled_gives_no_certain_values() {
-    // The entry's own enableIf is an expression, so whether it supplies
-    // anything is undetermined at template validation; E's enableIf, which
-    // reads the missing N, is then not certainly unresolved with the
-    // entry's values, so nothing is reported early (§7.6 rule 5). Disabled,
-    // the entry leaves E (ON_REQUEST) unentered, and the Job is created.
+    // The entry's own enableIf reads a Job Parameter, so whether it
+    // requests E and supplies anything is not known at template validation
+    // (§7.6 rule 5): E is left to job creation for the Step, its missing N
+    // included, and nothing is reported early. Disabled, the entry leaves
+    // E (ON_REQUEST) not applying to the Step, and the Job is created.
     let jt = |entry_enable_if: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -1406,12 +1466,10 @@ fn an_entry_that_may_be_disabled_gives_no_certain_values() {
             "steps[0] -> dependencies[0] -> parameters -> M:\n\tcould not be resolved as a value \
              of type INT: Cannot convert 'x' to int: invalid digit found in string\n  'x'\n  ^~~",
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-             default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+             default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
              with activation ON_REQUEST that the Step requests; \
-             Template Schemas §3.2 constraint 7); missing: 'N' of Environment 'E' (its own \
-             enableIf depends on a value that is missing or does not convert, so it does not \
-             disable the Environment; Template Schemas §3.2.2).",
+             Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'N' of Environment 'E'.",
         ],
     );
     // A disabled entry supplies nothing, so pass 8 does not type its values.
@@ -1419,52 +1477,57 @@ fn an_entry_that_may_be_disabled_gives_no_certain_values() {
 }
 
 #[test]
-fn certainly_unresolved_reads_env_raw_param_and_range_exprs_as_parsed() {
-    // `enable_if_certainly_unresolved` binds `Env.RawParam.*` too, and a
-    // RANGE_EXPR literal as its range_expr, as job creation and the Session
-    // do.
-    let jt = |enable_if: &str| {
+fn early_value_checks_follow_env_raw_param_reads_and_range_exprs_as_parsed() {
+    // Constraint 7 holds whatever the enableIf: a missing Seats is reported
+    // at template validation (§3.2 constraint 7).
+    let jt = |enable_if: &str, deps: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
              jobEnvironments:\n- name: Lic\n  enableIf: \"{enable_if}\"\n  \
              envParameterDefinitions:\n  - {{name: R, type: RANGE_EXPR, default: '1,3,5,7,9'}}\n  \
              - {{name: Seats, type: INT}}\n  variables: {{V: x}}\n\
-             steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+             steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
         )
     };
     let missing = "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
-                   without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+                   without a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
                    activation BY_DEFAULT that the Step does not decline, and each one \
-                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); \
-                   missing: 'Seats' of Environment 'Lic' (its own enableIf depends on a value \
-                   that is missing or does not convert, so it does not disable the Environment; \
-                   Template Schemas §3.2.2).";
-    job_err(&jt("Env.RawParam.Seats > 1"), &[missing]);
-    // `string(R)` is its canonical form `1-9:2`, so the conjunction depends
-    // on the missing Seats.
-    job_err(
-        &jt("string(Env.Param.R) == '1-9:2' and Env.Param.Seats > 1"),
-        &[missing],
+                   with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; \
+                   missing: 'Seats' of Environment 'Lic'.";
+    job_err(&jt("Env.RawParam.Seats > 1", ""), &[missing]);
+    // A Seats literal that does not convert: an enableIf that reads Seats,
+    // as Env.RawParam too, and whether or not evaluation reaches it, is
+    // never evaluated, so Lic is certainly not disabled, and template
+    // validation rejects the literal (§3.2.2 item 2).
+    let many = "  dependencies: [{environment: Lic, parameters: {Seats: many}}]\n";
+    let bad = "steps[0] -> dependencies[0] -> parameters -> Seats:\n\tis not a valid INT value: \
+               Cannot parse 'many' as integer";
+    for enable_if in [
+        "Env.RawParam.Seats > 1",
+        "len(Env.Param.R) == 9 and Env.Param.Seats > 1",
+    ] {
+        job_err(&jt(enable_if, many), &[bad]);
+    }
+    // One that does not read Seats is left to job creation, which reads R
+    // as its range_expr: `len(R)` counts its 5 integers, not the
+    // characters of a string. `true`: Lic is entered and the literal
+    // rejected; `false`: Lic is disabled and the literal not checked.
+    let five = jt("len(Env.Param.R) == 5", many);
+    job_ok(&five);
+    create_err(&five, &[], &[], "JobTemplate", &[bad]);
+    let nine = jt("len(Env.Param.R) == 9", many);
+    job_ok(&nine);
+    assert_eq!(
+        create_ok(&nine, &[], &[]).job.steps[0].environments,
+        Some(vec![])
     );
-    // It is not `1,3,5,7,9`, so this conjunction is false whatever Seats
-    // is, and the Environment may be disabled: left to job creation.
-    job_ok(&jt(
-        "string(Env.Param.R) == '1,3,5,7,9' and Env.Param.Seats > 1",
-    ));
-    // `len(R)` counts the range_expr's 5 integers, not the characters of a
-    // string, so only the first conjunction depends on the missing Seats.
-    job_err(
-        &jt("len(Env.Param.R) == 5 and Env.Param.Seats > 1"),
-        &[missing],
-    );
-    job_ok(&jt("len(Env.Param.R) == 9 and Env.Param.Seats > 1"));
 }
 
 #[test]
-fn check_reports_an_unreachable_attachment_whose_enable_if_is_certainly_unresolved() {
-    // The attachment's enableIf reads only X, which no Step can supply, so
-    // it is certainly unresolved: check reports the attachment-level error
-    // as job creation does.
+fn check_reports_an_unreachable_attachment_whatever_its_enable_if() {
+    // The attachment applies to S whatever its enableIf, here one that reads
+    // only X, which no Step can supply (§3.2 constraint 7): check reports
+    // the attachment-level error as job creation does.
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Gpu\n  enableIf: \"Env.Param.X != ''\"\n  \
                envParameterDefinitions: [{name: X, type: STRING}]\n  variables: {V: x}\n";
@@ -1475,8 +1538,9 @@ fn check_reports_an_unreachable_attachment_whose_enable_if_is_certainly_unresolv
                     Environment 'Gpu' has the same name as a jobEnvironments entry of the Job \
                     Template, so no 'environment:' dependency can reach it (Template Schemas \
                     §3.2.1 item 4), and it has parameters without a default that no Step can \
-                    supply: X. Its activation is BY_DEFAULT and its enableIf does not disable it, so \
-                    Sessions enter it, and the submission is rejected (§3.2.1).";
+                    supply: X. Its activation is BY_DEFAULT, so it applies to every Step whatever \
+                    its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is \
+                    rejected (§3.2.1).";
     let err = check(shadowed, &[env]).unwrap_err();
     assert_errors(&err.to_string(), "Submission", &[expected]);
     create_err(shadowed, &[env], &[], "Submission", &[expected]);
@@ -1499,29 +1563,28 @@ fn x_and_y(activation: &str, values: &str) -> String {
 }
 
 #[test]
-fn constraint_7_reads_the_entrys_values_before_job_creation() {
-    // With X: 2 supplied, the enableIf is known `false` with the entry's
-    // values: not certainly unresolved, so template validation reports
-    // nothing, and job creation disables E. With X: 1 it is known `true`,
-    // which also stays unknown at template validation (§7.6 rule 5); job
-    // creation then reports the missing Y.
+fn constraint_7_holds_whatever_the_entrys_values_make_the_enable_if() {
+    // With Y missing, template validation reports constraint 7 whether the
+    // entry's X makes E's enableIf `false` (X: 2) or `true` (X: 1): E applies
+    // to S, as BY_DEFAULT and as an ON_REQUEST one the entry requests,
+    // whatever its enableIf (§3.2 constraint 7). With Y supplied, job
+    // creation decides the enableIf from X: disabled for X: 2, entered for
+    // X: 1.
     for activation in ["BY_DEFAULT", "ON_REQUEST"] {
-        let jt = x_and_y(activation, "{X: 2}");
-        job_ok(&jt);
-        create_ok(&jt, &[], &[]);
-        let jt = x_and_y(activation, "{X: 1}");
-        job_ok(&jt);
-        create_err(
-            &jt,
-            &[],
-            &[],
-            "JobTemplate",
-            &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
-               a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
-               activation BY_DEFAULT that the Step does not decline, and each one \
-               with activation ON_REQUEST that the Step requests; \
-               Template Schemas §3.2 constraint 7); missing: 'Y' of Environment 'E'."],
-        );
+        for x in ["2", "1"] {
+            job_err(
+                &x_and_y(activation, &format!("{{X: {x}}}")),
+                &["steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
+                   a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
+                   activation BY_DEFAULT that the Step does not decline, and each one \
+                   with activation ON_REQUEST that the Step requests; \
+                   Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'Y' of Environment 'E'."],
+            );
+        }
+        let created = create_ok(&x_and_y(activation, "{X: 2, Y: 0}"), &[], &[]);
+        assert_eq!(created.job.steps[0].environments, Some(vec![]));
+        let created = create_ok(&x_and_y(activation, "{X: 1, Y: 0}"), &[], &[]);
+        assert_eq!(created.job.steps[0].environments, None);
     }
 }
 
@@ -1566,12 +1629,10 @@ fn an_enable_if_that_reads_a_missing_path_parameter_is_reported_at_template_vali
          {V: x}\nsteps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
         &[
             "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without \
-             a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
+             a default of each Environment that applies to it (every jobEnvironments entry with activation ALWAYS, each one with \
              activation BY_DEFAULT that the Step does not decline, and each one \
              with activation ON_REQUEST that the Step requests; \
-             Template Schemas §3.2 constraint 7); missing: 'P', 'Q' of Environment 'E' (its own \
-             enableIf depends on a value that is missing or does not convert, so it does not \
-             disable the Environment; Template Schemas §3.2.2).",
+             Template Schemas §3.2 constraint 7), whatever that Environment's own enableIf is; missing: 'P', 'Q' of Environment 'E'.",
         ],
     );
 }

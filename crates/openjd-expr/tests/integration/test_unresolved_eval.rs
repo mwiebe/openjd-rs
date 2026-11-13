@@ -195,6 +195,92 @@ fn ifelse_unknown_condition_both_fail() {
     assert_err_w("X + 'a' if cond else Y * 'b'", &st, &["Both branches fail"]);
 }
 
+// 2026-02 "Conditional Expressions with Unknown Conditions": branches that
+// give the same known value give that value, `c if U else c` is `c`.
+
+#[test]
+fn ifelse_unknown_condition_equal_branches_is_that_value() {
+    let st = st_unresolved(vec![("cond", "bool")]);
+    assert_eq!(
+        eval_u("false if cond else false", &st),
+        ExprValue::Bool(false)
+    );
+    assert_eq!(eval_u("true if cond else true", &st), ExprValue::Bool(true));
+    assert_eq!(
+        eval_u("'a' if cond else 'a'", &st),
+        ExprValue::String("a".into())
+    );
+    assert_eq!(
+        eval_u("[1, 2] if cond else [1, 2]", &st),
+        eval_u("[1, 2]", &st)
+    );
+    assert_eq!(eval_u("(1 + 1) if cond else 2", &st), ExprValue::Int(2));
+    // Nested: the inner conditional is known, so the outer one is too.
+    assert_eq!(
+        eval_u("(1 if cond else 1) if cond else 1", &st),
+        ExprValue::Int(1)
+    );
+}
+
+#[test]
+fn ifelse_unknown_condition_different_branches_stay_unresolved() {
+    let st = st_unresolved(vec![("cond", "bool")]);
+    assert_eq!(
+        eval_u("true if cond else false", &st).expr_type(),
+        tp("unresolved[bool]")
+    );
+    // Equal as numbers, but of different types.
+    assert_eq!(
+        eval_u("1 if cond else 1.0", &st).expr_type(),
+        tp("unresolved[int | float]")
+    );
+    // The same float written with different text (§1.3.4).
+    let mut st = st_unresolved(vec![("cond", "bool")]);
+    st.set(
+        "A",
+        ExprValue::Float(openjd_expr::value::Float64::with_str(3.1, "3.10".into()).unwrap()),
+    )
+    .unwrap();
+    st.set(
+        "B",
+        ExprValue::Float(openjd_expr::value::Float64::with_str(3.1, "3.1".into()).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(
+        eval_u("A if cond else B", &st).expr_type(),
+        tp("unresolved[float]")
+    );
+    assert_eq!(
+        eval_u("[A] if cond else [B]", &st).expr_type(),
+        tp("unresolved[list[float]]")
+    );
+    assert_eq!(
+        eval_u("[[A]] if cond else [[B]]", &st).expr_type(),
+        tp("unresolved[list[list[float]]]")
+    );
+    assert_eq!(eval_u("A if cond else A", &st).to_display_string(), "3.10");
+    // An unresolved branch is never known, even beside an equal type.
+    let st = st_unresolved(vec![("cond", "bool"), ("X", "int")]);
+    assert_eq!(
+        eval_u("X if cond else X", &st).expr_type(),
+        tp("unresolved[int]")
+    );
+}
+
+#[test]
+fn ifelse_equal_branches_decide_an_enclosing_boolop() {
+    // `U and (false if U else false)` is `false` once the conditional is.
+    let st = st_unresolved(vec![("cond", "bool"), ("F", "bool")]);
+    assert_eq!(
+        eval_u("F and (false if cond else false)", &st),
+        ExprValue::Bool(false)
+    );
+    assert_eq!(
+        eval_u("not (true if cond else true)", &st),
+        ExprValue::Bool(false)
+    );
+}
+
 // ══════════════════════════════════════════════════════════════
 // TestUnknownListLiterals
 // ══════════════════════════════════════════════════════════════
