@@ -134,11 +134,15 @@ the callback reports it; and the session settles through `settle_after_action(Fa
 so it is ending-only (`ReadyEnding`). Two of these run before the action is reported
 `Running`, so they occur even for an environment with no `onEnter`/`onExit`: building the
 symbol table (an undeserializable `resolved_symtab`, a job parameter value that can't be
-coerced to its declared type, a `PATH` or `LIST[PATH]` value over the path mapping limit)
-and resolving an environment's `variables`. The rest run after `Running`: writing the path mapping rules file and resolving or
+coerced to its declared type, a `PATH` or `LIST[PATH]` value over the path mapping limit,
+or, with `CONTROL_FLOW`, a path-typed `Steps.*` or loop input in `options.path_inputs` that
+is missing, stored with the wrong type or over the path mapping limit) and resolving an
+environment's `variables`. The rest run after `Running`: writing the path mapping rules file and resolving or
 writing an RFC 0008 wrap hook's symbols and embedded files (in the `onEnter`/`onExit`
 action branch), and, in `run_task` only, building the symbol table and coercing task
-parameter values (`run_task` reports `Running` before it builds the table). (The Python
+parameter values (`run_task` reports `Running` before it builds the table) and, with
+`CONTROL_FLOW`, setting up output-variable collection (for example a `CHUNK[INT]` value
+that is not a range expression; see [Output variables](#output-variables-control_flow)). (The Python
 runtime writes the path mapping rules file unconditionally, so it can fail that write for
 an environment with no `onEnter`/`onExit` where Rust does not — a pre-existing
 divergence.) Failures after the subprocess is dispatched,

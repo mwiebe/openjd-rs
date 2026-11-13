@@ -178,8 +178,9 @@ one of two kinds:
   `Runtime` argument checks. It changes nothing: the state, the entered environments and
   the last action's status are as they were, and no callback fires.
 - **A failed action**, for any error once the call is accepted. For a failure before the
-  subprocess starts (building the symbol table, resolving an environment's `variables`,
-  path mapping, wrap-hook setup) the action status is `Failed` with the error's message;
+  subprocess starts (building the symbol table, including CONTROL_FLOW's path-typed
+  `Steps.*` inputs, resolving an environment's `variables`, path mapping, wrap-hook
+  setup, and CONTROL_FLOW output-variable setup in `run_task`) the action status is `Failed` with the error's message;
   this matches the Python library, which reports these through `action_status` without
   raising. For an `onEnter`/`onExit` that runs and ends non-`Success`, the error is
   `EnvironmentScriptFailed` and the action status is the script's own terminal state
