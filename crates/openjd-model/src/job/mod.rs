@@ -241,11 +241,14 @@ impl Step {
     /// A FLOAT given as a YAML or JSON number has no text it was written
     /// with, so `create_job` writes it as a computed float is written
     /// (Template Schemas §3.2.2): the number `1.50` is `1.5`, equal to
-    /// `"1.5"` and not to `"1.50"`, and the number `2` is `2.0`. The comparison assumes values in
-    /// the form `create_job` writes them. A deserialized Job whose INT, BOOL,
-    /// or FLOAT values are spelled another way (`"007"` for an INT, `"yes"`
-    /// for a BOOL) compares them by that text, so values a Session would
-    /// render alike can compare unequal. That can cost an exit and enter
+    /// `"1.5"` and not to `"1.50"`, and the number `2` is `2.0`.
+    ///
+    /// The comparison assumes values in the form `create_job` writes them. A
+    /// deserialized Job whose INT or BOOL values are spelled another way
+    /// (`"007"` for an INT, `"yes"` for a BOOL) compares them by that text,
+    /// so values a Session would render alike can compare unequal. (A
+    /// FLOAT's stored text is the text a Session renders, so for a FLOAT the
+    /// comparison is exact.) That can cost an exit and enter
     /// that was not needed, but never shares an Environment between values
     /// it can tell apart.
     #[must_use]

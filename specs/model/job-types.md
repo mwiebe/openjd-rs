@@ -192,9 +192,10 @@ including itself, on either side. So for the Steps of a Job from `create_job`, t
 `environment_parameters` agrees with this comparison except for the order of the list.
 `EnvironmentParameterValues::values_equal` applies the same rule to one Environment's values. A
 scheduler can key Sessions on the transport form; it needs no numeric comparison. The comparison
-assumes values in the form `create_job` writes them: a deserialized Job whose INT, BOOL, or FLOAT
-values are spelled another way (`"007"`, `"yes"`) compares them by that text, which can cost an
-unneeded exit and enter but never shares an Environment between values a Session can tell apart.
+assumes values in the form `create_job` writes them: a deserialized Job whose INT or BOOL values are
+spelled another way (`"007"`, `"yes"`) compares them by that text, which can cost an unneeded exit
+and enter but never shares an Environment between values a Session can tell apart. A FLOAT's stored
+text is the text a Session renders, so for a FLOAT the comparison is exact.
 
 ### StepScript, StepActions, Action
 

@@ -1054,6 +1054,9 @@ fn floats_compare_by_their_text_not_by_value() {
         (r#"{F: 1.50}"#, r#"{F: "1.50"}"#),
         (r#"{Fs: [1.50]}"#, r#"{Fs: ["1.50"]}"#),
         ("{F: 2}", r#"{F: "2"}"#),
+        // Exponent case and a sign are part of the text.
+        (r#"{F: "1E2"}"#, r#"{F: "1e2"}"#),
+        (r#"{F: "+3.1"}"#, r#"{F: "3.1"}"#),
     ] {
         let job = pair(a, b);
         assert!(
@@ -1113,10 +1116,11 @@ fn ints_and_bools_have_one_string_form() {
 #[test]
 fn a_deserialized_job_compares_values_by_their_stored_text() {
     // The comparison assumes values in the form `create_job` writes them
-    // (`Step::environment_values_equal`). A deserialized Step whose INT,
-    // BOOL, or FLOAT is spelled another way compares by that text, although
-    // a Session renders it alike (RANGE_EXPR, which compares by canonical
-    // form, is range_expr_values_compare_by_value).
+    // (`Step::environment_values_equal`). A deserialized Step whose INT or
+    // BOOL is spelled another way compares by that text, although a Session
+    // renders it alike; a FLOAT respelled renders differently too
+    // (RANGE_EXPR, which compares by canonical form, is
+    // range_expr_values_compare_by_value).
     let job = pair("{N: 0}", "{N: 0}");
     let respell = |name: &str, text: &str| {
         let mut json = serde_json::to_value(&job.steps[1]).unwrap();
@@ -1139,7 +1143,8 @@ fn a_deserialized_job_compares_values_by_their_stored_text() {
 
 #[test]
 fn strings_compare_by_code_points_without_normalization() {
-    // §3.2.2: U+00E9 and "e" with U+0301 render alike but are not equal.
+    // §3.2.2: U+00E9 and "e" with U+0301 look alike but are different code
+    // points, so they are not equal.
     let job = pair(r#"{S: "caf\u00e9"}"#, r#"{S: "cafe\u0301"}"#);
     assert!(!job.steps[0].environment_values_equal(&job.steps[1]));
     let job = pair(r#"{S: "caf\u00e9"}"#, r#"{S: "café"}"#);
