@@ -1824,11 +1824,11 @@ environment:
     }
 }
 
-/// The converse: when the literal value as given leaves the `enableIf`
-/// to a value that stays unknown, `check_environment_templates` reports
-/// the missing parameter, as job creation does.
+/// The converse: whatever the `enableIf` makes of the literal path,
+/// `check_environment_templates` reports the missing parameter, as job
+/// creation does (§3.2 constraint 7).
 #[test]
-fn check_reports_a_missing_parameter_an_enable_if_on_a_literal_path_leaves_unresolved() {
+fn check_reports_a_missing_parameter_whatever_an_enable_if_on_a_literal_path_gives() {
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]

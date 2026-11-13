@@ -298,3 +298,63 @@ fn an_attached_environment_applies_whatever_its_enable_if() {
     let err = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap_err();
     assert_errors(&err.to_string(), "Submission", &[missing]);
 }
+
+#[test]
+fn an_always_environment_with_an_entry_not_known_is_held_to_constraint_7_early() {
+    // A's entry for the ALWAYS Lic has an enableIf that is not known. If
+    // it is enabled, it leaves Product missing; if it is disabled, it is an
+    // error of its own and supplies nothing. So Product is missing whatever
+    // it resolves to, and template validation reports it (§7.6 rule 5).
+    let jt = entry("ALWAYS", "Param.F");
+    job_err(&jt, &[&missing_job(0, "'Product'", "Lic")]);
+    // An entry that supplies Product leaves nothing certain: enabled it is
+    // valid, and the disabled case is the entry's own error at job
+    // creation.
+    let jt = jt.replace(
+        "enableIf: \"Param.F\"}",
+        "enableIf: \"Param.F\", parameters: {Product: p}}",
+    );
+    let jt_ok = job_ok(&jt);
+    create_job(&jt_ok, &job_params(&jt_ok, &[]), &template_ctx(&jt_ok)).unwrap();
+    let err = create_job(
+        &jt_ok,
+        &job_params(&jt_ok, &[("F", "false")]),
+        &template_ctx(&jt_ok),
+    )
+    .unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &[
+            "steps[0] -> dependencies[0] -> enableIf:\n\tis false, so Step 'A' would decline \
+           Environment 'Lic', whose activation is ALWAYS: no Step can leave out an ALWAYS \
+           Environment (Template Schemas §3.2 item 3.2).",
+        ],
+    );
+}
+
+#[test]
+fn check_environment_templates_checks_a_grouped_environment_whose_enable_if_reads_an_unconvertible_literal(
+) {
+    // G1 is grouped, so template validation does not check its values
+    // (an attachment of its group could supersede it). Its enableIf reads
+    // N, whose literal "abc" does not convert, so it is certainly not
+    // evaluated, and with no attachment of its group it is entered: the
+    // value is an error for `check_environment_templates` and job creation
+    // (§3.2.2 item 2).
+    let jt_src = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                  name: J\njobEnvironments:\n- name: G1\n  exclusiveGroup: G\n  \
+                  enableIf: \"Env.Param.N > 0\"\n  envParameterDefinitions: [{name: N, type: INT}]\n  \
+                  variables: {V: x}\n\
+                  steps:\n- name: A\n  dependencies: [{environment: G1, parameters: {N: abc}}]\n  \
+                  script: {actions: {onRun: {command: x}}}\n";
+    let jt = job_ok(jt_src);
+    let not_int = "steps[0] -> dependencies[0] -> parameters -> N:\n\tis not a valid INT value: \
+                   Cannot parse 'abc' as integer";
+    let err = check_environment_templates(&jt, &[], &template_ctx(&jt)).unwrap_err();
+    assert_errors(&err.to_string(), "JobTemplate", &[not_int]);
+    // With a literal that converts, nothing is certain before job
+    // creation.
+    let jt = job_ok(&jt_src.replace("N: abc", "N: '3'"));
+    check_environment_templates(&jt, &[], &template_ctx(&jt)).unwrap();
+}

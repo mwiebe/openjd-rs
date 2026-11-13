@@ -437,17 +437,20 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
     // ...a BY_DEFAULT one is declined, so it requires nothing (§3.2 item
     // 3.2)...
     create_ok(&src.replace("SCOPE", "BY_DEFAULT"), &[], &[("Mode", "off")]);
-    // ...and for an ALWAYS one the disabled entry is an error, of §7.4.1
+    // ...and for an ALWAYS one the entry leaves Packages missing either way:
+    // enabled it does not supply it, and disabled it is an error and
+    // supplies nothing. So template validation reports it (§7.6 rule 5).
+    job_err(&src.replace("SCOPE", "ALWAYS"), &[missing]);
+    // With Packages supplied, the disabled entry is an error, of §7.4.1
     // step 4, which stops the Step, so its constraint 7 is not checked.
-    let err = create(&src.replace("SCOPE", "ALWAYS"), &[], &[("Mode", "off")])
+    let supplied = ENABLE_IF
+        .replace("default: numpy", "minLength: 1")
+        .replace("SCOPE", "ALWAYS");
+    let err = create(&supplied, &[], &[("Mode", "off")])
         .unwrap_err()
         .to_string();
     assert_errors(&err, "JobTemplate", &[ALWAYS_ENTRY_DISABLED]);
-    // Enabled with an ALWAYS Environment: missing, with no note.
-    let err = create(&src.replace("SCOPE", "ALWAYS"), &[], &[])
-        .unwrap_err()
-        .to_string();
-    assert_errors(&err, "JobTemplate", &[missing]);
+    create_ok(&supplied, &[], &[]);
 }
 
 #[test]

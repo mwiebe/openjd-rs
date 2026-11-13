@@ -374,12 +374,10 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
             }
             symtab
         });
-        let known = |field: Option<&ExprField>| match (field, &symtab) {
-            (Some(ExprField::Expression(_)), Some(symtab)) => {
-                expr_field::known_bool(field, symtab, &field_ev)
-            }
-            (Some(ExprField::Expression(_)), None) => None,
-            _ => expr_field::known_bool(field, &SymbolTable::new(), &field_ev),
+        // `symtab` is `Some` whenever a field is an expression.
+        let empty = SymbolTable::new();
+        let known = |field: Option<&ExprField>| {
+            expr_field::known_bool(field, symtab.as_ref().unwrap_or(&empty), &field_ev)
         };
         entries.push(
             step.dependencies

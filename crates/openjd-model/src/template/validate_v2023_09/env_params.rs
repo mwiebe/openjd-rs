@@ -862,11 +862,14 @@ fn check_environment_entry<'a>(
 /// an `ALWAYS` one is an error of its own (reported by
 /// `check_environment_entry`), with the Environment still checked as
 /// applying, every parameter at its `default`, and the message saying the
-/// entry is disabled. An entry whose `enableIf` is not known leaves its
-/// Environment to job creation for the Step: enabled it may supply the
-/// values, and disabled it declines a `BY_DEFAULT` or `ON_REQUEST` one (and
-/// is an error for an `ALWAYS` one), so a violation need not hold whatever
-/// it resolves to.
+/// entry is disabled. An entry whose `enableIf` is not known leaves a
+/// `BY_DEFAULT` or `ON_REQUEST` Environment to job creation for the Step:
+/// enabled it may supply the values, and disabled it declines or does not
+/// request the Environment, so a violation need not hold whatever it
+/// resolves to. For an `ALWAYS` one it does hold: disabled, the entry is an
+/// error of its own and supplies nothing, so a parameter the entry does not
+/// supply is reported here, as the entry would leave it missing when
+/// enabled (§7.6 rule 5, the preference for the earliest stage).
 ///
 /// Linear: a Step costs O(its entries), plus O(50) to list the missing
 /// names when there are any. An Environment name or a parameter name that
@@ -957,6 +960,9 @@ fn check_required_parameters_supplied(
                 r.names.len()
             };
             match k {
+                None if r.activation == EnvironmentActivation::Always => {
+                    missing = missing - base + r.names.len() - supplied(d, r);
+                }
                 None => missing -= base,
                 Some(false) => {
                     if r.activation == EnvironmentActivation::ByDefault {
@@ -972,6 +978,9 @@ fn check_required_parameters_supplied(
         // Whether `r` applies to this Step as far as is known, and the
         // entry parameters that supply its names.
         let applies = |r: &Required<'_>| match entries.get(r.env) {
+            Some((d, None)) if r.activation == EnvironmentActivation::Always => {
+                (true, d.parameters.as_ref())
+            }
             Some((_, None)) => (false, None),
             Some((d, Some(true))) => (true, d.parameters.as_ref()),
             // Declined (§3.2 item 3.2).

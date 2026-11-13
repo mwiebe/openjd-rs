@@ -268,6 +268,53 @@ fn ifelse_unknown_condition_different_branches_stay_unresolved() {
 }
 
 #[test]
+fn ifelse_equal_path_branches_need_the_same_text_and_format() {
+    let st = |a: ExprValue, b: ExprValue| {
+        let mut st = st_unresolved(vec![("cond", "bool")]);
+        st.set("A", a).unwrap();
+        st.set("B", b).unwrap();
+        st
+    };
+    let posix = |v: &str| ExprValue::new_path(v, PathFormat::Posix);
+    let windows = |v: &str| ExprValue::new_path(v, PathFormat::Windows);
+    // The same path in the same format: known.
+    let same = st(posix("/a/b"), posix("/a/b"));
+    assert_eq!(eval_u("A if cond else B", &same), posix("/a/b"));
+    assert_eq!(eval_u("[A] if cond else [B]", &same), eval_u("[A]", &same));
+    // A different path, or the same text in another format: not known.
+    for (a, b) in [(posix("/a/b"), posix("/a/c")), (posix("a"), windows("a"))] {
+        let st = st(a, b);
+        assert_eq!(
+            eval_u("A if cond else B", &st).expr_type(),
+            tp("unresolved[path]")
+        );
+        assert_eq!(
+            eval_u("[A] if cond else [B]", &st).expr_type(),
+            tp("unresolved[list[path]]")
+        );
+    }
+}
+
+#[test]
+fn ifelse_equal_branches_release_the_value_not_kept() {
+    // The branch value that is not kept is released, so once a conditional
+    // with equal branches has its value, it holds no more memory than that
+    // value: the next element of the list peaks where it would after a
+    // plain value.
+    let st = st_unresolved(vec![("cond", "bool")]);
+    let peak = |e: &str| {
+        ParsedExpression::new(e)
+            .and_then(|p| p.evaluate_with_metrics(&[&st]))
+            .unwrap()
+            .peak_memory
+    };
+    assert_eq!(
+        peak("[('x' * 100000) if cond else ('x' * 100000), 'y' * 100000]"),
+        peak("['x' * 100000, 'y' * 100000]")
+    );
+}
+
+#[test]
 fn ifelse_equal_branches_decide_an_enclosing_boolop() {
     // `U and (false if U else false)` is `false` once the conditional is.
     let st = st_unresolved(vec![("cond", "bool"), ("F", "bool")]);

@@ -882,7 +882,7 @@ fn an_unreachable_attachment_whose_enable_if_fails_is_reported_with_both_errors(
 }
 
 #[test]
-fn an_attachment_whose_enable_if_is_unresolved_is_entered() {
+fn an_attachment_whose_enable_if_reads_a_missing_value_is_not_evaluated_and_entered() {
     // A's enableIf reads N, which no Step supplies, so it is not evaluated
     // (§3.2.2 item 2) and A is not disabled. A is held to constraint 7,
     // which it would be whatever its enableIf, and it is a layer for the

@@ -995,8 +995,12 @@ pass 6:
   then requires nothing of the Step (§3.2 item 3.2); for an `ALWAYS` one it is an error
   (below), and template validation still checks the Environment as applying, so its
   parameters then all need their `default`s (job creation takes no later §7.4.1 step for the
-  Step after the error); an entry whose `enableIf` is not known defers the check for its
-  Environment and Step to job creation. Reported once per Step, at the Step: "must supply, in
+  Step after the error); an entry whose `enableIf` is not known defers the check for a
+  `BY_DEFAULT` or `ON_REQUEST` Environment and its Step to job creation, since disabled it
+  declines or requests nothing. For an `ALWAYS` one it does not: disabled, the entry is an
+  error of its own and supplies nothing, so a parameter the entry does not supply is missing
+  whatever its `enableIf` resolves to, and is reported here (§7.6 rule 5, the earliest
+  stage). Reported once per Step, at the Step: "must supply, in
   an 'environment:' dependency, every parameter without a default of each Environment that
   applies to it (<why>), whatever that Environment's own enableIf is; missing: ...", listing
   the missing parameters by Environment (at most 50 names and 512 characters, counting the
