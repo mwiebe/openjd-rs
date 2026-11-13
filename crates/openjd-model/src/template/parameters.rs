@@ -566,6 +566,12 @@ impl JobParameterDefinition {
     /// [`RangeExprLengthCheck::AsWrittenAndCanonical`] for an Environment
     /// parameter (§4.5 item 4). It changes nothing for the other types.
     ///
+    /// For an Environment parameter value this is only part of the check:
+    /// job creation and template validation also apply the 1024-character
+    /// limit of Template Schemas §4.5 item 5 on a STRING or PATH value and
+    /// each element of a `LIST[STRING]` or `LIST[PATH]` one, which this method
+    /// does not.
+    ///
     /// # Errors
     ///
     /// Returns a message naming the parameter when the value breaks a

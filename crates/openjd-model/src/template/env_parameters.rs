@@ -176,8 +176,10 @@ impl EnvironmentParameterDefinition {
 
 /// The most characters a STRING or PATH effective value, and each element
 /// of a LIST[STRING] or LIST[PATH] one, may have (§4.5 item 5): the maximum
-/// length of a `<JobParameterStringValue>` (§2.5).
-pub(crate) const MAX_VALUE_CHARS: usize = 1024;
+/// length of a `<JobParameterStringValue>` (§2.5). It is the same number as
+/// `EffectiveLimits::max_job_param_string_len`, which is not used here
+/// because §4.5 item 5 fixes the limit for every profile and caller.
+const MAX_VALUE_CHARS: usize = 1024;
 
 /// §4.5 item 5 for a value of parameter `name` of type `pt`. Other types,
 /// RANGE_EXPR included, have no such limit here: a RANGE_EXPR's

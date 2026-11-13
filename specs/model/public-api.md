@@ -883,8 +883,11 @@ impl JobParameterDefinition {
     /// Validate an ExprValue against this definition's constraints.
     /// `preprocess_job_parameters` and `create_job` do not call
     /// it: they check the merged definition
-    /// (`MergedParameterDefinition::check_constraints`). Used directly for
-    /// Environment parameter values, with `AsWrittenAndCanonical`.
+    /// (`MergedParameterDefinition::check_constraints`). Environment
+    /// parameter values are checked with it, with `AsWrittenAndCanonical`,
+    /// and then with the 1024-character limit of §4.5 item 5, which this
+    /// method does not apply (crate-private
+    /// `EnvironmentParameterDefinition::check_value_constraints`).
     /// `length_check` decides whether a RANGE_EXPR string's canonical form is
     /// length-checked besides the string: pass
     /// `RangeExprLengthCheck::for_job_parameter` of the declaring document's

@@ -12,7 +12,7 @@
 use openjd_model::job::Job;
 use openjd_model::{create_job, ModelError};
 
-use crate::env_params_common::{job_err, job_ok, job_params, template_ctx};
+use crate::env_params_common::{assert_errors, job_err, job_ok, job_params, template_ctx};
 
 fn create(jt_src: &str, params: &[(&str, &str)]) -> Result<Job, ModelError> {
     let jt = job_ok(jt_src);
@@ -53,6 +53,10 @@ fn item_err(path: &str, i: usize, n: usize) -> String {
 }
 
 const ENTRY: &str = "steps[0] -> dependencies[0] -> parameters -> V";
+
+/// The model name in the error header for a submission with an attached
+/// Environment Template.
+const MODEL: &str = "Submission";
 
 #[test]
 fn a_literal_value_may_have_1024_characters_counted_as_characters() {
@@ -126,7 +130,7 @@ fn a_resolved_value_is_limited_when_the_job_is_created() {
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains(&value_err(ENTRY, 1200)), "{err}");
+    assert_errors(&err, "JobTemplate", &[&value_err(ENTRY, 1200)]);
     let err = create(
         &template(
             "LIST[STRING]",
@@ -137,7 +141,7 @@ fn a_resolved_value_is_limited_when_the_job_is_created() {
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains(&item_err(ENTRY, 1, 1200)), "{err}");
+    assert_errors(&err, "JobTemplate", &[&item_err(ENTRY, 1, 1200)]);
     // A resolved value of exactly 1024 characters is accepted.
     let created = create(
         &template("STRING", "\"{{Param.Half}}{{Param.Half}}\"", "true"),
@@ -202,10 +206,18 @@ fn a_value_for_an_attached_environment_is_limited() {
     let err = create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
         .unwrap_err()
         .to_string();
-    assert!(err.contains(&value_err(ENTRY, 1025)), "{err}");
+    assert_errors(
+        &err,
+        MODEL,
+        &[&value_err(&format!("JobTemplate -> {ENTRY}"), 1025)],
+    );
     // A validator given the Environment Template reports it too.
     let err = check_environment_templates(&jt, &attached, &template_ctx(&jt))
         .unwrap_err()
         .to_string();
-    assert!(err.contains(&value_err(ENTRY, 1025)), "{err}");
+    assert_errors(
+        &err,
+        MODEL,
+        &[&value_err(&format!("JobTemplate -> {ENTRY}"), 1025)],
+    );
 }
