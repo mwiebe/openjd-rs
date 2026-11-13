@@ -907,7 +907,8 @@ An explicit `null` for an Environment's `enableIf`, `outputVariables`,
 `dataFlow` means the field is omitted, as for the template's other optional fields, so it
 is neither gated nor reported. A `null` for a Step's or a loop's `enableIf`, or a loop's
 `while` or `until`, is not: an expression field's `null` is an error (§7.6), reported by
-pass 8 with the extension and gated by pass 11 without it.
+pass 8 with the extension and gated by pass 11 without it. A `while: null` beside an `until`, or the reverse, counts
+as present, so it gets both pass 8's `must not be null` and pass 11's `not both`.
 
 **Loops** (RFC 0013 §Validation items 1, 5, 6, and the literal form of 7), with the
 extension:

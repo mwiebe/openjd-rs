@@ -932,8 +932,8 @@ and RFC 0012's chunked-Step rules apply to each instance unchanged.
 * `StepLoop` has `name`, `description`, `enable_if: Option<BoolOrFormatString>`, `dependencies`, the
   `<LoopDefinition>` (serde name `loop`), and `output_variables: Option<Vec<LoopOutputVariableDefinition>>`.
   `LoopDefinition` has `variables: Option<Vec<LoopVariableDefinition>>`, `while_condition` and
-  `until_condition` (`Option<BoolOrFormatString>`, serde names `while` and `until`; M6 later made these three
-  `Option<ExprField>`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
+  `until_condition` (`Option<BoolOrFormatString>`, serde names `while` and `until`; M6 later made
+  `enable_if`, `while_condition`, and `until_condition` `Option<ExprField>`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
   body, `steps`. The body is parsed so that an entry with a `loop` key fails with a message that says loops do not
   nest (`3.8.1--nested-loop`), not as an unknown field of a `<StepTemplate>`.
 * `LoopVariableDefinition` and `LoopOutputVariableDefinition` reuse the job-parameter machinery as

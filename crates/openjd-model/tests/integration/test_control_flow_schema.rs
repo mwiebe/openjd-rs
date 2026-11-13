@@ -173,6 +173,20 @@ fn step_enable_if_requires_the_extension() {
 }
 
 #[test]
+fn a_null_step_enable_if_requires_the_extension() {
+    // An expression field's `null` is not an omitted field (RFC 0010's
+    // Template Schemas §7.6), so it is gated like any other value.
+    assert_errs(
+        &job("[EXPR]", &["enableIf: null"]),
+        "JobTemplate",
+        &[(
+            "steps[0] -> enableIf",
+            "enableIf requires the CONTROL_FLOW extension.",
+        )],
+    );
+}
+
+#[test]
 fn step_enable_if_requires_the_extension_with_no_extensions() {
     let t = "specificationVersion: jobtemplate-2023-09
 name: J
@@ -1255,6 +1269,21 @@ fn decode_errors_name_the_json_kind() {
             &["stepEnvironments: [{name: E, enableIf: {a: 1}}]"],
         ),
         "expected a bool or a format string, got a mapping",
+    );
+    assert_decode_err(
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: 1}]"],
+        ),
+        "expected a bool or a format string, got a number",
+    );
+    assert_decode_err(
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: '{{Param.X'}]"],
+        ),
+        "Failed to parse interpolation expression at [0, 9]. Reason: Braces mismatch.\n  \
+         {{Param.X\n  ^~",
     );
     assert_decode_err(
         &with_outputs("[null]"),

@@ -1723,6 +1723,42 @@ fn an_enable_if_that_fails_to_evaluate_fails_job_creation() {
 }
 
 #[test]
+fn an_environment_enable_if_with_text_is_converted_at_job_creation() {
+    // An Environment's enableIf keeps its format-string form: text around an
+    // expression resolves to a string, converted to bool when it is
+    // evaluated.
+    let template = |enable_if: &str| {
+        tpl(
+            CF,
+            "  - {name: X, type: STRING}\n",
+            &format!(
+                "  - name: S\n    stepEnvironments: [{{name: E, enableIf: '{enable_if}', \
+                 variables: {{V: v}}}}]\n{ECHO}"
+            ),
+        )
+    };
+    for (x, enabled) in [("se", false), ("ue", true)] {
+        let prefix = if enabled { "tr" } else { "fal" };
+        let job = Fixture::new(&template(&format!("{prefix}{{{{Param.X}}}}")), &[("X", x)]).job();
+        assert_eq!(
+            step(&job, "S").step_environments.as_ref().unwrap()[0].enabled,
+            enabled,
+            "{prefix}{x}"
+        );
+    }
+    let err = Fixture::new(&template("a{{Param.X}}"), &[("X", "b")])
+        .create()
+        .expect_err("'ab' is not a bool");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> stepEnvironments[0] -> enableIf",
+            "'a{{Param.X}}' resolved to 'ab', which does not convert to a bool.",
+        )])
+    );
+}
+
+#[test]
 fn attach_step_inputs_stores_path_values_as_strings() {
     let job = Fixture::new(&attach_template(), &[]).job();
     let attached = attach_step_inputs(step(&job, "C"), &attach_inputs(&job)).unwrap();

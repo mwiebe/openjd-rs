@@ -1469,6 +1469,25 @@ fn while_and_until_are_bool_not_optional() {
              string holding one expression (Template Schemas §7.6).",
         )],
     );
+    // A present `null` is not an omitted field, so beside the other
+    // condition it is both an error of its own and a second condition.
+    assert_errs(
+        &single_loop(
+            "    while: null\n    until: \"Loop.Iteration >= 1\"\n    maxIterations: 2\n",
+            "",
+        ),
+        &[
+            (
+                "steps[0] -> loop -> while",
+                "must not be null: an expression field of type bool takes a boolean scalar or a \
+                 string holding one expression (Template Schemas §7.6).",
+            ),
+            (
+                "steps[0] -> loop",
+                "must have exactly one of 'while' and 'until', not both.",
+            ),
+        ],
+    );
     // A literal bool is accepted for either.
     decode_ok(&single_loop("    while: false\n    maxIterations: 2\n", ""));
     decode_ok(&single_loop("    until: true\n    maxIterations: 2\n", ""));

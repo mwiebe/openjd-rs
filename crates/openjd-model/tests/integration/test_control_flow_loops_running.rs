@@ -3879,6 +3879,25 @@ fn a_first_while_reading_steps_waits_in_the_start_group() {
 }
 
 #[test]
+fn a_while_reading_steps_is_evaluated_at_each_boundary() {
+    // `while` reads a dependency's output before the first iteration and at
+    // every boundary, so the boundary's symbol table holds it too.
+    let fx = Fixture::new(
+        &after_producer("", "{{1}}", "Loop.N <= Steps.P.Output.V"),
+        &[],
+    );
+    let job = fx.job();
+    let deps = p_succeeded(&job, 2);
+    let job = Job {
+        loops: vec![advance_loop_binding(&fx.jt, &fx.params, &fx.ctx, &job, 0, &deps).unwrap()],
+        ..job
+    };
+    let run = run_loop(&fx, &job, "L", &deps, nothing);
+    assert_eq!(iterations(&run), [0, 1]);
+    assert_eq!(run.result().ended_by, LoopEnd::While);
+}
+
+#[test]
 fn the_initial_size_check_runs_after_every_initial() {
     // B's initial fails; the size limit, which A alone exceeds, is checked
     // only after both.

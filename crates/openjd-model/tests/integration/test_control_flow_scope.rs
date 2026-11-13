@@ -916,6 +916,53 @@ fn step_environment_enable_if_scope() {
     );
 }
 
+#[test]
+fn environment_enable_if_text_resolves_to_a_string_coerced_to_bool() {
+    // An Environment's enableIf keeps its format-string form, so a literal
+    // or text around an expression resolves to a string, converted with
+    // EXPR's string -> bool coercion (Expression Language §1.3.2, §1.2.3).
+    let step_env = |value: &str| {
+        template(&format!(
+            "    stepEnvironments:\n      - {{name: SE, enableIf: {value}, variables: {{A: a}}}}\n{ECHO}"
+        ))
+    };
+    let job_env = |value: &str| {
+        template_with(
+            EXTENSIONS,
+            &format!(
+                "jobEnvironments:\n  - {{name: JE, enableIf: {value}, variables: {{A: a}}}}\n"
+            ),
+            ECHO,
+        )
+    };
+    for value in [
+        "'yes'",
+        "'off'",
+        "\"{{'y'}}es\"",
+        // Not static: converted when it is evaluated.
+        "'{{Param.Run}} '",
+    ] {
+        decode_ok(&step_env(value));
+        decode_ok(&job_env(value));
+    }
+    for (value, text) in [("'maybe'", "maybe"), ("'x{{1}}'", "x1")] {
+        assert_errs(
+            &step_env(value),
+            &[(
+                "steps[3] -> stepEnvironments[0] -> enableIf",
+                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
+            )],
+        );
+        assert_errs(
+            &job_env(value),
+            &[(
+                "jobEnvironments[0] -> enableIf",
+                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
+            )],
+        );
+    }
+}
+
 // ══════════════════════════════════════════════════════════════
 // create_job: its own checks see the same Steps.* symbols
 // ══════════════════════════════════════════════════════════════
