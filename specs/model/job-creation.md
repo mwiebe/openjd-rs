@@ -655,7 +655,12 @@ creation), and a `StepInputs`:
    * The remaining group evaluates every `let` binding, then the script's
      carried-forward checks, then each Step Environment: its `enableIf` (an
      error is reported at `steps[i] -> stepEnvironments[j] -> enableIf`), and
-     its carried-forward checks if it is enabled. A disabled Environment is
+     its carried-forward checks if it is enabled. An Environment's `enableIf`
+     keeps its format-string form (`binding::evaluate_env_enable_if`): it
+     resolves with target type `bool`, and text around an expression resolves
+     to a string that must be a bool spelling (`'a{{Param.X}}' resolved to
+     'ab', which does not convert to a bool.`). A Job Environment's `enableIf`
+     is evaluated the same way at Job creation (step 9 above). A disabled Environment is
      never entered, so its fields are not checked.
 4. When every group is known, the parameter space and host requirements move
    into the Step's own fields, `resolved_symtab` is built from the Step's

@@ -423,8 +423,8 @@ pub enum ExprField {
 
 The value of an *expression field*, as RFC 0010's Template Schemas §7.6 defines it: one
 Expression Language expression written without `{{ }}`, or a scalar used as written.
-`template/expr_field.rs` is ported from the `ENV_PARAMS` prototype of RFC 0010 (where the
-section was numbered §7.5), not merged from it. A YAML or JSON boolean decodes as `Bool`, an
+`template/expr_field.rs` is ported from the `ENV_PARAMS` prototype of RFC 0010 as code, not
+merged from it. A YAML or JSON boolean decodes as `Bool`, an
 integer as `Int`, a number with a fraction or exponent as `Float`, a string as
 `Expression` (so `"true"` is the expression `true`, not the literal), and a present `null`
 as `Null`. A list or a mapping fails deserialization with `<field> must be a boolean,

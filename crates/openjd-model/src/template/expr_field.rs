@@ -18,9 +18,8 @@
 //! `ENV_PARAMS`, which this crate does not implement, so it keeps its earlier
 //! format-string form ([`BoolOrFormatString`](super::BoolOrFormatString)).
 //!
-//! This module is ported from the `ENV_PARAMS` prototype of RFC 0010, whose
-//! Template Schemas section this was numbered §7.5 in before that RFC's base
-//! gained a §7.5 of its own.
+//! This module is ported from the `ENV_PARAMS` prototype of RFC 0010 as code,
+//! not merged from it.
 
 use openjd_expr::{
     ExprProfile, ExprType, ExprValue, ExpressionError, FunctionLibrary, ParsedExpression,

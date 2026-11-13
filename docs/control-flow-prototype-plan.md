@@ -562,7 +562,7 @@ Added after the PRs below were merged. The spec branch now makes a Step's and a 
 
 * `template/expr_field.rs` holds `ExprField` (`Bool`, `Int`, `Float`, `Expression`, `Null`) and the crate-private
   checks `validate`, `resolve`, and `accessed_symbols`. It is ported as code from the `ENV_PARAMS` prototype of RFC
-  0010 (branch `env-params-prototype`), whose numbering of the section was §7.5; that branch is not merged. Each
+  0010 (branch `env-params-prototype`, at `0fb94bd5`); that branch is not merged. Each
   field has a `deserialize_with` that keeps a present `null`, so that validation reports it.
 * `StepTemplate::enable_if`, `StepLoop::enable_if`, `LoopDefinition::while_condition`, and `until_condition` are
   `Option<ExprField>`, a public API change. An Environment's `enableIf` stays a `BoolOrFormatString`: RFC 0011 now
