@@ -169,30 +169,27 @@ Environment order, each `Entered`, `Declined`, `Disabled` or `Superseded` (with 
 decisions of one submission and no Session needs it, and keeping it out leaves the Job's
 serialized form unchanged.
 
-**Equality.** A Session may run Tasks of two Steps without exiting and re-entering Job
-Environments between them only when they enter the same Job Environments
-(`Step::same_environments`) and their effective values are equal (How Jobs Are Run, Environment
-Parameters). (Each Step's own `step_environments` are entered and exited around its
-Tasks, as without the extension.) `Step::environment_values_equal(&other)` implements §3.2.2
-equality of the values: both Steps have values
-for the same `(document, environment)` keys, and for each, the same parameter names with the
+**Equality.** A Session may run Tasks of two Steps without exiting and re-entering Job Environments
+between them only when they enter the same Job Environments (`Step::same_environments`) and their
+effective values are equal (How Jobs Are Run, Environment Parameters). (Each Step's own
+`step_environments` are entered and exited around its Tasks, as without the extension.)
+`Step::environment_values_equal(&other)` implements §3.2.2 equality of the values: both Steps have
+values for the same `(document, environment)` keys, and for each, the same parameter names with the
 same types and the same string form, the text `{{Env.RawParam.<name>}}` gives the value. A value
 compares by its transport form, which is that string form (for a list, the string forms of its
 elements in order): a FLOAT, or an element of a `LIST[FLOAT]`, keeps the text it was written with,
-so `3.10` and `3.1` are not equal although they are the same number, while `"3.10"` and
-`" 3.10 "` are equal (the white space is not part of the text), and a FLOAT given as a YAML or JSON
-number is written as a computed float is, so the number `1.50` equals `"1.5"` and not `"1.50"`,
-and the number `2` is `2.0`; a STRING
-compares by code points,
-with no Unicode normalization; INT `1`, `"1"`, and `"01"` are equal (all resolve to the INT 1) and
-BOOL `"yes"` equals `true`; PATH values compare by unmapped string. The one exception is a
-`range_expr` value, which compares by the integers it denotes, so `1-3` and `1,2,3` are equal even
-in a deserialized Job that holds another spelling (§3.2.2; its string form is its canonical form,
-and job creation stores that, see
+so `3.10` and `3.1` are not equal although they are the same number, while `"3.10"` and `" 3.10 "`
+are equal (the white space is not part of the text), and a FLOAT given as a YAML or JSON number is
+written as a computed float is, so the number `1.50` equals `"1.5"` and not `"1.50"`, and the number
+`2` is `2.0`; a STRING compares by code points, with no Unicode normalization; INT `1`, `"1"`, and
+`"01"` are equal (all resolve to the INT 1) and BOOL `"yes"` equals `true`; PATH values compare by
+unmapped string. The one exception is a `range_expr` value, which compares by the integers it
+denotes, so `1-3` and `1,2,3` are equal even in a deserialized Job that holds another spelling
+(§3.2.2; its string form is its canonical form, and job creation stores that, see
 [job-creation.md](job-creation.md#environment-parameter-values-env_params)). A list that names one
-`(document, environment)` twice is not one `create_job` produces; it compares unequal to every
-list, including itself, on either side. So for the Steps of a Job from `create_job`, the derived
-`==` on `environment_parameters` agrees with this comparison except for the order of the list.
+`(document, environment)` twice is not one `create_job` produces; it compares unequal to every list,
+including itself, on either side. So for the Steps of a Job from `create_job`, the derived `==` on
+`environment_parameters` agrees with this comparison except for the order of the list.
 `EnvironmentParameterValues::values_equal` applies the same rule to one Environment's values. A
 scheduler can key Sessions on the transport form; it needs no numeric comparison. The comparison
 assumes values in the form `create_job` writes them: a deserialized Job whose INT, BOOL, or FLOAT
