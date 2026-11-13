@@ -77,6 +77,7 @@ fn env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> Environ
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -128,6 +129,8 @@ fn session(root: &TempDir, params: JobParameterValues) -> (Session, Seen) {
         os_env_vars: None,
         user: None,
         profile: None,
+        control_flow: false,
+        output_callback: None,
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
@@ -193,7 +196,14 @@ fn assert_failed_action_seq<T: std::fmt::Debug>(
 /// brings it back so that `run_task` runs again.
 async fn assert_refused_until_cleared(s: &mut Session) {
     match s
-        .run_task("t", &step("echo refused"), None, None, None)
+        .run_task(
+            "t",
+            &step("echo refused"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::InvalidState { expected, current }) => {
@@ -205,7 +215,14 @@ async fn assert_refused_until_cleared(s: &mut Session) {
     s.clear_ending_only().unwrap();
     assert_eq!(s.state(), SessionState::Ready);
     let r = s
-        .run_task("t", &step("echo again"), None, None, None)
+        .run_task(
+            "t",
+            &step("echo again"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -224,7 +241,9 @@ async fn check_enter_failure(
     symtab: Option<&SerializedSymbolTable>,
     expected: &str,
 ) {
-    let result = s.enter_environment(e, symtab, Some("env-1"), None).await;
+    let result = s
+        .enter_environment(e, symtab, Some("env-1"), None, &Default::default())
+        .await;
     // Building the symbol table or resolving variables fails before the
     // action is reported Running, so the only callback is Failed.
     assert_failed_action_seq(s, seen, result, expected, Some(&[ActionState::Failed]));
@@ -232,7 +251,7 @@ async fn check_enter_failure(
     assert_refused_until_cleared(s).await;
 
     let out = s
-        .exit_environment(&"env-1".to_string(), None, true, None)
+        .exit_environment(&"env-1".to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     assert!(out.contains("exited"), "onExit must run: {out:?}");
@@ -248,21 +267,39 @@ async fn check_job_parameter_failure(s: &mut Session, seen: &Seen, expected: &st
         Some(action("echo entered")),
         Some(action("echo exited")),
     );
-    let result = s.enter_environment(&e, None, Some("env-1"), None).await;
+    let result = s
+        .enter_environment(&e, None, Some("env-1"), None, &Default::default())
+        .await;
     assert_failed_action(s, seen, result, expected);
     assert_eq!(s.environments_entered(), ["env-1".to_string()]);
     assert!(matches!(
-        s.run_task("t", &step("echo refused"), None, None, None)
-            .await,
+        s.run_task(
+            "t",
+            &step("echo refused"),
+            None,
+            None,
+            None,
+            &Default::default()
+        )
+        .await,
         Err(SessionError::InvalidState { .. })
     ));
 
     s.clear_ending_only().unwrap();
-    let result = s.run_task("t", &step("echo ran"), None, None, None).await;
+    let result = s
+        .run_task(
+            "t",
+            &step("echo ran"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
+        .await;
     assert_failed_action(s, seen, result, expected);
 
     let result = s
-        .exit_environment(&"env-1".to_string(), None, true, None)
+        .exit_environment(&"env-1".to_string(), None, true, None, &Default::default())
         .await;
     assert_failed_action(s, seen, result, expected);
     assert!(s.environments_entered().is_empty());
@@ -331,7 +368,7 @@ async fn enter_with_unresolvable_variable_fails_the_action() {
         &[("V", "{{Param.Missing}}")],
     );
     let err = s
-        .enter_environment(&e, None, Some("env-1"), None)
+        .enter_environment(&e, None, Some("env-1"), None, &Default::default())
         .await
         .unwrap_err();
     // The format-string message itself belongs to openjd-expr; pin the
@@ -410,7 +447,7 @@ async fn enter_with_several_bad_variables_reports_the_sorted_first() {
         ],
     );
     let err = s
-        .enter_environment(&e, None, Some("env-1"), None)
+        .enter_environment(&e, None, Some("env-1"), None, &Default::default())
         .await
         .unwrap_err();
     assert!(
@@ -443,7 +480,7 @@ async fn enter_with_one_bad_variable_sets_none_of_them() {
         )),
         &vars,
     );
-    s.enter_environment(&e, None, Some("env-1"), None)
+    s.enter_environment(&e, None, Some("env-1"), None, &Default::default())
         .await
         .unwrap_err();
     assert_eq!(s.state(), SessionState::ReadyEnding);
@@ -455,7 +492,7 @@ async fn enter_with_one_bad_variable_sets_none_of_them() {
         );
     }
     let out = s
-        .exit_environment(&"env-1".to_string(), None, true, None)
+        .exit_environment(&"env-1".to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     assert!(out.contains("seen=[]"), "onExit saw a variable: {out:?}");
@@ -477,12 +514,19 @@ async fn exit_with_undeserializable_resolved_symtab_fails_the_action() {
                 None,
                 None,
                 None,
+                &Default::default(),
             )
             .await
             .unwrap();
         let before = seen.lock().unwrap().len();
         let result = s
-            .exit_environment(&id, Some(&bad_symtab()), keep_session_running, None)
+            .exit_environment(
+                &id,
+                Some(&bad_symtab()),
+                keep_session_running,
+                None,
+                &Default::default(),
+            )
             .await;
         assert_failed_action(&s, &seen, result, BAD_SYMTAB_MESSAGE);
         // Exit builds the symbol table after removing the environment and
@@ -493,7 +537,10 @@ async fn exit_with_undeserializable_resolved_symtab_fails_the_action() {
             "exit must report only Failed, no Running"
         );
         assert!(s.environments_entered().is_empty());
-        match s.exit_environment(&id, None, true, None).await {
+        match s
+            .exit_environment(&id, None, true, None, &Default::default())
+            .await
+        {
             Err(SessionError::UnknownEnvironment { identifier }) => assert_eq!(identifier, id),
             other => panic!("the environment must already be exited, got {other:?}"),
         }
@@ -518,6 +565,7 @@ async fn exit_pre_start_failure_resets_status_and_logs_banner() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -529,13 +577,14 @@ async fn exit_pre_start_failure_resets_status_and_logs_banner() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
     // The task succeeded, so the session is Ready and the exit is accepted.
     let result = s
-        .exit_environment(&id, Some(&bad_symtab()), true, None)
+        .exit_environment(&id, Some(&bad_symtab()), true, None, &Default::default())
         .await;
     let err = result.expect_err("the exit must fail");
     assert_eq!(err.to_string(), BAD_SYMTAB_MESSAGE);
@@ -570,19 +619,29 @@ async fn exit_failure_leaves_the_outer_environment_exitable() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
     let inner = s
-        .enter_environment(&env("Inner", None, None), None, None, None)
+        .enter_environment(
+            &env("Inner", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let result = s
-        .exit_environment(&inner, Some(&bad_symtab()), true, None)
+        .exit_environment(&inner, Some(&bad_symtab()), true, None, &Default::default())
         .await;
     assert_failed_action(&s, &seen, result, BAD_SYMTAB_MESSAGE);
     assert_eq!(s.environments_entered(), std::slice::from_ref(&outer));
-    let out = s.exit_environment(&outer, None, true, None).await.unwrap();
+    let out = s
+        .exit_environment(&outer, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert!(out.contains("outer-exited"), "{out:?}");
     assert_eq!(s.state(), SessionState::ReadyEnding);
 }
@@ -594,7 +653,14 @@ async fn run_task_with_undeserializable_resolved_symtab_fails_the_action() {
     let root = TempDir::new().unwrap();
     let (mut s, seen) = session(&root, JobParameterValues::new());
     let result = s
-        .run_task("t", &step("echo ran"), None, Some(&bad_symtab()), None)
+        .run_task(
+            "t",
+            &step("echo ran"),
+            None,
+            Some(&bad_symtab()),
+            None,
+            &Default::default(),
+        )
         .await;
     // run_task reports Running before it builds the symbol table.
     assert_failed_action_seq(
@@ -621,7 +687,14 @@ async fn run_task_with_uncoercible_task_parameter_fails_the_action() {
     .into_iter()
     .collect();
     let result = s
-        .run_task("t", &step("echo ran"), Some(&params), None, None)
+        .run_task(
+            "t",
+            &step("echo ran"),
+            Some(&params),
+            None,
+            None,
+            &Default::default(),
+        )
         .await;
     assert_failed_action(
         &s,
@@ -668,9 +741,15 @@ fn assert_unchanged(s: &Session, seen: &Seen, before: &Snapshot) {
 async fn enter_rejections_change_nothing() {
     let root = TempDir::new().unwrap();
     let (mut s, seen) = session(&root, JobParameterValues::new());
-    s.enter_environment(&wrap_env("Wrap"), None, Some("env-1"), None)
-        .await
-        .unwrap();
+    s.enter_environment(
+        &wrap_env("Wrap"),
+        None,
+        Some("env-1"),
+        None,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
     let before = snapshot(&s, &seen);
 
     match s
@@ -679,6 +758,7 @@ async fn enter_rejections_change_nothing() {
             Some(&bad_symtab()),
             Some("env-1"),
             None,
+            &Default::default(),
         )
         .await
     {
@@ -688,7 +768,13 @@ async fn enter_rejections_change_nothing() {
     assert_unchanged(&s, &seen, &before);
 
     match s
-        .enter_environment(&wrap_env("Wrap2"), Some(&bad_symtab()), None, None)
+        .enter_environment(
+            &wrap_env("Wrap2"),
+            Some(&bad_symtab()),
+            None,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::MultipleWrapEnvironments { existing, entering }) => {
@@ -707,12 +793,24 @@ async fn enter_rejections_change_nothing() {
 async fn enter_duplicate_identifier_is_checked_before_wrap_layer() {
     let root = TempDir::new().unwrap();
     let (mut s, seen) = session(&root, JobParameterValues::new());
-    s.enter_environment(&wrap_env("Wrap"), None, Some("env-1"), None)
-        .await
-        .unwrap();
+    s.enter_environment(
+        &wrap_env("Wrap"),
+        None,
+        Some("env-1"),
+        None,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
     let before = snapshot(&s, &seen);
     match s
-        .enter_environment(&wrap_env("Wrap"), None, Some("env-1"), None)
+        .enter_environment(
+            &wrap_env("Wrap"),
+            None,
+            Some("env-1"),
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::DuplicateEnvironment { id }) => assert_eq!(id, "env-1"),
@@ -726,17 +824,35 @@ async fn exit_rejections_change_nothing() {
     let root = TempDir::new().unwrap();
     let (mut s, seen) = session(&root, JobParameterValues::new());
     let outer = s
-        .enter_environment(&env("Outer", None, None), None, None, None)
+        .enter_environment(
+            &env("Outer", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let _inner = s
-        .enter_environment(&env("Inner", None, None), None, None, None)
+        .enter_environment(
+            &env("Inner", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let before = snapshot(&s, &seen);
 
     match s
-        .exit_environment(&"nope".to_string(), Some(&bad_symtab()), false, None)
+        .exit_environment(
+            &"nope".to_string(),
+            Some(&bad_symtab()),
+            false,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::UnknownEnvironment { identifier }) => assert_eq!(identifier, "nope"),
@@ -745,7 +861,13 @@ async fn exit_rejections_change_nothing() {
     assert_unchanged(&s, &seen, &before);
 
     match s
-        .exit_environment(&outer, Some(&bad_symtab()), false, None)
+        .exit_environment(
+            &outer,
+            Some(&bad_symtab()),
+            false,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::LifoViolation { got, .. }) => assert_eq!(got, outer),
@@ -760,7 +882,7 @@ async fn wrong_state_rejections_change_nothing() {
     let root = TempDir::new().unwrap();
     let (mut s, seen) = session(&root, JobParameterValues::new());
     let r = s
-        .run_task("t", &step("exit 1"), None, None, None)
+        .run_task("t", &step("exit 1"), None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Failed);
@@ -769,13 +891,27 @@ async fn wrong_state_rejections_change_nothing() {
 
     let bad = bad_symtab();
     assert!(matches!(
-        s.enter_environment(&env("E", None, None), Some(&bad), None, None)
-            .await,
+        s.enter_environment(
+            &env("E", None, None),
+            Some(&bad),
+            None,
+            None,
+            &Default::default()
+        )
+        .await,
         Err(SessionError::InvalidState { .. })
     ));
     assert_unchanged(&s, &seen, &before);
     assert!(matches!(
-        s.run_task("t", &step("echo"), None, Some(&bad), None).await,
+        s.run_task(
+            "t",
+            &step("echo"),
+            None,
+            Some(&bad),
+            None,
+            &Default::default()
+        )
+        .await,
         Err(SessionError::InvalidState { .. })
     ));
     assert_unchanged(&s, &seen, &before);
@@ -788,8 +924,14 @@ async fn wrong_state_rejections_change_nothing() {
     s.cleanup();
     let before = snapshot(&s, &seen);
     assert!(matches!(
-        s.exit_environment(&"x".to_string(), Some(&bad), true, None)
-            .await,
+        s.exit_environment(
+            &"x".to_string(),
+            Some(&bad),
+            true,
+            None,
+            &Default::default()
+        )
+        .await,
         Err(SessionError::InvalidState { .. })
     ));
     assert_unchanged(&s, &seen, &before);
@@ -834,6 +976,7 @@ async fn enter_pre_start_failure_logs_the_banner() {
         Some(&bad_symtab()),
         Some("env-1"),
         None,
+        &Default::default(),
     )
     .await
     .unwrap_err();
@@ -891,6 +1034,7 @@ async fn enter_path_mapping_write_failure_reports_running_then_failed() {
             None,
             Some("env-1"),
             None,
+            &Default::default(),
         )
         .await;
     let err = result.expect_err("the path mapping write must fail");
@@ -924,13 +1068,16 @@ async fn exit_path_mapping_write_failure_reports_running_then_failed() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
     let before = seen.lock().unwrap().len();
     make_working_dir_readonly(&s);
     // onExit present, so the exit action is reported Running before path mapping.
-    let result = s.exit_environment(&id, None, true, None).await;
+    let result = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await;
     let err = result.expect_err("the path mapping write must fail");
     assert!(
         matches!(err, SessionError::WorkingDirectory { .. }),
