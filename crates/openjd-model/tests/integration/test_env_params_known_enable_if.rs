@@ -358,3 +358,54 @@ fn check_environment_templates_checks_a_grouped_environment_whose_enable_if_read
     let jt = job_ok(&jt_src.replace("N: abc", "N: '3'"));
     check_environment_templates(&jt, &[], &template_ctx(&jt)).unwrap();
 }
+
+#[test]
+fn check_environment_templates_does_not_let_a_known_false_enable_if_hide_a_value_it_reads() {
+    // An enableIf "false and Env.Param.Y > 0" is known to be false, but it
+    // reads Y, whose literal "abc" does not convert, so job creation does
+    // not evaluate it and the Environment is not disabled (§3.2.2 item 2).
+    // `check_environment_templates` reports the value, as job creation
+    // does, for an attachment and for a grouped Job Environment.
+    let att = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+               environment:\n  name: GA\n  exclusiveGroup: g\n  \
+               enableIf: \"false and Env.Param.Y > 0\"\n  \
+               envParameterDefinitions: [{name: Y, type: INT}]\n  variables: {V: x}\n";
+    let other = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                 environment:\n  name: GB\n  exclusiveGroup: g\n  \
+                 envParameterDefinitions: [{name: Z, type: INT}]\n  variables: {V: x}\n";
+    let jt_src = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                  name: J\nsteps:\n- name: A\n  dependencies:\n  \
+                  - {environment: GA, parameters: {Y: abc}}\n  \
+                  - {environment: GB, parameters: {Z: xyz}}\n  \
+                  script: {actions: {onRun: {command: x}}}\n";
+    let y_not_int = "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Y:\n\tis not a \
+                     valid INT value: Cannot parse 'abc' as integer";
+    let jt = job_ok(jt_src);
+    let envs = [env_ok(att), env_ok(other)];
+    let attached: Vec<AttachedEnvironmentTemplate<'_>> =
+        envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    // GA is not disabled, so it takes the group and GB is superseded: only
+    // Y is reported, by both.
+    let err = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap_err();
+    assert_errors(&err.to_string(), "Submission", &[y_not_int]);
+    let err = create(jt_src, &[att, other], &[]).unwrap_err();
+    assert_errors(&err.to_string(), "Submission", &[y_not_int]);
+
+    // A grouped Job Environment, with no attachment of its group.
+    let jt_src = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                  name: J\njobEnvironments:\n- name: G1\n  exclusiveGroup: g\n  \
+                  enableIf: \"false and Env.Param.Y > 0\"\n  \
+                  envParameterDefinitions: [{name: Y, type: INT}]\n  variables: {V: x}\n\
+                  steps:\n- name: A\n  dependencies: [{environment: G1, parameters: {Y: abc}}]\n  \
+                  script: {actions: {onRun: {command: x}}}\n";
+    let jt = job_ok(jt_src);
+    let err = check_environment_templates(&jt, &[], &template_ctx(&jt)).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &[
+            "steps[0] -> dependencies[0] -> parameters -> Y:\n\tis not a valid INT value: Cannot \
+           parse 'abc' as integer",
+        ],
+    );
+}

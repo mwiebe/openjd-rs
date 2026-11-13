@@ -268,7 +268,7 @@ fn ifelse_unknown_condition_different_branches_stay_unresolved() {
 }
 
 #[test]
-fn ifelse_equal_path_branches_need_the_same_text_and_format() {
+fn ifelse_equal_path_branches_need_the_same_text() {
     let st = |a: ExprValue, b: ExprValue| {
         let mut st = st_unresolved(vec![("cond", "bool")]);
         st.set("A", a).unwrap();
@@ -276,13 +276,14 @@ fn ifelse_equal_path_branches_need_the_same_text_and_format() {
         st
     };
     let posix = |v: &str| ExprValue::new_path(v, PathFormat::Posix);
-    let windows = |v: &str| ExprValue::new_path(v, PathFormat::Windows);
-    // The same path in the same format: known.
+    // The same path: known.
     let same = st(posix("/a/b"), posix("/a/b"));
     assert_eq!(eval_u("A if cond else B", &same), posix("/a/b"));
     assert_eq!(eval_u("[A] if cond else [B]", &same), eval_u("[A]", &same));
-    // A different path, or the same text in another format: not known.
-    for (a, b) in [(posix("/a/b"), posix("/a/c")), (posix("a"), windows("a"))] {
+    // A different path: not known. (A path of another format than the
+    // evaluator's is rejected when it is read, so it cannot reach the
+    // comparison.)
+    for (a, b) in [(posix("/a/b"), posix("/a/c")), (posix("a"), posix("a/"))] {
         let st = st(a, b);
         assert_eq!(
             eval_u("A if cond else B", &st).expr_type(),

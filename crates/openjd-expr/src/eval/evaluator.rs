@@ -203,8 +203,11 @@ fn unresolved_boolop_outcomes(
 /// element in a list. A conditional with an unknown condition whose
 /// branches give the same value has that value
 /// ([`Evaluator::eval_ifexp`]). Values of different types are never the
-/// same, so `1 if U else 1.0` stays unresolved. Each element comparison is
-/// bounded by the lists the branches already built and charged for.
+/// same, so `1 if U else 1.0` stays unresolved. Paths compare by their
+/// text: every path an evaluation produces has the evaluator's path
+/// format, since a symbol of another format is rejected when it is read.
+/// Each element comparison is bounded by the lists the branches already
+/// built and charged for.
 fn identical(a: &ExprValue, b: &ExprValue) -> bool {
     if a.expr_type() != b.expr_type() {
         return false;
@@ -213,17 +216,6 @@ fn identical(a: &ExprValue, b: &ExprValue) -> bool {
         // `Float64` equality compares the value and the text it renders.
         (ExprValue::Float(x), ExprValue::Float(y)) => x == y,
         (ExprValue::ListFloat(x), ExprValue::ListFloat(y)) => x == y,
-        (
-            ExprValue::Path {
-                value: x,
-                format: fx,
-            },
-            ExprValue::Path {
-                value: y,
-                format: fy,
-            },
-        ) => x == y && fx == fy,
-        (ExprValue::ListPath(x, fx, _), ExprValue::ListPath(y, fy, _)) => x == y && fx == fy,
         (ExprValue::ListList(x, _, _), ExprValue::ListList(y, _, _)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(ex, ey)| identical(ex, ey))
         }

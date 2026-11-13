@@ -2121,20 +2121,22 @@ pub fn check_environment_templates(
             // one (named like a Job Environment, or ambiguous, which is
             // reported): it is entered by its `activation` and `enableIf`
             // alone, and its values are not checked (job creation stops a
-            // Step whose entry names an ambiguous one).
-            let state = if enabled == Some(false) {
+            // Step whose entry names an ambiguous one). An `enableIf` that
+            // reads a literal that does not convert is certainly not
+            // evaluated, so it does not disable the attachment even when it
+            // is known to be `false` (§3.2.2 item 2).
+            let not_evaluated = tv::enable_if_reads_unconvertible_literal(
+                de.env,
+                supplied.map(|s| s.params),
+                att_ctx,
+            );
+            let state = if enabled == Some(false) && !not_evaluated {
                 Known::NotEntered
             } else if undetermined[i].contains(&doc) && !set.unreachable.contains(&doc) {
                 Known::Undetermined
             } else if !enters {
                 Known::NotEntered
-            } else if enabled == Some(true)
-                || tv::enable_if_reads_unconvertible_literal(
-                    de.env,
-                    supplied.map(|s| s.params),
-                    att_ctx,
-                )
-            {
+            } else if enabled == Some(true) || not_evaluated {
                 // Known to be `true`, or certainly not evaluated, so not
                 // disabled (§3.2.2 item 2).
                 Known::Entered
@@ -2163,15 +2165,17 @@ pub fn check_environment_templates(
                 .filter(|_| *entry == KnownEntry::Enabled)
                 .and_then(|d| d.parameters.as_ref())
                 .map(|p| &p.0);
-            let state = match env.known_state(known.job_environment(k), *entry) {
-                // Certainly not evaluated, so not disabled (§3.2.2 item 2).
-                Known::Undetermined
-                    if *entry != KnownEntry::Undetermined
-                        && tv::enable_if_reads_unconvertible_literal(env, supplied, &job_ctx) =>
-                {
-                    Known::Entered
-                }
-                state => state,
+            // An `enableIf` that reads a literal that does not convert is
+            // certainly not evaluated, so it does not disable the
+            // Environment, even when it is known to be `false` (§3.2.2 item
+            // 2): the Environment is then entered whenever its `activation`
+            // and the Step's entry enter it.
+            let state = if env.known_state(Some(true), *entry) == Known::Entered
+                && tv::enable_if_reads_unconvertible_literal(env, supplied, &job_ctx)
+            {
+                Known::Entered
+            } else {
+                env.known_state(known.job_environment(k), *entry)
             };
             states.push((env.group(), state));
         }
