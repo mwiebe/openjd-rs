@@ -1444,7 +1444,7 @@ fn while_and_until_are_bool_not_optional() {
         &single_loop("    until: \"yes please\"\n    maxIterations: 2\n", ""),
         &[(
             "steps[0] -> loop -> until",
-            "Invalid expression: Syntax error: invalid syntax\n  yes please\n      ^~~~~~",
+            "Invalid expression: Syntax error: Unexpected token at the end of an expression\n  yes please\n      ^~~~~~",
         )],
     );
     // A format string and a null are errors (RFC 0010's Template Schemas

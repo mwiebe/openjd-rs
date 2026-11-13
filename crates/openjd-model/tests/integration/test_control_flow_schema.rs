@@ -398,7 +398,7 @@ fn enable_if_rejects_a_format_string() {
         "JobTemplate",
         &[(
             "steps[0] -> enableIf",
-            "Invalid expression: Syntax error: '{' was never closed. An expression field takes an \
+            "Invalid expression: Syntax error: unexpected EOF while parsing. An expression field takes an \
              expression without '{{ }}' (Template Schemas §7.6).\n  {{Param.X\n  ^~~~~~~~~",
         )],
     );

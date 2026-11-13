@@ -797,7 +797,7 @@ fn enable_if_converts_no_string_to_bool() {
         ),
         (
             "'x{{true}}'",
-            "Invalid expression: Syntax error: invalid syntax. An expression field takes an \
+            "Invalid expression: Syntax error: Unexpected token at the end of an expression. An expression field takes an \
              expression without '{{ }}' (Template Schemas §7.6).\n  x{{true}}\n   ^",
         ),
         (

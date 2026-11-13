@@ -765,7 +765,10 @@ mod tests {
             // No hint for a parse error of a value without `{{`.
             assert_eq!(
                 validate(&expr("1 +"), &ExprType::BOOL, &st, ev),
-                Err("Invalid expression: Syntax error: invalid syntax\n  1 +\n  ^~~".to_string())
+                Err(
+                    "Invalid expression: Syntax error: Expected an expression\n  1 +\n  ^~~"
+                        .to_string()
+                )
             );
             assert_eq!(
                 validate(&expr("Param.Nope"), &ExprType::BOOL, &st, ev),
