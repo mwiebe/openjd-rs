@@ -192,6 +192,8 @@ fn check_value_length(
     match (pt, value) {
         (
             JobParameterType::String | JobParameterType::Path,
+            // Callers pass values in Job Parameter form, where a PATH is a
+            // string; a `path` value built in code is checked the same way.
             ExprValue::String(v) | ExprValue::Path { value: v, .. },
         ) => {
             let n = v.chars().count();
@@ -287,5 +289,40 @@ mod tests {
         assert_eq!(d.job_param_type(), JobParameterType::Int);
         assert!(d.definition.default_value().is_none());
         assert!(d.default.unwrap().as_format_string().is_some());
+    }
+
+    fn def(ty: &str) -> EnvironmentParameterDefinition {
+        serde_json::from_value(serde_json::json!({"name": "V", "type": ty})).unwrap()
+    }
+
+    #[test]
+    fn value_length_counts_characters() {
+        use openjd_expr::path_mapping::PathFormat;
+        use openjd_expr::{ExprType, ExprValue};
+        // 'é' is two bytes in UTF-8, so a byte count would reject 1024.
+        let ok = "é".repeat(MAX_VALUE_CHARS);
+        let long = "é".repeat(MAX_VALUE_CHARS + 1);
+        let s = |v: &str| ExprValue::String(v.to_string());
+        let p = |v: &str| ExprValue::new_path(v, PathFormat::Posix);
+        let ls = |v: &str| ExprValue::make_list(vec![s("a"), s(v)], ExprType::STRING).unwrap();
+        let lp = |v: &str| ExprValue::make_list(vec![p("a"), p(v)], ExprType::PATH).unwrap();
+        for (ty, value_ok, value_long, item) in [
+            ("STRING", s(&ok), s(&long), false),
+            ("PATH", s(&ok), s(&long), false),
+            ("PATH", p(&ok), p(&long), false),
+            ("LIST[STRING]", ls(&ok), ls(&long), true),
+            ("LIST[PATH]", ls(&ok), ls(&long), true),
+            ("LIST[PATH]", lp(&ok), lp(&long), true),
+        ] {
+            let d = def(ty);
+            assert_eq!(d.check_value_constraints(&value_ok), Ok(()), "{ty}");
+            let err = d.check_value_constraints(&value_long).unwrap_err();
+            let want = if item {
+                "item[1] has 1025 characters"
+            } else {
+                "value has 1025 characters"
+            };
+            assert!(err.contains(want), "{ty}: {err}");
+        }
     }
 }
