@@ -181,7 +181,8 @@ compares by its transport form, which is that string form (for a list, the strin
 elements in order): a FLOAT, or an element of a `LIST[FLOAT]`, keeps the text it was written with,
 so `3.10` and `3.1` are not equal although they are the same number, while `"3.10"` and
 `" 3.10 "` are equal (the white space is not part of the text), and a FLOAT given as a YAML or JSON
-number is written in shortest form, so the number `1.50` equals `"1.5"` and not `"1.50"`; a STRING
+number is written as a computed float is, so the number `1.50` equals `"1.5"` and not `"1.50"`,
+and the number `2` is `2.0`; a STRING
 compares by code points,
 with no Unicode normalization; INT `1`, `"1"`, and `"01"` are equal (all resolve to the INT 1) and
 BOOL `"yes"` equals `true`; PATH values compare by unmapped string. The one exception is a

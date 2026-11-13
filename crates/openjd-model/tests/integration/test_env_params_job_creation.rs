@@ -1053,6 +1053,7 @@ fn floats_compare_by_their_text_not_by_value() {
         // A YAML number has no text of its own: 1.50 is written 1.5.
         (r#"{F: 1.50}"#, r#"{F: "1.50"}"#),
         (r#"{Fs: [1.50]}"#, r#"{Fs: ["1.50"]}"#),
+        ("{F: 2}", r#"{F: "2"}"#),
     ] {
         let job = pair(a, b);
         assert!(
@@ -1076,6 +1077,7 @@ fn floats_written_alike_are_equal() {
         (r#"{F: "3.10"}"#, r#"{F: "{{ 3.10 }}"}"#),
         (r#"{Fs: ["1.50", "2"]}"#, r#"{Fs: [" 1.50 ", "2"]}"#),
         (r#"{F: 1.50}"#, r#"{F: "1.5"}"#),
+        ("{F: 2}", r#"{F: "2.0"}"#),
     ] {
         let job = pair(a, b);
         assert!(
@@ -1106,6 +1108,33 @@ fn ints_and_bools_have_one_string_form() {
     }
     let job = pair("{Ls: [[1, 2]]}", "{Ls: [[1], [2]]}");
     assert!(!job.steps[0].environment_values_equal(&job.steps[1]));
+}
+
+#[test]
+fn a_deserialized_job_compares_values_by_their_stored_text() {
+    // The comparison assumes values in the form `create_job` writes them
+    // (`Step::environment_values_equal`). A deserialized Step whose INT,
+    // BOOL, or FLOAT is spelled another way compares by that text, although
+    // a Session renders it alike (RANGE_EXPR, which compares by canonical
+    // form, is range_expr_values_compare_by_value).
+    let job = pair("{N: 0}", "{N: 0}");
+    let respell = |name: &str, text: &str| {
+        let mut json = serde_json::to_value(&job.steps[1]).unwrap();
+        let entries = json["environmentParameters"][0]["values"]
+            .as_array_mut()
+            .unwrap();
+        let entry = entries.iter_mut().find(|e| e["name"] == name).unwrap();
+        entry["value"] = serde_json::Value::String(text.to_string());
+        serde_json::from_value::<openjd_model::job::Step>(json).unwrap()
+    };
+    let a = &job.steps[0];
+    assert!(a.environment_values_equal(&respell("N", "0")));
+    for (name, text) in [("N", "000"), ("B", "no"), ("F", "0.00")] {
+        assert!(
+            !a.environment_values_equal(&respell(name, text)),
+            "{name}={text}"
+        );
+    }
 }
 
 #[test]

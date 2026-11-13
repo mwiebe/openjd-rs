@@ -229,7 +229,8 @@ impl Step {
     /// so `3.10` and `3.1` are not equal although they are the same number;
     /// a STRING compares by code points, with no normalization; a PATH by
     /// its unmapped string; an INT by its one string form, so `1` and `"1"`
-    /// are equal. It differs from `==` on the
+    /// are equal. For the Steps of a Job from
+    /// [`create_job`](crate::create_job()), it differs from `==` on the
     /// [`environment_parameters`](Self::environment_parameters) field only
     /// for a RANGE_EXPR, which compares by the integers it denotes (its
     /// canonical form), so `1-3` and `1,2,3` are equal even in a
@@ -237,9 +238,10 @@ impl Step {
     /// Environments by `(document, environment)`, so the order of the list
     /// does not matter.
     ///
-    /// A FLOAT given as a YAML or JSON number has no text of its own, so
-    /// `create_job` writes it in shortest form: the number `1.50` is `1.5`,
-    /// equal to `"1.5"` and not to `"1.50"`. The comparison assumes values in
+    /// A FLOAT given as a YAML or JSON number has no text it was written
+    /// with, so `create_job` writes it as a computed float is written
+    /// (Template Schemas §3.2.2): the number `1.50` is `1.5`, equal to
+    /// `"1.5"` and not to `"1.50"`, and the number `2` is `2.0`. The comparison assumes values in
     /// the form `create_job` writes them. A deserialized Job whose INT, BOOL,
     /// or FLOAT values are spelled another way (`"007"` for an INT, `"yes"`
     /// for a BOOL) compares them by that text, so values a Session would
