@@ -1013,6 +1013,9 @@ jobEnvironments:
   - {name: F, type: FLOAT, default: 0}
   - {name: Fs, type: "LIST[FLOAT]", default: []}
   - {name: P, type: PATH, default: /p}
+  - {name: B, type: BOOL, default: false}
+  - {name: S, type: STRING, default: s}
+  - {name: Ls, type: "LIST[LIST[INT]]", default: []}
   variables: {V: v}
 steps:
 - name: A
@@ -1038,14 +1041,76 @@ fn int_1_and_intstring_1_are_equal() {
 }
 
 #[test]
-fn floats_compare_by_value_not_by_their_text() {
-    let job = pair(r#"{F: 1.0, Fs: [2.5]}"#, r#"{F: "1.00", Fs: ["2.50"]}"#);
+fn floats_compare_by_their_text_not_by_value() {
+    // §3.2.2: a FLOAT keeps the text it was written with, so the same
+    // number written differently is a different value, scalar or element.
+    for (a, b) in [
+        (r#"{F: "3.10"}"#, r#"{F: "3.1"}"#),
+        (r#"{F: "1.0"}"#, r#"{F: "1.00"}"#),
+        (r#"{Fs: ["1.50"]}"#, r#"{Fs: ["1.5"]}"#),
+        (r#"{Fs: ["2.5", "1.50"]}"#, r#"{Fs: ["2.5", "1.5"]}"#),
+        (r#"{F: "1e2"}"#, r#"{F: "100.0"}"#),
+    ] {
+        let job = pair(a, b);
+        assert!(
+            !job.steps[0].environment_values_equal(&job.steps[1]),
+            "{a} {b}"
+        );
+        assert!(
+            !job.steps[1].environment_values_equal(&job.steps[0]),
+            "{a} {b}"
+        );
+    }
+}
+
+#[test]
+fn floats_written_alike_are_equal() {
+    // White space around a FLOAT is not part of its text (§7.5), and an
+    // expression that copies a FLOAT keeps its text (Expression Language
+    // §1.3.4), so these are equal, and equal values have one transport form.
+    for (a, b) in [
+        (r#"{F: "3.10"}"#, r#"{F: " 3.10 "}"#),
+        (r#"{F: "3.10"}"#, r#"{F: "{{ 3.10 }}"}"#),
+        (r#"{Fs: ["1.50", "2"]}"#, r#"{Fs: [" 1.50 ", "2"]}"#),
+    ] {
+        let job = pair(a, b);
+        assert!(
+            job.steps[0].environment_values_equal(&job.steps[1]),
+            "{a} {b}"
+        );
+        assert_eq!(
+            job.steps[0].environment_parameters, job.steps[1].environment_parameters,
+            "{a} {b}"
+        );
+    }
+}
+
+#[test]
+fn ints_and_bools_have_one_string_form() {
+    // §3.2.2: an INT or BOOL resolves to one value whatever its spelling.
+    for (a, b) in [
+        (r#"{N: "007"}"#, "{N: 7}"),
+        (r#"{N: " 7 "}"#, "{N: 7}"),
+        (r#"{B: "yes"}"#, "{B: true}"),
+        (r#"{Ls: [["01", 2]]}"#, "{Ls: [[1, 2]]}"),
+    ] {
+        let job = pair(a, b);
+        assert!(
+            job.steps[0].environment_values_equal(&job.steps[1]),
+            "{a} {b}"
+        );
+    }
+    let job = pair("{Ls: [[1, 2]]}", "{Ls: [[1], [2]]}");
+    assert!(!job.steps[0].environment_values_equal(&job.steps[1]));
+}
+
+#[test]
+fn strings_compare_by_code_points_without_normalization() {
+    // §3.2.2: U+00E9 and "e" with U+0301 render alike but are not equal.
+    let job = pair(r#"{S: "caf\u00e9"}"#, r#"{S: "cafe\u0301"}"#);
+    assert!(!job.steps[0].environment_values_equal(&job.steps[1]));
+    let job = pair(r#"{S: "caf\u00e9"}"#, r#"{S: "café"}"#);
     assert!(job.steps[0].environment_values_equal(&job.steps[1]));
-    // The transport form keeps each as written, so `==` differs.
-    assert_ne!(
-        job.steps[0].environment_parameters,
-        job.steps[1].environment_parameters
-    );
 }
 
 #[test]

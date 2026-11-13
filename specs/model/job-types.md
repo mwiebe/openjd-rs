@@ -176,17 +176,22 @@ Parameters). (Each Step's own `step_environments` are entered and exited around 
 Tasks, as without the extension.) `Step::environment_values_equal(&other)` implements §3.2.2
 equality of the values: both Steps have values
 for the same `(document, environment)` keys, and for each, the same parameter names with the
-same types and equal values. A value whose type contains `float` compares numerically, so
-FLOAT `1.0` and `1.00` are equal (plan A1); a `range_expr` value compares by the integers it
-denotes, so `1-3` and `1,2,3` are equal even in a deserialized Job that holds another spelling
-(§3.2.2; job creation stores the canonical form, see
-[job-creation.md](job-creation.md#environment-parameter-values-env_params)); every other value
-compares by its transport form, so INT `1` and `"1"` are equal (both resolve to the INT 1) and
-PATH values compare by unmapped string. A list that names one `(document, environment)` twice is not one `create_job`
-produces; it compares unequal to every list, including itself, on either side. The derived
-`==` on `environment_parameters` compares the transport form, which keeps a
-FLOAT's text, so it treats `1.0` and `1.00` as different. `EnvironmentParameterValues::values_equal`
-applies the same rule to one Environment's values.
+same types and the same string form, the text `{{Env.RawParam.<name>}}` gives the value. A value
+compares by its transport form, which is that string form (for a list, the string forms of its
+elements in order): a FLOAT, or an element of a `LIST[FLOAT]`, keeps the text it was written with,
+so `3.10` and `3.1` are not equal although they are the same number, while `"3.10"` and
+`" 3.10 "` are equal (the white space is not part of the text); a STRING compares by code points,
+with no Unicode normalization; INT `1`, `"1"`, and `"01"` are equal (all resolve to the INT 1) and
+BOOL `"yes"` equals `true`; PATH values compare by unmapped string. The one exception is a
+`range_expr` value, which compares by the integers it denotes, so `1-3` and `1,2,3` are equal even
+in a deserialized Job that holds another spelling (§3.2.2; its string form is its canonical form,
+and job creation stores that, see
+[job-creation.md](job-creation.md#environment-parameter-values-env_params)). A list that names one
+`(document, environment)` twice is not one `create_job` produces; it compares unequal to every
+list, including itself, on either side. So for the Steps of a Job from `create_job`, the derived
+`==` on `environment_parameters` agrees with this comparison except for the order of the list.
+`EnvironmentParameterValues::values_equal` applies the same rule to one Environment's values. A
+scheduler can key Sessions on the transport form; it needs no numeric comparison.
 
 ### StepScript, StepActions, Action
 

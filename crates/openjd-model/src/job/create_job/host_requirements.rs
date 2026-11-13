@@ -739,8 +739,9 @@ pub(super) fn combine_step_host_requirements(
             .is_some_and(|d| !d.is_empty());
         // The entering Steps, grouped by their values for this
         // Environment, in Step order. Values group by their exact
-        // transport form, not by §3.2.2 equality: FLOAT `1.0` and `1.00`
-        // are equal values, but an expression can tell their text apart.
+        // transport form. For the values job creation makes, that is
+        // §3.2.2 equality: a FLOAT keeps its text and a RANGE_EXPR is
+        // stored in canonical form, so equal values have one transport form.
         let mut groups: Vec<(Option<&job::EnvironmentParameterValues>, Vec<usize>)> = Vec::new();
         let mut group_of: HashMap<Option<String>, usize> = HashMap::new();
         for (s, step) in job.steps.iter().enumerate() {

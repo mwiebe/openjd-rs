@@ -1170,8 +1170,9 @@ impl job::Step {
     /// between them (How Jobs Are Run, Environment Parameters).
     #[must_use] pub fn same_environments(&self, other: &job::Step) -> bool;
     /// Template Schemas §3.2.2 equality of the two Steps' effective
-    /// values: matched by (document, environment); FLOAT compared by value;
-    /// RANGE_EXPR by the integers it denotes.
+    /// values: matched by (document, environment); each value by its type
+    /// and string form (its transport form), so a FLOAT by the text it was
+    /// written with; RANGE_EXPR by the integers it denotes.
     #[must_use] pub fn environment_values_equal(&self, other: &job::Step) -> bool;
 }
 

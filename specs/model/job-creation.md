@@ -1278,9 +1278,9 @@ Environments and the attached ones are handled alike.
 
 - **Resolution.** Each Environment with `hostRequirements` is resolved for the Steps whose
   Sessions enter it (step 6's final sets). Steps whose effective values for it have the same
-  transport form share one resolution, so an error is reported once; this is stricter than
-  §3.2.2 equality, since FLOAT `1.0` and `1.00` are equal values whose text an expression can
-  read, so they resolve separately. A Step whose values for an Environment that declares
+  transport form share one resolution, so an error is reported once. For the values job
+  creation makes, that is §3.2.2 equality: FLOAT `1.0` and `1.00` are different values, whose
+  text an expression can read, so they resolve separately. A Step whose values for an Environment that declares
   parameters were rejected (a failed or missing value, or an ambiguous entry, already
   reported) is skipped for that Environment, so it gets no extra "Undefined variable" error. The table is the merged Job
   Parameters, `Job.Name`, `Job.EnvNames`, and the Environment's `Env.RawParam.*` of any type

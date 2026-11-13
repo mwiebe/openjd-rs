@@ -1104,9 +1104,10 @@ fn a_job_environment_after_an_attachment_is_named_by_its_own_index() {
 }
 
 #[test]
-fn steps_with_equal_values_in_different_text_resolve_separately() {
-    // FLOAT 1.0 and 1.00 are equal values (§3.2.2), but an expression can
-    // read their text, so each Step's requirements come from its own.
+fn steps_with_floats_in_different_text_resolve_separately() {
+    // FLOAT 1.0 and 1.00 are different values (§3.2.2: a FLOAT keeps its
+    // text), and an expression can read that text, so each Step's
+    // requirements come from its own.
     let job = job(&jt(
         "",
         &format!(

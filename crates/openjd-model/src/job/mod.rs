@@ -218,20 +218,24 @@ impl Step {
     /// Whether this Step's effective Environment parameter values equal
     /// `other`'s (Template Schemas §3.2.2): for every Environment either
     /// Step has values for, both have values for it, and each parameter has
-    /// the same type and the same value as resolved at job creation.
+    /// the same type and the same string form, the text
+    /// `{{Env.RawParam.<name>}}` gives it.
     ///
     /// This is the comparison a scheduler uses to decide whether one Session
     /// may run Tasks of both Steps without exiting and entering Environments
-    /// between them. It differs from `==` on the
-    /// [`environment_parameters`](Self::environment_parameters) field in two
-    /// ways: a FLOAT (or an element of a `LIST[FLOAT]`) compares by numeric
-    /// value, so `1.0` and `1.00` are equal here although their transport
-    /// form keeps each as written, and a RANGE_EXPR compares by the integers
-    /// it denotes, so `1-3` and `1,2,3` are equal. Every other value
-    /// compares by its transport form, which for PATH is the unmapped
-    /// string.
-    /// Environments are matched by `(document, environment)`, so the order
-    /// of the list does not matter.
+    /// between them. A value compares by its transport form, which is its
+    /// string form, or for a list the string forms of its elements: a FLOAT
+    /// (or an element of a `LIST[FLOAT]`) keeps the text it was written with,
+    /// so `3.10` and `3.1` are not equal although they are the same number;
+    /// a STRING compares by code points, with no normalization; a PATH by
+    /// its unmapped string; an INT by its one string form, so `1` and `"1"`
+    /// are equal. It differs from `==` on the
+    /// [`environment_parameters`](Self::environment_parameters) field only
+    /// for a RANGE_EXPR, which compares by the integers it denotes (its
+    /// canonical form), so `1-3` and `1,2,3` are equal even in a
+    /// deserialized Job that holds another spelling; and in matching
+    /// Environments by `(document, environment)`, so the order of the list
+    /// does not matter.
     #[must_use]
     pub fn environment_values_equal(&self, other: &Step) -> bool {
         fn index(
@@ -329,7 +333,9 @@ impl std::fmt::Display for Document {
 /// entry's `type` is the parameter's own expression type (`path` for PATH,
 /// `list[path]` for `LIST[PATH]`, `int` for INT, ...), so a Session can tell
 /// which values to path-map. PATH values are unmapped strings of any form,
-/// used as given (§4.5 item 3). A RANGE_EXPR value is its
+/// used as given (§4.5 item 3). A FLOAT value keeps the text it was
+/// written with, which is the text a Session renders, so `3.10` and `3.1`
+/// are different values (§3.2.2). A RANGE_EXPR value is its
 /// canonical form, so two values that denote the same integers have one
 /// transport form (§3.2.2);
 /// a Session parses it. A Session binds them as `Env.Param.<name>` (path-mapped) and
@@ -356,9 +362,10 @@ impl EnvironmentParameterValues {
 }
 
 /// §3.2.2 equality over two symbol tables in transport form: the same
-/// names in the same (canonical) order, the same types, and equal values,
-/// where a value of a type built from `float` compares numerically and a
-/// `range_expr` by the integers it denotes.
+/// names in the same (canonical) order, the same types, and the same
+/// string form for each value, which is its transport form (for a list,
+/// the transport forms of its elements), except that a `range_expr`
+/// compares by the integers it denotes, its canonical form.
 fn transport_tables_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     let (Some(a), Some(b)) = (a.as_array(), b.as_array()) else {
         return a == b;
@@ -370,12 +377,10 @@ fn transport_tables_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool 
                 && ty == eb.get("type")
                 && match (ea.get("value"), eb.get("value")) {
                     (Some(va), Some(vb)) => {
-                        let ty = ty.and_then(serde_json::Value::as_str);
-                        if ty == Some("range_expr") {
+                        if ty.and_then(serde_json::Value::as_str) == Some("range_expr") {
                             range_expr_transport_equal(va, vb)
                         } else {
-                            let is_float = ty.is_some_and(|t| t.contains("float"));
-                            transport_values_equal(va, vb, is_float)
+                            va == vb
                         }
                     }
                     (va, vb) => va == vb,
@@ -395,32 +400,6 @@ fn range_expr_transport_equal(a: &serde_json::Value, b: &serde_json::Value) -> b
     };
     match (canonical(a), canonical(b)) {
         (Some(x), Some(y)) => x == y,
-        _ => a == b,
-    }
-}
-
-/// Compare two transport values; with `numeric_floats`, string leaves
-/// compare as numbers when both parse as `f64`.
-fn transport_values_equal(
-    a: &serde_json::Value,
-    b: &serde_json::Value,
-    numeric_floats: bool,
-) -> bool {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Array(xs), Value::Array(ys)) => {
-            xs.len() == ys.len()
-                && xs
-                    .iter()
-                    .zip(ys)
-                    .all(|(x, y)| transport_values_equal(x, y, numeric_floats))
-        }
-        (Value::String(x), Value::String(y)) if numeric_floats => {
-            match (x.parse::<f64>(), y.parse::<f64>()) {
-                (Ok(fx), Ok(fy)) => fx == fy,
-                _ => x == y,
-            }
-        }
         _ => a == b,
     }
 }

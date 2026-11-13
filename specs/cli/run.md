@@ -401,8 +401,9 @@ each with the Step's values for it. `RunContext::move_to_job_environments` keeps
 prefix of the entered environments whose every entry is the same environment (its index in
 `job_environments`, which names it by `(document, name)`) entered with values equal to the
 Step's (`EnvironmentParameterValues::values_equal`, the comparison
-`job::Step::environment_values_equal` makes, so INT `1` and `"1"` are equal, FLOAT compares
-numerically, and RANGE_EXPR by canonical form), or with no values on both sides. It exits
+`job::Step::environment_values_equal` makes, so INT `1` and `"1"` are equal, a FLOAT compares by
+the text it was written with, so `3.10` and `3.1` are not equal, and RANGE_EXPR by canonical
+form), or with no values on both sides. It exits
 the rest, most recently entered first, and then enters the Step's remaining environments in
 order. An environment above the first difference is exited and entered again even when its
 own values are unchanged, because exits follow the reverse of entry order. For example, if

@@ -2681,10 +2681,65 @@ fn an_environment_is_kept_by_its_identity_not_its_position_in_the_step() {
 }
 
 #[test]
-fn float_values_that_compare_equal_keep_the_environment_entered() {
-    // §3.2.2: FLOAT values compare by numeric value, so A's 1.0 and B's
-    // 1.00 are equal and the Session keeps Scale entered with A's value,
-    // as written by A; C's 2.5 differs.
+fn float_values_written_differently_reenter_the_environment() {
+    // §3.2.2: a FLOAT keeps the text it was written with, so A's "3.10"
+    // and B's "3.1" are not equal although they are the same number, and
+    // the Session exits Py and enters it again with B's value. B's Task
+    // sees 3.1 through the Environment's variables. C's " 3.1 " is equal
+    // to B's "3.1" (white space is not part of the text), so the Session
+    // keeps Py entered.
+    let dir = tempfile::tempdir().unwrap();
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        r#"specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: Py
+  envParameterDefinitions: [{name: V, type: FLOAT}]
+  variables: {PY_V: "{{Env.Param.V}}"}
+  script:
+    actions:
+      onEnter: {command: python, args: ["-c", "import sys; print('ENTER Py ' + sys.argv[1])", "{{Env.Param.V}}"]}
+      onExit: {command: python, args: ["-c", "import sys; print('EXIT Py ' + sys.argv[1])", "{{Env.Param.V}}"]}
+steps:
+- name: A
+  dependencies: [{environment: Py, parameters: {V: "3.10"}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "import os; print('TASK A ' + os.environ['PY_V'])"]}}}
+- name: B
+  dependencies: [{dependsOn: A}, {environment: Py, parameters: {V: "3.1"}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "import os; print('TASK B ' + os.environ['PY_V'])"]}}}
+- name: C
+  dependencies: [{dependsOn: B}, {environment: Py, parameters: {V: " 3.1 "}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "import os; print('TASK C ' + os.environ['PY_V'])"]}}}
+"#,
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        lifecycle_markers(&stdout),
+        [
+            "ENTER Py 3.10",
+            "Running step 'A'",
+            "TASK A 3.10",
+            "EXIT Py 3.10",
+            "ENTER Py 3.1",
+            "Running step 'B'",
+            "TASK B 3.1",
+            "Running step 'C'",
+            "TASK C 3.1",
+            "EXIT Py 3.1",
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn list_float_values_written_differently_reenter_the_environment() {
+    // §3.2.2: lists compare element by element, and each FLOAT element
+    // keeps its text, so A's ["1.50", "2"] and B's ["1.5", "2"] are not
+    // equal and the Session enters Scale again for B.
     let dir = tempfile::tempdir().unwrap();
     let job = write_file(
         &dir,
@@ -2694,21 +2749,18 @@ extensions: [ENV_PARAMS, EXPR]
 name: J
 jobEnvironments:
 - name: Scale
-  envParameterDefinitions: [{name: F, type: FLOAT, default: 9}]
+  envParameterDefinitions: [{name: L, type: "LIST[FLOAT]"}]
   script:
     actions:
-      onEnter: {command: python, args: ["-c", "import sys; print('ENTER Scale ' + sys.argv[1])", "{{Env.Param.F}}"]}
-      onExit: {command: python, args: ["-c", "import sys; print('EXIT Scale ' + sys.argv[1])", "{{Env.Param.F}}"]}
+      onEnter: {command: python, args: ["-c", "import sys; print('ENTER Scale ' + sys.argv[1])", "{{Env.Param.L[0]}}"]}
+      onExit: {command: python, args: ["-c", "import sys; print('EXIT Scale ' + sys.argv[1])", "{{Env.Param.L[0]}}"]}
 steps:
 - name: A
-  dependencies: [{environment: Scale, parameters: {F: "1.0"}}]
+  dependencies: [{environment: Scale, parameters: {L: ["1.50", "2"]}}]
   script: {actions: {onRun: {command: python, args: ["-c", "print('TASK A')"]}}}
 - name: B
-  dependencies: [{dependsOn: A}, {environment: Scale, parameters: {F: "1.00"}}]
+  dependencies: [{dependsOn: A}, {environment: Scale, parameters: {L: ["1.5", "2"]}}]
   script: {actions: {onRun: {command: python, args: ["-c", "print('TASK B')"]}}}
-- name: C
-  dependencies: [{dependsOn: B}, {environment: Scale, parameters: {F: 2.5}}]
-  script: {actions: {onRun: {command: python, args: ["-c", "print('TASK C')"]}}}
 "#,
     );
     let (code, stdout, stderr) = run_cli(&["run", &job]);
@@ -2716,16 +2768,14 @@ steps:
     assert_eq!(
         lifecycle_markers(&stdout),
         [
-            "ENTER Scale 1.0",
+            "ENTER Scale 1.50",
             "Running step 'A'",
             "TASK A",
+            "EXIT Scale 1.50",
+            "ENTER Scale 1.5",
             "Running step 'B'",
             "TASK B",
-            "EXIT Scale 1.0",
-            "ENTER Scale 2.5",
-            "Running step 'C'",
-            "TASK C",
-            "EXIT Scale 2.5",
+            "EXIT Scale 1.5",
         ],
         "{stdout}"
     );
