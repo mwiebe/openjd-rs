@@ -65,7 +65,7 @@ The structural template types — `template::JobTemplate`,
 `template::HostRequirements`, `template::AmountRequirement`,
 `template::AttributeRequirement`, `template::StepDependency`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
-`template::ExtensionName`, `template::BoolOrFormatString`,
+`template::ExtensionName`, `template::BoolOrFormatString`, `template::ExprField`,
 `template::OutputVariableDefinition`, `template::JobOutputDefinition`,
 `template::StepEntry`, `template::StepLoop`, `template::LoopDefinition`,
 `template::LoopVariableDefinition`, `template::LoopOutputVariableDefinition`,
@@ -565,7 +565,7 @@ two structural template types:
 ```rust
 pub struct template::StepTemplate {
     // ...existing fields...
-    pub enable_if: Option<BoolOrFormatString>,
+    pub enable_if: Option<ExprField>,            // an expression field
     pub output_variables: Option<Vec<OutputVariableDefinition>>,
 }
 
@@ -575,13 +575,33 @@ pub struct template::Environment {
 }
 ```
 
-and three types:
+and four types:
 
 ```rust
+/// An Environment's `enableIf`, in its format-string form.
 #[derive(Debug, Clone)]
 pub enum template::BoolOrFormatString {
     Bool(bool),
     FormatString(FormatString),
+}
+
+/// The value of an expression field (RFC 0010's Template Schemas §7.6):
+/// a Step's and a loop's `enableIf`, and a loop's `while` and `until`.
+/// Implements `PartialEq` and `Eq` (floats compare by bit pattern) and
+/// `Deserialize`.
+#[derive(Debug, Clone)]
+pub enum template::ExprField {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Expression(String),   // one expression, without `{{ }}`
+    Null,                 // a present `null`, which validation rejects
+}
+
+impl template::ExprField {
+    /// The boolean scalar; `None` for anything else, a constant
+    /// expression such as `"true"` included.
+    pub fn as_bool(&self) -> Option<bool>;
 }
 
 /// One `<OutputVariableDefinition>`: the job parameter definition of the
@@ -625,9 +645,11 @@ impl template::JobOutputDefinition {
 }
 ```
 
-`BoolOrFormatString`, `OutputVariableDefinition`, and `JobOutputDefinition`
-implement `Deserialize`. See [template-types.md](template-types.md) §
-CONTROL_FLOW Types.
+`BoolOrFormatString`, `ExprField`, `OutputVariableDefinition`, and
+`JobOutputDefinition` implement `Deserialize`. A Step's and a loop's `enableIf`
+and a loop's `while` and `until` decode a present `null` as
+`Some(ExprField::Null)`, not `None`, so that validation reports it. See
+[template-types.md](template-types.md) § CONTROL_FLOW Types.
 
 ### CONTROL_FLOW Loop Template Types (RFC 0013)
 
@@ -648,7 +670,7 @@ impl template::StepEntry {
     pub fn name(&self) -> &str;
     /// Empty when there are none.
     pub fn dependencies(&self) -> &[StepDependency];
-    pub fn enable_if(&self) -> Option<&BoolOrFormatString>;
+    pub fn enable_if(&self) -> Option<&ExprField>;
     pub fn as_step(&self) -> Option<&StepTemplate>;
     pub fn as_loop(&self) -> Option<&StepLoop>;
 }
@@ -659,7 +681,7 @@ impl template::StepEntry {
 pub struct template::StepLoop {
     pub name: String,
     pub description: Option<Description>,
-    pub enable_if: Option<BoolOrFormatString>,
+    pub enable_if: Option<ExprField>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub loop_definition: LoopDefinition,            // serde name `loop`
     pub output_variables: Option<Vec<LoopOutputVariableDefinition>>,
@@ -678,8 +700,8 @@ impl template::StepLoop {
 #[derive(Debug, Clone, Deserialize)]
 pub struct template::LoopDefinition {
     pub variables: Option<Vec<LoopVariableDefinition>>,
-    pub while_condition: Option<BoolOrFormatString>,   // serde name `while`
-    pub until_condition: Option<BoolOrFormatString>,   // serde name `until`
+    pub while_condition: Option<ExprField>,   // serde name `while`
+    pub until_condition: Option<ExprField>,   // serde name `until`
     pub max_iterations: IntOrFormatString,
     pub steps: Vec<StepTemplate>,
 }
@@ -2410,7 +2432,8 @@ to change.
 
 The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 `OutputCollectMode` (RFC 0012's three modes), `template::BoolOrFormatString`
-(the two forms of an `enableIf` value), `job::StepBinding` (RFC 0011's three
+(the two forms of an Environment's `enableIf` value), `template::ExprField`
+(the forms of an expression field's value), `job::StepBinding` (RFC 0011's three
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
 (RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`

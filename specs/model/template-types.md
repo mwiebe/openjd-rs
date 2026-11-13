@@ -73,7 +73,7 @@ pub struct EnvironmentTemplate {
 pub struct StepTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
-    pub enable_if: Option<BoolOrFormatString>,       // CONTROL_FLOW
+    pub enable_if: Option<ExprField>,                // CONTROL_FLOW, an expression field
     pub let_bindings: Option<Vec<String>>,           // "let" field in YAML
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
@@ -403,6 +403,49 @@ The `CONTROL_FLOW` extension adds `enableIf` to `<StepTemplate>` and `<Environme
 Pass 11 gates them on the extension and checks their structure
 ([validation.md](validation.md) § Pass 11).
 
+A Step's and a loop's `enableIf` and a loop's `while` and `until` are expression fields
+([`ExprField`](#exprfield)). An Environment's `enableIf` keeps its earlier format-string
+form ([`BoolOrFormatString`](#boolorformatstring)): RFC 0011 now leaves it to RFC 0010,
+which makes it an expression field that needs `ENV_PARAMS`, and this crate implements
+neither.
+
+### ExprField
+
+```rust
+pub enum ExprField {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Expression(String),
+    Null,
+}
+```
+
+The value of an *expression field*, as RFC 0010's Template Schemas §7.6 defines it: one
+Expression Language expression written without `{{ }}`, or a scalar used as written.
+`template/expr_field.rs` is ported from the `ENV_PARAMS` prototype of RFC 0010 as code, not
+merged from it. A YAML or JSON boolean decodes as `Bool`, an
+integer as `Int`, a number with a fraction or exponent as `Float`, a string as
+`Expression` (so `"true"` is the expression `true`, not the literal), and a present `null`
+as `Null`. A list or a mapping fails deserialization with `<field> must be a boolean,
+integer, float, or string (an expression field, Template Schemas §7.6)`, and an integer
+above `i64::MAX` that fits `u64` with `<field>: the integer <n> is out of range for an
+expression field (Template Schemas §7.6)`, where `<field>` is `enableIf`, `while`, or
+`until`. Each field has a `deserialize_with` that keeps a present `null` as `Some(Null)`
+rather than `None`, so validation reports it at the field's path instead of reading it as
+an omitted field. `as_bool()` returns the boolean scalar, and `None` for anything else, a
+constant expression such as `"true"` included: only a literal is known before the field
+is evaluated (§7.6 rule 5). `PartialEq` compares floats by bit pattern so that it can
+also be `Eq`.
+
+Validation pass 8 checks each one against target type `bool` (§7.6 rules 1, 2, and 4; see
+[validation.md](validation.md) § The `Steps.*` Scope and `enableIf`). `create_job`
+evaluates an `enableIf` whose inputs are concrete at job creation, and
+`advance_step_binding`, `advance_loop_binding`, and the loop functions evaluate the rest
+(see [job-creation.md](job-creation.md) § Step input binding and § Loops). Each parses
+the expression under the template's profile with no host context, the profile pass 8
+used.
+
 ### BoolOrFormatString
 
 ```rust
@@ -412,9 +455,9 @@ pub enum BoolOrFormatString {
 }
 ```
 
-The value of `enableIf`: a YAML `bool`, or a string parsed as a format string. A number,
-list, or mapping fails deserialization with `expected a bool or a format string, got
-<kind>`. An explicit `null` means the field is omitted, as for the template's other
+The value of an Environment's `enableIf`: a YAML `bool`, or a string parsed as a format
+string. A number, list, or mapping fails deserialization with `expected a bool or a format
+string, got <kind>`. An explicit `null` means the field is omitted, as for the template's other
 optional fields (`description: null`, `hostRequirements: null`), so it neither enables
 nor disables anything and is not gated. Validation pass 8 checks a format string's
 symbols and its target type, `bool`; text that resolves to a string must be one of the
@@ -518,7 +561,7 @@ of ...`. That holds with or without `CONTROL_FLOW`. Without the extension a well
 pub struct StepLoop {
     pub name: String,
     pub description: Option<Description>,
-    pub enable_if: Option<BoolOrFormatString>,
+    pub enable_if: Option<ExprField>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub loop_definition: LoopDefinition,                       // `loop`
     pub output_variables: Option<Vec<LoopOutputVariableDefinition>>,
@@ -526,8 +569,8 @@ pub struct StepLoop {
 
 pub struct LoopDefinition {
     pub variables: Option<Vec<LoopVariableDefinition>>,
-    pub while_condition: Option<BoolOrFormatString>,           // `while`
-    pub until_condition: Option<BoolOrFormatString>,           // `until`
+    pub while_condition: Option<ExprField>,                    // `while`
+    pub until_condition: Option<ExprField>,                    // `until`
     pub max_iterations: IntOrFormatString,
     pub steps: Vec<StepTemplate>,
 }
@@ -537,7 +580,7 @@ Both use `deny_unknown_fields`, so a loop with `script`, `parameterSpace`,
 `hostRequirements`, `stepEnvironments`, or `let` fails as an unknown field of a loop, and
 a missing `maxIterations` as `loop 'L': missing field `maxIterations``. `while` and
 `until` are both optional here so that pass 11 can report "exactly one" at
-`steps[i] -> loop`. The body is deserialized element by element: an element with a
+`steps[i] -> loop`; a present `null` counts as present and is reported by pass 8. The body is deserialized element by element: an element with a
 `loop` key fails with `loop body entry <j> '<name>' has a 'loop' field, but loops do not
 nest: a loop's body may contain only Steps (RFC 0013).`, and every other element is a
 `StepTemplate`, whose errors are prefixed `loop body entry <j> '<name>': ` (`loop body

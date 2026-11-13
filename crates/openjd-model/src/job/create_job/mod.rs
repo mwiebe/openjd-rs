@@ -309,7 +309,7 @@ pub fn create_job(
                 crate::error::PathElement::Field("jobEnvironments".to_string()),
                 crate::error::PathElement::Index(i),
             ];
-            let enabled = binding::evaluate_enable_if(
+            let enabled = binding::evaluate_env_enable_if(
                 env.enable_if.as_ref(),
                 &symtab,
                 budgets,

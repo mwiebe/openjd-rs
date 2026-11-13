@@ -31,7 +31,7 @@ use openjd_expr::symbol_table::{SymbolTable, SymbolTableError};
 use openjd_expr::{ExprType, ExprValue, FormatString};
 
 use super::binding::{
-    self, evaluate_enable_if, job_symbol_table, located, missing, steps_symbols, BindContext,
+    self, evaluate_condition, job_symbol_table, located, missing, steps_symbols, BindContext,
     Built, GroupFailure, StepSite,
 };
 use super::instantiate;
@@ -43,10 +43,11 @@ use crate::job::{
     LoopResult, LoopStart, MaterializationGroup, OutputVariable, PendingLoopBinding, StepBinding,
     StepInputs,
 };
+use crate::template::expr_field;
 use crate::template::validate_v2023_09::steps_scope::StepLocation;
 use crate::template::validate_v2023_09::EffectiveLimits;
 use crate::template::{
-    BoolOrFormatString, IntOrFormatString, JobTemplate, StepEntry, StepLoop, StepTemplate,
+    ExprField, IntOrFormatString, JobTemplate, StepEntry, StepLoop, StepTemplate,
 };
 use crate::types::{JobParameterType, JobParameterValues, OutputCollectMode, ValidationContext};
 
@@ -367,17 +368,20 @@ struct LoopGroups {
 }
 
 impl LoopGroups {
-    fn of(l: &StepLoop) -> Self {
-        let enablement = match &l.enable_if {
-            Some(BoolOrFormatString::FormatString(fs)) => steps_symbols(fs.accessed_symbols()),
-            _ => BTreeSet::new(),
-        };
+    /// The groups of `l`, a loop of `jt`.
+    fn of(jt: &JobTemplate, l: &StepLoop) -> Self {
+        let profile = binding::template_expr_profile(jt);
+        let enablement = l
+            .enable_if
+            .as_ref()
+            .map(|f| steps_symbols(expr_field::accessed_symbols(f, &profile)))
+            .unwrap_or_default();
         let mut start = BTreeSet::new();
         for var in l.variables() {
             start.extend(steps_symbols(var.initial().accessed_symbols()));
         }
-        if let Some(BoolOrFormatString::FormatString(fs)) = &l.loop_definition.while_condition {
-            start.extend(steps_symbols(fs.accessed_symbols()));
+        if let Some(f) = &l.loop_definition.while_condition {
+            start.extend(steps_symbols(expr_field::accessed_symbols(f, &profile)));
         }
         Self { enablement, start }
     }
@@ -435,7 +439,7 @@ pub(super) fn loop_creation_inputs(
     l: &StepLoop,
     built: &[Option<Built>],
 ) -> Result<StepInputs, ModelError> {
-    let groups = LoopGroups::of(l);
+    let groups = LoopGroups::of(jt, l);
     binding::creation_inputs(
         jt,
         l.dependencies.as_deref().unwrap_or(&[]),
@@ -456,7 +460,7 @@ pub(super) fn bind_loop(
     inputs: &StepInputs,
 ) -> Result<job::Loop, GroupFailure> {
     use MaterializationGroup::{Enablement, LoopBound, LoopStart as Start};
-    let groups = LoopGroups::of(l);
+    let groups = LoopGroups::of(cx.jt, l);
     let mut job_loop = loop_shell(l, entry);
     let prior_pending = match prior.map(|p| &p.binding) {
         Some(LoopBinding::PendingInputs(p)) => Some(p),
@@ -490,7 +494,8 @@ pub(super) fn bind_loop(
             });
             return Ok(job_loop);
         }
-        let enabled = evaluate_enable_if(
+        let enabled = evaluate_condition(
+            cx.jt,
             l.enable_if.as_ref(),
             &symtab,
             cx.budgets,
@@ -613,7 +618,8 @@ fn evaluate_start(
         Some(condition) => {
             let mut symtab = symtab.clone();
             set_loop_symbols(&mut symtab, l, 0, &initial)?;
-            Some(evaluate_enable_if(
+            Some(evaluate_condition(
+                cx.jt,
                 Some(condition),
                 &symtab,
                 cx.budgets,
@@ -1071,32 +1077,37 @@ pub fn advance_body_step_binding(
 
 // ── The iteration boundary ────────────────────────────────────────
 
-/// The format strings a loop's boundary evaluates: each output's `value`,
-/// `until`, each `next`, and `while`.
-fn boundary_format_strings(l: &StepLoop) -> Vec<&FormatString> {
-    let mut out: Vec<&FormatString> = l
-        .output_variables_list()
-        .iter()
-        .map(|o| o.value())
-        .collect();
-    if let Some(BoolOrFormatString::FormatString(fs)) = &l.loop_definition.until_condition {
-        out.push(fs);
+/// The `Steps.*` symbols (as [`steps_key`] gives them) that a loop's
+/// boundary reads: those of each output's `value`, `until`, each `next`, and
+/// `while`.
+fn boundary_steps_symbols(jt: &JobTemplate, l: &StepLoop) -> BTreeSet<String> {
+    let profile = binding::template_expr_profile(jt);
+    let mut symbols: Vec<String> = Vec::new();
+    for fs in l.output_variables_list().iter().map(|o| o.value()) {
+        symbols.extend(fs.accessed_symbols());
     }
-    out.extend(l.variables().iter().map(|v| v.next()));
-    if let Some(BoolOrFormatString::FormatString(fs)) = &l.loop_definition.while_condition {
-        out.push(fs);
+    if let Some(f) = &l.loop_definition.until_condition {
+        symbols.extend(expr_field::accessed_symbols(f, &profile));
     }
-    out
+    for v in l.variables() {
+        symbols.extend(v.next().accessed_symbols());
+    }
+    if let Some(f) = &l.loop_definition.while_condition {
+        symbols.extend(expr_field::accessed_symbols(f, &profile));
+    }
+    symbols.iter().filter_map(|s| steps_key(s)).collect()
 }
 
-/// Evaluate `condition` (`until` or `while`) as a `bool` at `path`.
-fn evaluate_condition(
-    condition: &BoolOrFormatString,
+/// Evaluate `condition` (`until` or `while`) of a loop of `jt` as a `bool`
+/// at `path`.
+fn evaluate_loop_condition(
+    jt: &JobTemplate,
+    condition: &ExprField,
     symtab: &SymbolTable,
     budgets: EvalBudgets,
     path: &[PathElement],
 ) -> Result<bool, ModelError> {
-    evaluate_enable_if(Some(condition), symtab, budgets, path)
+    evaluate_condition(jt, Some(condition), symtab, budgets, path)
 }
 
 /// Evaluate the iteration boundary of iteration `progress.iteration` of bound
@@ -1164,10 +1175,7 @@ pub fn evaluate_iteration_boundary(
     // The job table and every `Steps.*` symbol the boundary reads.
     let (mut base, _) = job_symbol_table(job_parameter_values, ctx, &job.name)
         .map_err(|e| fail(LoopErrorField::Inputs, e))?;
-    let mut read = BTreeSet::new();
-    for fs in boundary_format_strings(l) {
-        read.extend(fs.accessed_symbols().iter().filter_map(|s| steps_key(s)));
-    }
+    let read = boundary_steps_symbols(job_template, l);
     for sym in &read {
         match inputs.get(sym) {
             Some(v) => base
@@ -1259,8 +1267,14 @@ pub fn evaluate_iteration_boundary(
 
     // 2. until.
     if let Some(until) = &l.loop_definition.until_condition {
-        let done = evaluate_condition(until, &symtab, budgets, &loop_field_path(entry, "until"))
-            .map_err(|e| fail(LoopErrorField::Until, e))?;
+        let done = evaluate_loop_condition(
+            job_template,
+            until,
+            &symtab,
+            budgets,
+            &loop_field_path(entry, "until"),
+        )
+        .map_err(|e| fail(LoopErrorField::Until, e))?;
         if done {
             return succeed(outputs, LoopEnd::Until);
         }
@@ -1297,7 +1311,8 @@ pub fn evaluate_iteration_boundary(
         let mut next_symtab = base;
         set_loop_symbols(&mut next_symtab, l, n + 1, &values)
             .map_err(|e| fail(LoopErrorField::While, e.into()))?;
-        let again = evaluate_condition(
+        let again = evaluate_loop_condition(
+            job_template,
             condition,
             &next_symtab,
             budgets,
@@ -1442,9 +1457,11 @@ impl job::Loop {
         let unknown = |what: &str, n: &str| {
             ModelError::Compatibility(format!("loop '{}' has no {what} '{n}'.", self.name))
         };
-        let condition = |c: &Option<BoolOrFormatString>| match c {
-            Some(BoolOrFormatString::FormatString(fs)) => fs.accessed_symbols(),
-            _ => Default::default(),
+        let profile = binding::template_expr_profile(job_template);
+        let condition = |c: &Option<ExprField>| {
+            c.as_ref()
+                .map(|f| expr_field::accessed_symbols(f, &profile))
+                .unwrap_or_default()
         };
         let symbols: std::collections::HashSet<String> = match expression {
             LoopExpression::EnableIf => condition(&l.enable_if),

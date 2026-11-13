@@ -324,7 +324,7 @@ fn conformance_until_runs_until_true() {
             "",
             "- name: L
   loop:
-    until: '{{Steps.Count.Output.V >= 20}}'
+    until: 'Steps.Count.Output.V >= 20'
     maxIterations: 10
     steps:
     - name: Count
@@ -366,7 +366,7 @@ fn conformance_while_checked_before_each_iteration() {
             &single_loop(
                 "    variables:
     - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}
-    while: '{{Loop.N < 3}}'
+    while: 'Loop.N < 3'
     maxIterations: 5
 ",
                 "  outputVariables:
@@ -400,7 +400,7 @@ fn conformance_while_zero_iterations() {
             &single_loop(
                 "    variables:
     - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N - 1}}'}
-    while: '{{Loop.N > 0}}'
+    while: 'Loop.N > 0'
     maxIterations: 5
 ",
                 "  outputVariables:
@@ -453,7 +453,7 @@ fn conformance_while_zero_iterations_append_min_length_fails() {
             &single_loop(
                 "    variables:
     - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N - 1}}'}
-    while: '{{Loop.N > 0}}'
+    while: 'Loop.N > 0'
     maxIterations: 5
 ",
                 "  outputVariables:
@@ -487,7 +487,7 @@ fn conformance_skipped_loop_outputs_null() {
             "- name: L
   enableIf: false
   loop:
-    until: '{{true}}'
+    until: 'true'
     maxIterations: 5
     steps:
     - name: B
@@ -543,7 +543,7 @@ fn conformance_multi_step_body_check_drives_next() {
   loop:
     variables:
     - {{name: Value, type: INT, initial: '{{{{1}}}}', next: '{{{{Steps.Check.Output.Score}}}}'}}
-    until: '{{{{Steps.Check.Output.Score > 10}}}}'
+    until: 'Steps.Check.Output.Score > 10'
     maxIterations: 10
     steps:
 {}{}  outputVariables:
@@ -596,7 +596,7 @@ fn conformance_next_reads_previous_values() {
                 "    variables:
     - {name: A, type: INT, initial: '{{1}}', next: '{{Loop.B}}'}
     - {name: B, type: INT, initial: '{{2}}', next: '{{Loop.A}}'}
-    until: '{{Loop.Iteration >= 2}}'
+    until: 'Loop.Iteration >= 2'
     maxIterations: 5
 ",
                 "  outputVariables:
@@ -622,7 +622,7 @@ fn conformance_until_true_skips_next() {
   loop:
     variables:
     - {{name: 'N', type: INT, initial: '{{{{0}}}}', next: \"{{{{fail('next evaluated') if Steps.W.Output.Done else Loop.N + 1}}}}\"}}
-    until: '{{{{Steps.W.Output.Done}}}}'
+    until: 'Steps.W.Output.Done'
     maxIterations: 5
     steps:
 {}  outputVariables:
@@ -649,7 +649,7 @@ fn conformance_body_step_skipped_in_iteration() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{Loop.Iteration >= 2}}}}'
+    until: 'Loop.Iteration >= 2'
     maxIterations: 10
     steps:
 {}  outputVariables:
@@ -657,7 +657,7 @@ fn conformance_body_step_skipped_in_iteration() {
 ",
                 body_step(
                     "S",
-                    "      enableIf: '{{Loop.Iteration == 1}}'\n      outputVariables:\n      - {name: X, type: INT}\n"
+                    "      enableIf: 'Loop.Iteration == 1'\n      outputVariables:\n      - {name: X, type: INT}\n"
                 )
             ),
         ),
@@ -684,7 +684,7 @@ fn conformance_body_fan_out_from_loop_variable() {
   loop:
     variables:
     - {{name: Frames, type: 'LIST[INT]', initial: '{{{{[1, 2, 3]}}}}', next: '{{{{Steps.K.Output.Rest}}}}', minLength: 1}}
-    until: '{{{{len(Steps.K.Output.Rest) == 0}}}}'
+    until: 'len(Steps.K.Output.Rest) == 0'
     maxIterations: 10
     steps:
 {}{}  outputVariables:
@@ -739,7 +739,7 @@ fn conformance_body_reads_loop_dependency() {
   dependencies:
   - dependsOn: Setup
   loop:
-    until: '{{{{Loop.Iteration >= 1}}}}'
+    until: 'Loop.Iteration >= 1'
     maxIterations: 5
     steps:
     - name: W
@@ -798,7 +798,7 @@ fn conformance_consumer_fans_out_over_append_output() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{Loop.Iteration >= 2}}}}'
+    until: 'Loop.Iteration >= 2'
     maxIterations: 10
     steps:
 {}  outputVariables:
@@ -853,7 +853,7 @@ fn conformance_error_in_next_fails_loop() {
   loop:
     variables:
     - {{name: 'N', type: INT, initial: '{{{{0}}}}', next: \"{{{{fail('stop') if Steps.W.Output.V == 1 else Loop.N + 1}}}}\"}}
-    until: '{{{{Loop.Iteration >= 4}}}}'
+    until: 'Loop.Iteration >= 4'
     maxIterations: 10
     steps:
 {}",
@@ -885,7 +885,7 @@ fn conformance_error_in_output_value_fails_loop() {
         &template(
             "",
             &single_loop(
-                "    until: '{{Loop.Iteration >= 4}}'\n    maxIterations: 10\n",
+                "    until: 'Loop.Iteration >= 4'\n    maxIterations: 10\n",
                 "  outputVariables:
   - {name: X, type: 'LIST[INT]', collect: APPEND, value: \"{{fail('bad value') if Loop.Iteration == 1 else Loop.Iteration}}\"}
 ",
@@ -917,7 +917,7 @@ fn conformance_loop_variable_constraint_fails() {
             &single_loop(
                 "    variables:
     - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}', maxValue: 2}
-    until: '{{Loop.Iteration >= 4}}'
+    until: 'Loop.Iteration >= 4'
     maxIterations: 10
 ",
                 "",
@@ -949,7 +949,7 @@ fn conformance_next_constraint_at_final_while_boundary_fails() {
             &single_loop(
                 "    variables:
     - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}', maxValue: 2}
-    while: '{{Loop.Iteration < 3}}'
+    while: 'Loop.Iteration < 3'
     maxIterations: 10
 ",
                 "",
@@ -979,7 +979,7 @@ fn conformance_max_iterations_exceeded_fails() {
         &template(
             "",
             &single_loop(
-                "    until: '{{Loop.Iteration >= 4}}'\n    maxIterations: 3\n",
+                "    until: 'Loop.Iteration >= 4'\n    maxIterations: 3\n",
                 "",
                 "",
             ),
@@ -1006,7 +1006,7 @@ fn conformance_max_iterations_from_param() {
     let tpl = template(
         "parameterDefinitions:\n- {name: Max, type: INT}\n",
         &single_loop(
-            "    until: '{{Loop.Iteration >= 4}}'\n    maxIterations: '{{Param.Max}}'\n",
+            "    until: 'Loop.Iteration >= 4'\n    maxIterations: '{{Param.Max}}'\n",
             "",
             "",
         ),
@@ -1050,7 +1050,7 @@ fn conformance_max_iterations_reached_by_condition_succeeds() {
         &template(
             "",
             &single_loop(
-                "    until: '{{Loop.Iteration >= 2}}'\n    maxIterations: 3\n",
+                "    until: 'Loop.Iteration >= 2'\n    maxIterations: 3\n",
                 "",
                 "",
             ),
@@ -1069,7 +1069,7 @@ fn conformance_while_ends_at_max_iterations_succeeds() {
         &template(
             "",
             &single_loop(
-                "    while: '{{Loop.Iteration < 3}}'\n    maxIterations: 3\n",
+                "    while: 'Loop.Iteration < 3'\n    maxIterations: 3\n",
                 "",
                 "",
             ),
@@ -1090,7 +1090,7 @@ fn conformance_body_step_failure_stops_loop() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{Loop.Iteration >= 4}}}}'
+    until: 'Loop.Iteration >= 4'
     maxIterations: 10
     steps:
 {}{}",
@@ -1131,7 +1131,7 @@ fn conformance_job_output_from_loop_output() {
 "
             ),
             &single_loop(
-                "    until: '{{Loop.Iteration >= 2}}'\n    maxIterations: 5\n",
+                "    until: 'Loop.Iteration >= 2'\n    maxIterations: 5\n",
                 "  outputVariables:\n  - {name: Final, type: INT, collect: LAST, value: '{{Loop.Iteration}}'}\n",
                 "",
             ),
@@ -1176,7 +1176,7 @@ fn create_job_records_loops_beside_steps_in_template_order() {
   loop:
     variables:
     - {{name: 'N', type: INT, initial: '{{{{2}}}}', next: '{{{{Loop.N + 1}}}}'}}
-    until: '{{{{Loop.Iteration >= 1}}}}'
+    until: 'Loop.Iteration >= 1'
     maxIterations: 4
     steps:
 {}{}  outputVariables:
@@ -1276,9 +1276,9 @@ fn loop_binding_waits_for_its_inputs_and_advances() {
     // enableIf reads P: nothing else is evaluated until it is decided.
     let fx = Fixture::new(
         &after_producer(
-            "  enableIf: '{{Steps.P.Output.V > 0}}'\n",
+            "  enableIf: 'Steps.P.Output.V > 0'\n",
             "{{Steps.P.Output.V}}",
-            "{{Loop.N < 2}}",
+            "Loop.N < 2",
         ),
         &[],
     );
@@ -1321,7 +1321,7 @@ fn loop_binding_waits_for_its_inputs_and_advances() {
 fn loop_bound_and_start_groups_progress_separately() {
     // Only the start group reads P: maxIterations is known at creation.
     let fx = Fixture::new(
-        &after_producer("", "{{Steps.P.Output.V}}", "{{Loop.N < 2}}"),
+        &after_producer("", "{{Steps.P.Output.V}}", "Loop.N < 2"),
         &[],
     );
     let job = fx.job();
@@ -1354,7 +1354,7 @@ fn loop_start_group_errors_fail_the_loop_finally() {
         &after_producer(
             "",
             "{{fail('no N') if Steps.P.Output.V < 0 else Steps.P.Output.V}}",
-            "{{Loop.N < 2}}",
+            "Loop.N < 2",
         ),
         &[],
     );
@@ -1420,28 +1420,28 @@ fn with_param(enable_if: &str, initial: &str, while_: &str) -> String {
 fn loop_group_errors_at_creation_fail_create_job() {
     let cases = [
         (
-            with_param("", "{{null if Param.X == 0 else 1}}", "{{Loop.N < 2}}"),
+            with_param("", "{{null if Param.X == 0 else 1}}", "Loop.N < 2"),
             "steps[0] -> loop -> variables[0] -> initial",
             "Loop variable 'N': Cannot coerce nulltype to int\n  null if Param.X == 0 else 1\n  ^~~~",
         ),
         (
-            with_param("", "{{'x' if Param.X == 0 else 1}}", "{{Loop.N < 2}}"),
+            with_param("", "{{'x' if Param.X == 0 else 1}}", "Loop.N < 2"),
             "steps[0] -> loop -> variables[0] -> initial",
             "Loop variable 'N': Cannot convert 'x' to int: invalid digit found in string\n  'x' if Param.X == 0 else 1\n  ^~~",
         ),
         (
-            with_param("", "{{1}}", "{{Loop.N / Param.X > 1}}"),
+            with_param("", "{{1}}", "Loop.N / Param.X > 1"),
             "steps[0] -> loop -> while",
-            "Division by zero\n  Loop.N / Param.X > 1\n  ~~~~~~~^~~~~~~~~",
+            "could not be evaluated: Division by zero\n  Loop.N / Param.X > 1\n  ~~~~~~~^~~~~~~~~",
         ),
         (
             with_param(
-                "  enableIf: \"{{fail('nope') if Param.X == 0 else true}}\"\n",
+                "  enableIf: \"fail('nope') if Param.X == 0 else true\"\n",
                 "{{1}}",
-                "{{true}}",
+                "true",
             ),
             "steps[0] -> enableIf",
-            "nope\n  fail('nope') if Param.X == 0 else true\n  ^~~~~~~~~~~~",
+            "could not be evaluated: nope\n  fail('nope') if Param.X == 0 else true\n  ^~~~~~~~~~~~",
         ),
     ];
     for (tpl, path, message) in cases {
@@ -1462,7 +1462,7 @@ fn instance_group_errors_name_the_instance_and_fail_the_loop() {
   loop:
     variables:
     - {{name: Frames, type: 'LIST[INT]', initial: '{{{{[1]}}}}', next: '{{{{[]}}}}'}}
-    until: '{{{{false}}}}'
+    until: 'false'
     maxIterations: 3
     steps:
 {}",
@@ -1499,7 +1499,7 @@ fn path_loop_variables_are_stored_raw_and_recorded_as_path_inputs() {
     variables:
     - {name: Dir, type: PATH, initial: '{{RawParam.Out}}', next: \"{{RawLoop.Dir / 'x'}}\"}
     - {name: Files, type: 'LIST[PATH]', initial: '{{[RawParam.Out]}}', next: '{{RawLoop.Files}}'}
-    until: '{{Loop.Iteration >= 1}}'
+    until: 'Loop.Iteration >= 1'
     maxIterations: 3
     steps:
     - name: W
@@ -1571,7 +1571,7 @@ fn max_task_count_counts_instances_as_their_tasks_become_known() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{false}}}}'
+    until: 'false'
     maxIterations: 3
     steps:
 {}",
@@ -1623,7 +1623,7 @@ fn boundary_checks_output_constraints() {
         template(
             "",
             &single_loop(
-                "    until: '{{Loop.Iteration >= 3}}'\n    maxIterations: 5\n",
+                "    until: 'Loop.Iteration >= 3'\n    maxIterations: 5\n",
                 &format!("  outputVariables:\n{outputs}"),
                 "",
             ),
@@ -1684,20 +1684,21 @@ fn boundary_condition_errors_name_the_field() {
     let tpl = |definition: &str| template("", &single_loop(definition, "", ""));
     let cases = [
         (
-            "    until: '{{null if Loop.Iteration == 0 else true}}'\n    maxIterations: 5\n",
+            "    until: 'null if Loop.Iteration == 0 else true'\n    maxIterations: 5\n",
             "Loop 'L' failed at the boundary of iteration 0, in until:",
             "steps[0] -> loop -> until",
-            "Cannot coerce nulltype to bool\n  null if Loop.Iteration == 0 else true\n  ^~~~",
+            "resolved to null, which does not fit type bool (Template Schemas §7.6).\n  null if \
+             Loop.Iteration == 0 else true",
         ),
         (
-            "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}\n    while: \"{{Loop.N < 2 if Loop.Iteration < 1 else fail('stop at ' + string(Loop.N))}}\"\n    maxIterations: 5\n",
+            "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}\n    while: \"Loop.N < 2 if Loop.Iteration < 1 else fail('stop at ' + string(Loop.N))\"\n    maxIterations: 5\n",
             "Loop 'L' failed at the boundary of iteration 0, in while:",
             // `while` reads the new values with `Loop.Iteration` 1.
             "steps[0] -> loop -> while",
-            "stop at 1\n  Loop.N < 2 if Loop.Iteration < 1 else fail('stop at ' + string(Loop.N))\n                                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "could not be evaluated: stop at 1\n  Loop.N < 2 if Loop.Iteration < 1 else fail('stop at ' + string(Loop.N))\n                                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
         ),
         (
-            "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{null if Loop.Iteration == 0 else 1}}'}\n    until: '{{false}}'\n    maxIterations: 5\n",
+            "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{null if Loop.Iteration == 0 else 1}}'}\n    until: 'false'\n    maxIterations: 5\n",
             "Loop 'L' failed at the boundary of iteration 0, in the next of loop variable 'N':",
             "steps[0] -> loop -> variables[0] -> next",
             "Loop variable 'N': Cannot coerce nulltype to int\n  null if Loop.Iteration == 0 else 1\n  ^~~~",
@@ -1722,7 +1723,7 @@ fn loop_value_size_limit_is_checked_at_three_points() {
         &single_loop(
             "    variables:
     - {name: V, type: STRING, initial: '{{Param.S}}', next: \"{{Loop.V + 'abcdefghij'}}\"}
-    until: '{{Loop.Iteration >= 3}}'
+    until: 'Loop.Iteration >= 3'
     maxIterations: 5
 ",
             "  outputVariables:\n  - {name: H, type: 'LIST[STRING]', collect: APPEND, value: '{{Loop.V}}'}\n",
@@ -1784,7 +1785,7 @@ fn add_loop_producer_types_outputs_and_checks_state() {
         &template(
             "",
             &single_loop(
-                "    while: '{{Loop.Iteration < 1}}'\n    maxIterations: 3\n",
+                "    while: 'Loop.Iteration < 1'\n    maxIterations: 3\n",
                 "  outputVariables:
   - {name: P, type: PATH, collect: LAST, value: \"{{'/a/b'}}\"}
   - {name: 'N', type: INT, collect: LAST, value: '{{1}}'}
@@ -1861,7 +1862,7 @@ fn a_given_loop_leaves_outputs_it_lacks_unknown() {
         &template(
             "",
             &single_loop(
-                "    while: '{{Loop.Iteration < 1}}'\n    maxIterations: 3\n",
+                "    while: 'Loop.Iteration < 1'\n    maxIterations: 3\n",
                 "  outputVariables:
   - {name: 'N', type: INT, collect: LAST, value: '{{1}}'}
   - {name: H, type: 'LIST[INT]', collect: APPEND, value: '{{1}}'}
@@ -1906,11 +1907,11 @@ fn expression_inputs_list_the_steps_symbols_each_expression_reads() {
 - name: L
   dependencies:
   - dependsOn: P
-  enableIf: '{{{{Steps.P.Output.V > 0}}}}'
+  enableIf: 'Steps.P.Output.V > 0'
   loop:
     variables:
     - {{name: 'N', type: INT, initial: '{{{{Steps.P.Output.V}}}}', next: '{{{{Steps.W.Output.X + Steps.P.Output.V}}}}'}}
-    until: '{{{{Steps.W.Output.X > 1 or Steps.W.Output.X < 0}}}}'
+    until: 'Steps.W.Output.X > 1 or Steps.W.Output.X < 0'
     maxIterations: 3
     steps:
 {}  outputVariables:
@@ -1950,7 +1951,7 @@ fn loop_functions_refuse_caller_errors() {
         &template(
             "",
             &single_loop(
-                "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N}}'}\n    until: '{{false}}'\n    maxIterations: 2\n",
+                "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N}}'}\n    until: 'false'\n    maxIterations: 2\n",
                 "",
                 "",
             ),
@@ -2008,7 +2009,7 @@ fn loop_functions_refuse_caller_errors() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{Steps.W.Output.X > 0}}}}'
+    until: 'Steps.W.Output.X > 0'
     maxIterations: 2
     steps:
 {}",
@@ -2085,7 +2086,7 @@ fn loop_functions_refuse_caller_errors() {
   {SCRIPT}
 ",
                 single_loop(
-                    "    until: '{{true}}'\n    maxIterations: 2\n",
+                    "    until: 'true'\n    maxIterations: 2\n",
                     "  outputVariables:\n  - {name: O, type: 'LIST[INT]', collect: APPEND, value: '{{5}}'}\n",
                     ""
                 )
@@ -2127,7 +2128,7 @@ const W: &str = "    - name: W
 fn body_loop(body: &str) -> String {
     template(
         "",
-        &format!("- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{body}"),
+        &format!("- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{body}"),
     )
 }
 
@@ -2148,7 +2149,7 @@ fn start0(fx: &Fixture) -> Result<openjd_model::job::LoopIteration, BindingError
 }
 
 const SKIPPED_A: &str = "    - name: A
-      enableIf: '{{Loop.Iteration < 0}}'
+      enableIf: 'Loop.Iteration < 0'
       outputVariables:
       - {name: X, type: INT}
       script:
@@ -2160,7 +2161,7 @@ const SKIPPED_A: &str = "    - name: A
 const B_READS_A: &str = "    - name: B
       dependencies:
       - dependsOn: A
-      enableIf: '{{Steps.A.Output.X == null}}'
+      enableIf: 'Steps.A.Output.X == null'
       script:
         actions:
           onRun:
@@ -2277,7 +2278,7 @@ fn body_step_host_requirement_errors_name_the_body_path() {
         &template(
             "parameterDefinitions:\n- {name: A, type: STRING, default: 'bad name'}\n",
             &format!(
-                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}{}",
+                "- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}{}",
                 "    - name: C
       hostRequirements:
         attributes:
@@ -2310,7 +2311,7 @@ fn top_level_step_after_a_loop_reports_its_template_path() {
         &template(
             "parameterDefinitions:\n- {name: A, type: STRING, default: 'bad name'}\n",
             &format!(
-                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}- name: C
+                "- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}- name: C
   hostRequirements:
     attributes:
     - {{name: 'attr.{{{{Param.A}}}}', anyOf: [x]}}
@@ -2338,7 +2339,7 @@ fn raw_loop_of_a_non_path_variable_is_its_value() {
   loop:
     variables:
     - {name: 'N', type: INT, initial: '{{7}}', next: '{{Loop.N}}'}
-    until: '{{true}}'
+    until: 'true'
     maxIterations: 2
     steps:
     - name: W
@@ -2374,7 +2375,7 @@ fn path_instance(args: &str) -> openjd_model::job::Step {
     variables:
     - {{name: Dir, type: PATH, initial: /src/out, next: '{{{{RawLoop.Dir}}}}'}}
     - {{name: Other, type: PATH, initial: /src/other, next: '{{{{RawLoop.Other}}}}'}}
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
     - name: W
@@ -2422,7 +2423,7 @@ fn only_the_path_variables_an_instance_reads_are_stored() {
     - {{name: F, type: FLOAT, initial: '{{{{1}}}}', next: '{{{{Loop.F}}}}'}}
     - {{name: P, type: PATH, initial: /a, next: '{{{{RawLoop.P}}}}'}}
     - {{name: LP, type: 'LIST[PATH]', initial: \"{{{{['/a']}}}}\", next: '{{{{RawLoop.LP}}}}'}}
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
 {W}"
@@ -2459,7 +2460,7 @@ fn attach_step_inputs_keeps_raw_loop_records_beside_steps_inputs() {
   loop:
     variables:
     - {{name: Dir, type: PATH, initial: /src/out, next: '{{{{RawLoop.Dir}}}}'}}
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
     - name: W
@@ -2501,7 +2502,7 @@ fn a_false_enable_if_evaluates_nothing_else() {
     let fx = Fixture::new(
         &template(
             "parameterDefinitions:\n- {name: M, type: INT, default: 0}\n",
-            &format!("- name: L\n  enableIf: '{{{{Param.M > 0}}}}'\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
+            &format!("- name: L\n  enableIf: 'Param.M > 0'\n  loop:\n    until: 'true'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
         ),
         &[],
     );
@@ -2511,7 +2512,7 @@ fn a_false_enable_if_evaluates_nothing_else() {
 #[test]
 fn a_waiting_start_group_names_its_producers() {
     let fx = Fixture::new(
-        &after_producer("", "{{Steps.P.Output.V}}", "{{Loop.N < 2}}"),
+        &after_producer("", "{{Steps.P.Output.V}}", "Loop.N < 2"),
         &[],
     );
     assert_eq!(fx.job().loops[0].input_producers(), ["P"]);
@@ -2522,7 +2523,7 @@ fn step_name_in_a_loop_enable_if_is_the_loop_name() {
     let fx = Fixture::new(
         &template(
             "",
-            &format!("- name: L\n  enableIf: \"{{{{Step.Name == 'L'}}}}\"\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}"),
+            &format!("- name: L\n  enableIf: \"Step.Name == 'L'\"\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}"),
         ),
         &[],
     );
@@ -2535,7 +2536,7 @@ fn max_iterations_accepts_1_and_1000() {
         let fx = Fixture::new(
             &template(
                 "parameterDefinitions:\n- {name: M, type: INT}\n",
-                &format!("- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
+                &format!("- name: L\n  loop:\n    until: 'true'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
             ),
             &[("M", &m.to_string())],
         );
@@ -2554,7 +2555,7 @@ fn size_err(variable: &str, outputs: &str, limit: usize) -> Option<String> {
     let fx = Fixture::with_limits(
         &template(
             "",
-            &format!("- name: L\n  loop:\n    variables:\n    - {variable}\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}{outputs}"),
+            &format!("- name: L\n  loop:\n    variables:\n    - {variable}\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}{outputs}"),
         ),
         &[],
         CallerLimits {
@@ -2605,7 +2606,7 @@ fn a_loop_skipped_at_creation_is_null_for_steps_that_read_it() {
                 "- name: L
   enableIf: false
   loop:
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
 {W}  outputVariables:
@@ -2613,7 +2614,7 @@ fn a_loop_skipped_at_creation_is_null_for_steps_that_read_it() {
 - name: C
   dependencies:
   - dependsOn: L
-  enableIf: '{{{{Steps.L.Output.O == null}}}}'
+  enableIf: 'Steps.L.Output.O == null'
   {SCRIPT}
 "
             ),
@@ -2626,7 +2627,7 @@ fn a_loop_skipped_at_creation_is_null_for_steps_that_read_it() {
 #[test]
 fn two_loops_keep_template_order_in_the_job_and_the_graph() {
     let lp = |n: &str| {
-        format!("- name: {n}\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n    - name: W{n}\n      {SCRIPT}\n")
+        format!("- name: {n}\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n    - name: W{n}\n      {SCRIPT}\n")
     };
     let job = Fixture::new(
         &template(
@@ -2669,7 +2670,7 @@ fn add_loop_producer_holds_list_path_outputs_raw_and_needs_a_bound_loop() {
         &template(
             "",
             &format!(
-                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: P, type: 'LIST[PATH]', collect: APPEND, value: \"{{{{'/a'}}}}\"}}\n"
+                "- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: P, type: 'LIST[PATH]', collect: APPEND, value: \"{{{{'/a'}}}}\"}}\n"
             ),
         ),
         &[],
@@ -2729,7 +2730,7 @@ fn loop_progress_new_and_output_lookup() {
         &template(
             "",
             &format!(
-                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: A, type: 'LIST[INT]', collect: APPEND, value: '{{{{1}}}}'}}\n  - {{name: B, type: INT, collect: LAST, value: '{{{{1}}}}'}}\n"
+                "- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: A, type: 'LIST[INT]', collect: APPEND, value: '{{{{1}}}}'}}\n  - {{name: B, type: INT, collect: LAST, value: '{{{{1}}}}'}}\n"
             ),
         ),
         &[],
@@ -2760,7 +2761,7 @@ fn loop_functions_refuse_a_mismatched_template_or_zero_iteration_loop() {
     let tpl = |name: &str| {
         template(
             "",
-            &format!("- name: {name}\n  loop:\n    while: '{{{{false}}}}'\n    maxIterations: 2\n    steps:\n{W}"),
+            &format!("- name: {name}\n  loop:\n    while: 'false'\n    maxIterations: 2\n    steps:\n{W}"),
         )
     };
     let fx = Fixture::new(&tpl("L"), &[]);
@@ -2867,7 +2868,7 @@ fn loop_functions_refuse_a_progress_of_the_wrong_shape() {
         &template(
             "",
             &single_loop(
-                "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}\n    until: '{{Loop.Iteration >= 2}}'\n    maxIterations: 5\n",
+                "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}\n    until: 'Loop.Iteration >= 2'\n    maxIterations: 5\n",
                 "  outputVariables:\n  - {name: Ns, type: 'LIST[INT]', collect: APPEND, value: '{{Loop.N}}'}\n  - {name: Last, type: INT, collect: LAST, value: '{{Loop.N}}'}\n",
                 "",
             ),
@@ -2990,7 +2991,7 @@ fn a_continue_progress_of_every_type_is_accepted_again() {
             "    - {{name: {name}, type: {ty}, initial: {initial}, next: '{{{{{next}}}}}'}}\n"
         ));
     }
-    definition.push_str("    until: '{{Loop.Iteration >= 2}}'\n    maxIterations: 5\n");
+    definition.push_str("    until: 'Loop.Iteration >= 2'\n    maxIterations: 5\n");
     let fx = Fixture::new(
         &template(
             "",
@@ -3018,7 +3019,7 @@ fn a_progress_list_of_the_wrong_element_type_is_refused() {
         &template(
             "",
             &single_loop(
-                "    variables:\n    - {name: V, type: 'LIST[INT]', initial: '{{[1]}}', next: '{{Loop.V}}'}\n    until: '{{true}}'\n    maxIterations: 2\n",
+                "    variables:\n    - {name: V, type: 'LIST[INT]', initial: '{{[1]}}', next: '{{Loop.V}}'}\n    until: 'true'\n    maxIterations: 2\n",
                 "",
                 "",
             ),
@@ -3072,7 +3073,7 @@ fn loop_value_size_sums_variables_in_utf8_bytes_and_counts_bools() {
     let fx = Fixture::with_limits(
         &template(
             "",
-            &format!("- name: S\n  {SCRIPT}\n- name: L\n  loop:\n    variables:\n    - {{name: V, type: STRING, initial: abc, next: '{{{{Loop.V}}}}'}}\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}"),
+            &format!("- name: S\n  {SCRIPT}\n- name: L\n  loop:\n    variables:\n    - {{name: V, type: STRING, initial: abc, next: '{{{{Loop.V}}}}'}}\n    until: 'true'\n    maxIterations: 2\n    steps:\n{W}"),
         ),
         &[],
         CallerLimits {
@@ -3104,14 +3105,14 @@ fn conversion_failures_name_the_value_and_the_expression() {
             .to_string()
     };
     assert_eq!(
-        err("    variables:\n    - {name: V, type: INT, initial: 'n{{Param.S}}', next: '{{Loop.V}}'}\n    until: '{{true}}'\n    maxIterations: 2\n"),
+        err("    variables:\n    - {name: V, type: INT, initial: 'n{{Param.S}}', next: '{{Loop.V}}'}\n    until: 'true'\n    maxIterations: 2\n"),
         expected(&[(
             "steps[0] -> loop -> variables[0] -> initial",
             "Loop variable 'V': value 'nabc' does not convert to INT: Cannot convert 'nabc' to int: invalid digit found in string\n  n{{Param.S}}"
         )])
     );
     assert_eq!(
-        err("    until: '{{true}}'\n    maxIterations: 'n{{Param.S}}'\n"),
+        err("    until: 'true'\n    maxIterations: 'n{{Param.S}}'\n"),
         expected(&[(
             "steps[0] -> loop -> maxIterations",
             "maxIterations must be an integer; it is 'nabc'.\n  n{{Param.S}}"
@@ -3127,7 +3128,7 @@ fn a_reported_value_in_a_loop_error_is_escaped() {
             &format!(
                 "- name: L
   loop:
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
 {}  outputVariables:
@@ -3157,7 +3158,7 @@ fn a_reported_value_in_a_loop_error_is_escaped() {
 #[test]
 fn advance_loop_binding_keeps_the_known_bound_and_names_failing_groups() {
     let fx = Fixture::new(
-        &after_producer("", "{{Steps.P.Output.V}}", "{{Loop.N < 2}}"),
+        &after_producer("", "{{Steps.P.Output.V}}", "Loop.N < 2"),
         &[],
     );
     let job = fx.job();
@@ -3173,7 +3174,7 @@ fn advance_loop_binding_keeps_the_known_bound_and_names_failing_groups() {
         &template(
             "parameterDefinitions:\n- {name: M, type: INT, default: 0}\n",
             &format!(
-                "- name: P\n  outputVariables:\n  - {{name: V, type: INT}}\n  {SCRIPT}\n- name: L\n  dependencies:\n  - dependsOn: P\n  enableIf: '{{{{Steps.P.Output.V > 0}}}}'\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"
+                "- name: P\n  outputVariables:\n  - {{name: V, type: INT}}\n  {SCRIPT}\n- name: L\n  dependencies:\n  - dependsOn: P\n  enableIf: 'Steps.P.Output.V > 0'\n  loop:\n    until: 'true'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"
             ),
         ),
         &[],
@@ -3194,7 +3195,7 @@ fn advance_loop_binding_keeps_the_known_bound_and_names_failing_groups() {
     );
     // start_iteration on a loop that is not bound yet.
     let pending = Fixture::new(
-        &after_producer("", "{{Steps.P.Output.V}}", "{{Loop.N < 2}}"),
+        &after_producer("", "{{Steps.P.Output.V}}", "Loop.N < 2"),
         &[],
     );
     let pjob = pending.job();
@@ -3329,7 +3330,7 @@ fn bad_body(field: &str) -> Fixture {
         &template(
             "parameterDefinitions:\n- {name: Q, type: INT, default: 1}\n",
             &format!(
-                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n    - name: W{env}\n      script:\n        actions:\n          onRun:\n            command: echo{args}\n"
+                "- name: L\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n    - name: W{env}\n      script:\n        actions:\n          onRun:\n            command: echo{args}\n"
             ),
         ),
         &[],
@@ -3384,12 +3385,12 @@ fn a_missing_known_input_names_the_body_instance() {
         &template(
             "",
             &format!(
-                "- name: P\n  outputVariables:\n  - {{name: G, type: BOOL}}\n  {SCRIPT}\n- name: L\n  dependencies:\n  - dependsOn: P\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{}{}",
+                "- name: P\n  outputVariables:\n  - {{name: G, type: BOOL}}\n  {SCRIPT}\n- name: L\n  dependencies:\n  - dependsOn: P\n  loop:\n    until: 'true'\n    maxIterations: 2\n    steps:\n{}{}",
                 body_step("A", "      outputVariables:\n      - {name: X, type: INT}\n"),
                 "    - name: B
       dependencies:
       - dependsOn: A
-      enableIf: '{{Steps.P.Output.G}}'
+      enableIf: 'Steps.P.Output.G'
       parameterSpace:
         taskParameterDefinitions:
         - {name: F, type: INT, range: '{{[Steps.A.Output.X]}}'}
@@ -3509,7 +3510,7 @@ fn body_step_environment_reads_the_loops_dependencies() {
   dependencies:
   - dependsOn: Setup
   loop:
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
     - name: W
@@ -3552,7 +3553,7 @@ fn body_host_requirements_error(hr: &str) -> String {
 steps:
 - name: L
   loop:
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
     - name: W
@@ -3630,11 +3631,11 @@ fn a_loop_binds_at_creation_from_producers_known_then() {
   dependencies:
   - dependsOn: M
   - dependsOn: S
-  enableIf: '{{{{Steps.S.Output.G == null}}}}'
+  enableIf: 'Steps.S.Output.G == null'
   loop:
     variables:
     - {{name: Count, type: INT, initial: '{{{{len(Steps.M.TaskParam.F)}}}}', next: '{{{{Loop.Count}}}}'}}
-    until: '{{{{true}}}}'
+    until: 'true'
     maxIterations: 2
     steps:
 {W}"
@@ -3654,7 +3655,7 @@ fn step_name_in_a_body_instance_is_the_body_step_name() {
     let it = start0(&Fixture::new(
         &body_loop(
             "    - name: W
-      enableIf: \"{{Step.Name == 'W'}}\"
+      enableIf: \"Step.Name == 'W'\"
       script:
         actions:
           onRun:
@@ -3860,10 +3861,7 @@ fn a_let_reading_a_path_param_carries_its_raw_param() {
 
 #[test]
 fn a_first_while_reading_steps_waits_in_the_start_group() {
-    let fx = Fixture::new(
-        &after_producer("", "{{1}}", "{{Steps.P.Output.V > 0}}"),
-        &[],
-    );
+    let fx = Fixture::new(&after_producer("", "{{1}}", "Steps.P.Output.V > 0"), &[]);
     let job = fx.job();
     let LoopBinding::PendingInputs(p) = &job.loops[0].binding else {
         panic!("{:?}", job.loops[0].binding)
@@ -3881,6 +3879,25 @@ fn a_first_while_reading_steps_waits_in_the_start_group() {
 }
 
 #[test]
+fn a_while_reading_steps_is_evaluated_at_each_boundary() {
+    // `while` reads a dependency's output before the first iteration and at
+    // every boundary, so the boundary's symbol table holds it too.
+    let fx = Fixture::new(
+        &after_producer("", "{{1}}", "Loop.N <= Steps.P.Output.V"),
+        &[],
+    );
+    let job = fx.job();
+    let deps = p_succeeded(&job, 2);
+    let job = Job {
+        loops: vec![advance_loop_binding(&fx.jt, &fx.params, &fx.ctx, &job, 0, &deps).unwrap()],
+        ..job
+    };
+    let run = run_loop(&fx, &job, "L", &deps, nothing);
+    assert_eq!(iterations(&run), [0, 1]);
+    assert_eq!(run.result().ended_by, LoopEnd::While);
+}
+
+#[test]
 fn the_initial_size_check_runs_after_every_initial() {
     // B's initial fails; the size limit, which A alone exceeds, is checked
     // only after both.
@@ -3888,7 +3905,7 @@ fn the_initial_size_check_runs_after_every_initial() {
         &template(
             "parameterDefinitions:\n- {name: S, type: STRING, default: abc}\n",
             &single_loop(
-                "    variables:\n    - {name: A, type: INT, initial: '{{10}}', next: '{{Loop.A}}'}\n    - {name: B, type: INT, initial: '{{int(Param.S)}}', next: '{{Loop.B}}'}\n    until: '{{true}}'\n    maxIterations: 2\n",
+                "    variables:\n    - {name: A, type: INT, initial: '{{10}}', next: '{{Loop.A}}'}\n    - {name: B, type: INT, initial: '{{int(Param.S)}}', next: '{{Loop.B}}'}\n    until: 'true'\n    maxIterations: 2\n",
                 "",
                 "",
             ),

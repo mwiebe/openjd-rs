@@ -3538,7 +3538,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{2}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: C
@@ -3671,7 +3671,7 @@ steps:
 - name: L
   dependencies: [{dependsOn: A}]
   loop:
-    until: "{{Loop.Iteration >= 4}}"
+    until: "Loop.Iteration >= 4"
     maxIterations: 5
     steps:
     - name: B

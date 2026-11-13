@@ -10,7 +10,7 @@
 //! the expression and the caret. They are grouped by the RFC 0013
 //! §Validation item they check.
 
-use openjd_model::template::{BoolOrFormatString, IntOrFormatString, StepEntry};
+use openjd_model::template::{ExprField, IntOrFormatString, StepEntry};
 use openjd_model::types::OutputCollectMode;
 use openjd_model::{decode_job_template, CallerLimits};
 
@@ -105,7 +105,7 @@ fn single_loop(loop_fields: &str, fields: &str) -> String {
     ))
 }
 
-const UNTIL: &str = "    until: \"{{Loop.Iteration >= 1}}\"\n    maxIterations: 5\n";
+const UNTIL: &str = "    until: \"Loop.Iteration >= 1\"\n    maxIterations: 5\n";
 
 // ── Schema ────────────────────────────────────────────────────────
 
@@ -117,12 +117,12 @@ fn a_loop_parses_into_its_template_types() {
   {SCRIPT}
 - name: L
   description: refine
-  enableIf: \"{{{{Param.Run}}}}\"
+  enableIf: \"Param.Run\"
   dependencies: [{{dependsOn: Setup}}]
   loop:
     variables:
       - {{name: Pass, type: INT, initial: \"{{{{Steps.Setup.Output.Start}}}}\", next: \"{{{{Loop.Pass + 1}}}}\", minValue: 1, description: pass}}
-    until: \"{{{{Steps.Check.Output.Score >= 3}}}}\"
+    until: \"Steps.Check.Output.Score >= 3\"
     maxIterations: \"{{{{Param.Num}}}}\"
     steps:
       - name: Render
@@ -150,10 +150,7 @@ fn a_loop_parses_into_its_template_types() {
     assert!(jt.steps[1].enable_if().is_some());
     assert!(jt.steps[1].as_step().is_none());
     assert_eq!(l.description.as_ref().unwrap().0, "refine");
-    assert!(matches!(
-        l.enable_if,
-        Some(BoolOrFormatString::FormatString(_))
-    ));
+    assert_eq!(l.enable_if, Some(ExprField::Expression("Param.Run".into())));
     let def = &l.loop_definition;
     assert!(def.while_condition.is_none());
     assert!(def.until_condition.is_some());
@@ -223,10 +220,10 @@ fn a_while_loop_with_a_literal_max_iterations_parses() {
         "",
     ));
     let l = jt.loops().next().unwrap();
-    assert!(matches!(
+    assert_eq!(
         l.loop_definition.while_condition,
-        Some(BoolOrFormatString::Bool(true))
-    ));
+        Some(ExprField::Bool(true))
+    );
     assert_eq!(l.loop_definition.max_iterations.as_i64(), Some(7));
     assert!(l.variables().is_empty());
     assert!(l.output_variables_list().is_empty());
@@ -1043,11 +1040,11 @@ fn loop_symbols_are_available_in_body_steps_and_the_loops_own_conditions() {
     variables:
       - {name: V, type: INT, initial: \"0\", next: \"{{Loop.V + Loop.Iteration}}\"}
       - {name: P, type: PATH, initial: \"{{RawParam.Root}}\", next: \"{{RawLoop.P}}\"}
-    while: \"{{Loop.V < 10 and Loop.Iteration < 3 and RawLoop.V >= 0}}\"
+    while: \"Loop.V < 10 and Loop.Iteration < 3 and RawLoop.V >= 0\"
     maxIterations: 5
     steps:
       - name: W
-        enableIf: \"{{Loop.Iteration > 0}}\"
+        enableIf: \"Loop.Iteration > 0\"
         let: [\"v = Loop.V\", \"p = RawLoop.P\"]
         hostRequirements:
           amounts: [{name: amount.worker.vcpu, min: \"{{Loop.V}}\"}]
@@ -1098,7 +1095,7 @@ fn loop_symbols_are_not_available_before_the_first_iteration() {
     assert_errs(
         &single_loop(
             &format!("    variables: [{{name: V, type: INT, initial: \"{{{{Loop.Iteration}}}}\", next: \"1\"}}]\n{UNTIL}"),
-            "  enableIf: \"{{RawLoop.V > 0}}\"\n",
+            "  enableIf: \"RawLoop.V > 0\"\n",
         ),
         &[
             (
@@ -1127,7 +1124,7 @@ fn a_loop_symbol_names_a_variable_of_this_loop_or_iteration() {
 - name: B
   loop:
     variables: [{{name: M, type: INT, initial: \"0\", next: \"1\"}}]
-    until: \"{{{{Loop.Nope > 0}}}}\"
+    until: \"Loop.Nope > 0\"
     maxIterations: 2
     steps:
       - name: WB
@@ -1184,7 +1181,7 @@ fn a_path_loop_variable_is_read_through_raw_loop_in_template_scope() {
 #[test]
 fn an_incomplete_loop_reference_is_explained() {
     assert_errs(
-        &single_loop("    until: \"{{len(Loop) > 0}}\"\n    maxIterations: 2\n", ""),
+        &single_loop("    until: \"len(Loop) > 0\"\n    maxIterations: 2\n", ""),
         &[(
             "steps[0] -> loop -> until",
             "'Loop' is not a complete reference; expected Loop.<VarName>, RawLoop.<VarName>, or Loop.Iteration.",
@@ -1234,13 +1231,13 @@ const C_ARGS: &str = "\"{{Steps.L.Output.Last}}\"";
 #[test]
 fn the_scopes_around_a_loop_accept_what_rfc_0013_allows() {
     decode_ok(&around(
-        "    variables: [{name: V, type: INT, initial: \"{{Steps.Setup.Output.K}}\", next: \"{{Steps.A.Output.X + Steps.Setup.Output.K}}\"}]\n    until: \"{{Steps.A.Output.X > Steps.Setup.Output.K}}\"\n",
-        "  enableIf: \"{{Steps.Setup.Output.K > 0}}\"\n",
+        "    variables: [{name: V, type: INT, initial: \"{{Steps.Setup.Output.K}}\", next: \"{{Steps.A.Output.X + Steps.Setup.Output.K}}\"}]\n    until: \"Steps.A.Output.X > Steps.Setup.Output.K\"\n",
+        "  enableIf: \"Steps.Setup.Output.K > 0\"\n",
         B_ARGS,
         C_ARGS,
     ));
     decode_ok(&around(
-        "    while: \"{{Steps.Setup.Output.K > Loop.Iteration}}\"\n",
+        "    while: \"Steps.Setup.Output.K > Loop.Iteration\"\n",
         "",
         B_ARGS,
         "\"{{Steps.L.Output.Last or 0}}\"",
@@ -1288,8 +1285,8 @@ fn a_body_step_reads_its_body_dependencies_and_its_loops_dependencies() {
 fn a_loops_conditions_read_what_their_stage_allows() {
     assert_errs(
         &around(
-            "    variables: [{name: V, type: INT, initial: \"{{Steps.A.Output.X}}\", next: \"{{Steps.Other.Output.Z}}\"}]\n    while: \"{{Steps.A.Output.X > 0}}\"\n",
-            "  enableIf: \"{{Steps.A.Output.X > 0}}\"\n",
+            "    variables: [{name: V, type: INT, initial: \"{{Steps.A.Output.X}}\", next: \"{{Steps.Other.Output.Z}}\"}]\n    while: \"Steps.A.Output.X > 0\"\n",
+            "  enableIf: \"Steps.A.Output.X > 0\"\n",
             B_ARGS,
             C_ARGS,
         ),
@@ -1313,7 +1310,7 @@ fn a_loops_conditions_read_what_their_stage_allows() {
         ],
     );
     assert_errs(
-        &around("    until: \"{{Steps.L.Output.Last > 0}}\"\n", "", B_ARGS, C_ARGS),
+        &around("    until: \"Steps.L.Output.Last > 0\"\n", "", B_ARGS, C_ARGS),
         &[(
             "steps[2] -> loop -> until",
             "'Steps.L.Output.Last': a loop cannot read its own Steps.* symbols; they are available only after the loop ends.",
@@ -1406,12 +1403,16 @@ fn a_path_loop_output_is_read_through_raw_output_in_template_scope() {
 fn while_and_until_are_bool_not_optional() {
     assert_errs(
         &single_loop(
-            &format!("    variables: [{}]\n    until: \"{{{{Loop.V}}}}\"\n    maxIterations: 2\n", var("V")),
+            &format!(
+                "    variables: [{}]\n    until: \"Loop.V\"\n    maxIterations: 2\n",
+                var("V")
+            ),
             "",
         ),
         &[(
             "steps[0] -> loop -> until",
-            "Failed to parse interpolation expression at [0, 10]. Cannot coerce int to bool\n  Loop.V\n  ~~~~~^",
+            "has type int, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  Loop.V",
         )],
     );
     // A conditional body Step's output is `bool?`, which is accepted where
@@ -1420,22 +1421,76 @@ fn while_and_until_are_bool_not_optional() {
     decode_ok(&template(&format!(
         "- name: L
   loop:
-    until: \"{{{{Steps.W.Output.B}}}}\"
+    until: \"Steps.W.Output.B\"
     maxIterations: 2
     steps:
       - name: W
-        enableIf: \"{{{{Loop.Iteration > 0}}}}\"
+        enableIf: \"Loop.Iteration > 0\"
         outputVariables: [{{name: B, type: BOOL}}]
         {SCRIPT}
 "
     )));
+    // No string converts to bool: a string expression is an error, and a
+    // string that is not an expression does not parse.
     assert_errs(
-        &single_loop("    while: \"yes please\"\n    maxIterations: 2\n", ""),
+        &single_loop("    while: \"'yes'\"\n    maxIterations: 2\n", ""),
         &[(
             "steps[0] -> loop -> while",
-            "must resolve to a bool: Cannot convert 'yes please' to bool.",
+            "has type string, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  'yes'",
         )],
     );
+    assert_errs(
+        &single_loop("    until: \"yes please\"\n    maxIterations: 2\n", ""),
+        &[(
+            "steps[0] -> loop -> until",
+            "Invalid expression: Syntax error: invalid syntax\n  yes please\n      ^~~~~~",
+        )],
+    );
+    // A format string and a null are errors (RFC 0010's Template Schemas
+    // §7.6 rule 1 and its null rule).
+    assert_errs(
+        &single_loop(
+            "    while: \"{{Loop.Iteration < 1}}\"\n    maxIterations: 2\n",
+            "",
+        ),
+        &[(
+            "steps[0] -> loop -> while",
+            "Invalid expression: Set literals are not supported. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  {{Loop.Iteration < 1}}\n  \
+             ^~~~~~~~~~~~~~~~~~~~~~",
+        )],
+    );
+    assert_errs(
+        &single_loop("    until: null\n    maxIterations: 2\n", ""),
+        &[(
+            "steps[0] -> loop -> until",
+            "must not be null: an expression field of type bool takes a boolean scalar or a \
+             string holding one expression (Template Schemas §7.6).",
+        )],
+    );
+    // A present `null` is not an omitted field, so beside the other
+    // condition it is both an error of its own and a second condition.
+    assert_errs(
+        &single_loop(
+            "    while: null\n    until: \"Loop.Iteration >= 1\"\n    maxIterations: 2\n",
+            "",
+        ),
+        &[
+            (
+                "steps[0] -> loop -> while",
+                "must not be null: an expression field of type bool takes a boolean scalar or a \
+                 string holding one expression (Template Schemas §7.6).",
+            ),
+            (
+                "steps[0] -> loop",
+                "must have exactly one of 'while' and 'until', not both.",
+            ),
+        ],
+    );
+    // A literal bool is accepted for either.
+    decode_ok(&single_loop("    while: false\n    maxIterations: 2\n", ""));
+    decode_ok(&single_loop("    until: true\n    maxIterations: 2\n", ""));
 }
 
 #[test]
@@ -1614,10 +1669,10 @@ fn a_body_step_of_another_loop_is_not_available_in_a_loop() {
     // Through its loop's dependency on A, WB reads A's outputs.
     decode_ok(&two_loops(
         "\"{{Steps.A.Output.X}}\"",
-        "{{Steps.WB.Output.K > 0}}",
+        "Steps.WB.Output.K > 0",
     ));
     assert_errs(
-        &two_loops("\"{{Steps.WA.Output.X}}\"", "{{Steps.WA.Output.X > 0}}"),
+        &two_loops("\"{{Steps.WA.Output.X}}\"", "Steps.WA.Output.X > 0"),
         &[
             (
                 "steps[1] -> loop -> steps[0] -> script -> actions -> onRun -> args[0]",
@@ -1632,16 +1687,46 @@ fn a_body_step_of_another_loop_is_not_available_in_a_loop() {
 }
 
 #[test]
+fn a_loops_enable_if_is_an_expression_field() {
+    decode_ok(&single_loop(UNTIL, "  enableIf: false\n"));
+    decode_ok(&single_loop(UNTIL, "  enableIf: \"Param.Name == 'a'\"\n"));
+    for (enable_if, message) in [
+        (
+            "\"{{Param.Run}}\"",
+            "Invalid expression: Set literals are not supported. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  {{Param.Run}}\n  \
+             ^~~~~~~~~~~~~",
+        ),
+        (
+            "null",
+            "must not be null: an expression field of type bool takes a boolean scalar or a \
+             string holding one expression (Template Schemas §7.6).",
+        ),
+        (
+            "\"Param.Name\"",
+            "has type string, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  Param.Name",
+        ),
+    ] {
+        assert_errs(
+            &single_loop(UNTIL, &format!("  enableIf: {enable_if}\n")),
+            &[("steps[0] -> enableIf", message)],
+        );
+    }
+}
+
+#[test]
 fn only_a_loops_enable_if_reads_step_name() {
-    decode_ok(&single_loop(
-        UNTIL,
-        "  enableIf: \"{{Step.Name == 'L'}}\"\n",
-    ));
+    decode_ok(&single_loop(UNTIL, "  enableIf: \"Step.Name == 'L'\"\n"));
     assert_errs(
-        &single_loop("    while: \"{{Step.Name == 'L'}}\"\n    maxIterations: 2\n", ""),
+        &single_loop(
+            "    while: \"Step.Name == 'L'\"\n    maxIterations: 2\n",
+            "",
+        ),
         &[(
             "steps[0] -> loop -> while",
-            "Failed to parse interpolation expression at [0, 20]. Undefined variable: 'Step.Name'. Did you mean: Job.Name\n  Step.Name == 'L'\n  ~~~~~^~~~",
+            "Invalid expression: Undefined variable: 'Step.Name'. Did you mean: Job.Name\n  \
+             Step.Name == 'L'\n  ~~~~~^~~~",
         )],
     );
 }

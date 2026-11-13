@@ -52,7 +52,7 @@ steps:
           minValue: 0.001       # the loop fails if the damping collapses
           initial: "{{Param.StartDamping}}"
           next: "{{Loop.Damping * 0.5 if Steps.RelaxStep.Output.Residual > Loop.Residual else Loop.Damping}}"
-      until: "{{Steps.RelaxStep.Output.Residual < Param.Tolerance}}"
+      until: "Steps.RelaxStep.Output.Residual < Param.Tolerance"
       maxIterations: 200
       steps:
         - name: RelaxStep

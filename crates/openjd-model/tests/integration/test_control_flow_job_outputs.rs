@@ -835,7 +835,7 @@ const LATER_STEPS: &str = "steps:
     script: {actions: {onRun: {command: x}}}
   - name: G
     dependencies: [{dependsOn: P}]
-    enableIf: '{{Steps.P.Output.Count[0] > 0}}'
+    enableIf: 'Steps.P.Output.Count[0] > 0'
     outputVariables: [{name: V, type: INT}]
     script: {actions: {onRun: {command: x}}}
   - name: Z

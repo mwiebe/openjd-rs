@@ -1357,6 +1357,23 @@ impl core::fmt::Debug for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::template::ExprField
+pub openjd_model::template::ExprField::Bool(bool)
+pub openjd_model::template::ExprField::Expression(alloc::string::String)
+pub openjd_model::template::ExprField::Float(f64)
+pub openjd_model::template::ExprField::Int(i64)
+pub openjd_model::template::ExprField::Null
+impl openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::as_bool(&self) -> core::option::Option<bool>
+impl core::clone::Clone for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::clone(&self) -> openjd_model::template::ExprField
+impl core::cmp::Eq for openjd_model::template::ExprField
+impl core::cmp::PartialEq for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::eq(&self, &Self) -> bool
+impl core::fmt::Debug for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum openjd_model::template::FloatRange
 pub openjd_model::template::FloatRange::Expression(openjd_expr::format_string::FormatString)
 pub openjd_model::template::FloatRange::List(alloc::vec::Vec<openjd_model::template::FloatRangeItem>)
@@ -1493,7 +1510,7 @@ impl openjd_model::template::StepEntry
 pub fn openjd_model::template::StepEntry::as_loop(&self) -> core::option::Option<&openjd_model::template::StepLoop>
 pub fn openjd_model::template::StepEntry::as_step(&self) -> core::option::Option<&openjd_model::template::StepTemplate>
 pub fn openjd_model::template::StepEntry::dependencies(&self) -> &[openjd_model::template::StepDependency]
-pub fn openjd_model::template::StepEntry::enable_if(&self) -> core::option::Option<&openjd_model::template::BoolOrFormatString>
+pub fn openjd_model::template::StepEntry::enable_if(&self) -> core::option::Option<&openjd_model::template::ExprField>
 pub fn openjd_model::template::StepEntry::name(&self) -> &str
 impl core::clone::Clone for openjd_model::template::StepEntry
 pub fn openjd_model::template::StepEntry::clone(&self) -> openjd_model::template::StepEntry
@@ -2079,9 +2096,9 @@ pub fn openjd_model::template::ListSimpleUserInterface::deserialize<__D>(__D) ->
 pub struct openjd_model::template::LoopDefinition
 pub openjd_model::template::LoopDefinition::max_iterations: openjd_model::template::IntOrFormatString
 pub openjd_model::template::LoopDefinition::steps: alloc::vec::Vec<openjd_model::template::StepTemplate>
-pub openjd_model::template::LoopDefinition::until_condition: core::option::Option<openjd_model::template::BoolOrFormatString>
+pub openjd_model::template::LoopDefinition::until_condition: core::option::Option<openjd_model::template::ExprField>
 pub openjd_model::template::LoopDefinition::variables: core::option::Option<alloc::vec::Vec<openjd_model::template::LoopVariableDefinition>>
-pub openjd_model::template::LoopDefinition::while_condition: core::option::Option<openjd_model::template::BoolOrFormatString>
+pub openjd_model::template::LoopDefinition::while_condition: core::option::Option<openjd_model::template::ExprField>
 impl core::clone::Clone for openjd_model::template::LoopDefinition
 pub fn openjd_model::template::LoopDefinition::clone(&self) -> openjd_model::template::LoopDefinition
 impl core::fmt::Debug for openjd_model::template::LoopDefinition
@@ -2202,7 +2219,7 @@ pub fn openjd_model::template::StepDependency::deserialize<__D>(__D) -> core::re
 pub struct openjd_model::template::StepLoop
 pub openjd_model::template::StepLoop::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::template::StepDependency>>
 pub openjd_model::template::StepLoop::description: core::option::Option<openjd_model::template::Description>
-pub openjd_model::template::StepLoop::enable_if: core::option::Option<openjd_model::template::BoolOrFormatString>
+pub openjd_model::template::StepLoop::enable_if: core::option::Option<openjd_model::template::ExprField>
 pub openjd_model::template::StepLoop::loop_definition: openjd_model::template::LoopDefinition
 pub openjd_model::template::StepLoop::name: alloc::string::String
 pub openjd_model::template::StepLoop::output_variables: core::option::Option<alloc::vec::Vec<openjd_model::template::LoopOutputVariableDefinition>>
@@ -2240,7 +2257,7 @@ pub openjd_model::template::StepTemplate::bash: core::option::Option<openjd_mode
 pub openjd_model::template::StepTemplate::cmd: core::option::Option<openjd_model::template::SimpleAction>
 pub openjd_model::template::StepTemplate::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::template::StepDependency>>
 pub openjd_model::template::StepTemplate::description: core::option::Option<openjd_model::template::Description>
-pub openjd_model::template::StepTemplate::enable_if: core::option::Option<openjd_model::template::BoolOrFormatString>
+pub openjd_model::template::StepTemplate::enable_if: core::option::Option<openjd_model::template::ExprField>
 pub openjd_model::template::StepTemplate::host_requirements: core::option::Option<openjd_model::template::HostRequirements>
 pub openjd_model::template::StepTemplate::let_bindings: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub openjd_model::template::StepTemplate::name: alloc::string::String

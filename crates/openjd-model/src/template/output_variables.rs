@@ -5,7 +5,7 @@
 //! Template types the `CONTROL_FLOW` extension adds (RFC 0011, RFC 0012,
 //! RFC 0013): `<OutputVariableDefinition>`, `<JobOutputDefinition>`,
 //! `<LoopVariableDefinition>`, `<LoopOutputVariableDefinition>`, and the
-//! `enableIf` field value.
+//! value of an Environment's `enableIf`.
 //!
 //! An output variable reuses the job-parameter machinery instead of a
 //! parallel set of structs. Its mapping is the `<JobParameterDefinition>` of
@@ -31,8 +31,14 @@ use crate::format_string::FormatString;
 use crate::job::{JobOutput, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable};
 use crate::types::{JobParameterType, OutputCollectMode};
 
-/// A field that is either a YAML `bool` or a format string, such as
-/// `enableIf` (RFC 0011 `<StepTemplate>` and `<Environment>`).
+/// A field that is either a YAML `bool` or a format string: an
+/// Environment's `enableIf`.
+///
+/// RFC 0011 now leaves an Environment's `enableIf` to RFC 0010, which makes
+/// it an expression field that needs `ENV_PARAMS`. This crate implements
+/// neither, so it keeps the earlier format-string form for Environments.
+/// A Step's and a loop's `enableIf` and a loop's `while` and `until` are
+/// expression fields ([`ExprField`](super::ExprField)).
 #[derive(Debug, Clone)]
 pub enum BoolOrFormatString {
     /// A literal `true` or `false`.

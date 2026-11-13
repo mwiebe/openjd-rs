@@ -20,7 +20,7 @@ steps:
 - name: L
   dependencies: [{dependsOn: B}]
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P

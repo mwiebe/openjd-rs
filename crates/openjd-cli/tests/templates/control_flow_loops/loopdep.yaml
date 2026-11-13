@@ -5,7 +5,7 @@ name: LoopDep
 steps:
 - name: K
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 1
     steps:
     - name: S
@@ -19,11 +19,11 @@ steps:
 - name: L
   dependencies: [{dependsOn: K}]
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: Q
-      enableIf: "{{Loop.Iteration >= 1}}"
+      enableIf: "Loop.Iteration >= 1"
       script:
         actions:
           onRun: {command: python, args: ['-c', "print('Q_{{Steps.K.Output.H}}')"]}

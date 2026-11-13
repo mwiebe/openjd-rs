@@ -5,7 +5,7 @@ name: SkipI
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: O
@@ -16,7 +16,7 @@ steps:
           onRun: {command: python, args: ['-c', "print('openjd_output_var: B=false')"]}
     - name: P
       dependencies: [{dependsOn: O}]
-      enableIf: "{{Steps.O.Output.B}}"
+      enableIf: "Steps.O.Output.B"
       outputVariables:
       - {name: V, type: INT}
       script:

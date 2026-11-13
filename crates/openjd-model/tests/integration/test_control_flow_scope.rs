@@ -95,7 +95,7 @@ parameterDefinitions:
       - {{name: T, type: FLOAT}}
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: R
-    enableIf: '{{{{Param.Run}}}}'
+    enableIf: 'Param.Run'
     outputVariables:
       - {{name: Go, type: BOOL}}
     script: {{actions: {{onRun: {{command: echo}}}}}}
@@ -123,7 +123,7 @@ const ARG0: &str = "steps[3] -> script -> actions -> onRun -> args[0]";
 #[test]
 fn every_allowed_field_may_read_steps() {
     decode_ok(&template(
-        "    enableIf: '{{Steps.R.Output.Go != false and Steps.P.Output.Count > 0}}'
+        "    enableIf: 'Steps.R.Output.Go != false and Steps.P.Output.Count > 0'
     let:
       - n2 = Steps.P.Output.Count * 2
       - frames = Steps.Q.TaskParam.Frame
@@ -543,7 +543,7 @@ fn path_values_in_template_scope_fields_need_the_raw_form() {
     );
     assert_errs(
         &template(
-            "    enableIf: '{{len(Steps.P.Output.Fs) > 0}}'
+            "    enableIf: 'len(Steps.P.Output.Fs) > 0'
     let: ['f = Steps.P.Output.F']
     stepEnvironments:
       - name: E
@@ -611,7 +611,7 @@ fn a_path_message_names_the_symbol_not_a_property_read_from_it() {
 #[test]
 fn raw_path_values_are_available_in_template_scope_fields() {
     decode_ok(&template(
-        "    enableIf: '{{len(Steps.P.RawOutput.Fs) > 0}}'
+        "    enableIf: 'len(Steps.P.RawOutput.Fs) > 0'
     let: ['f = Steps.P.RawOutput.F.name']
     parameterSpace:
       taskParameterDefinitions:
@@ -720,16 +720,19 @@ fn enable_if_accepts_bools_and_bool_expressions() {
     for value in [
         "true",
         "false",
-        "'{{Param.Run}}'",
-        "'{{RawParam.Scene != \"\"}}'",
+        "'true'",
+        "'Param.Run'",
+        "'RawParam.Scene != \"\"'",
         // Each alone: an unresolved left operand of `and` would hide an
         // undefined name on its right.
-        "'{{Job.Name == \"J\"}}'",
-        "'{{Step.Name == \"C\"}}'",
-        "'{{Steps.P.Output.Count > 1}}'",
+        "'Job.Name == \"J\"'",
+        "'Step.Name == \"C\"'",
+        "'Steps.P.Output.Count > 1'",
         // bool? is accepted where bool is required and checked when concrete.
-        "'{{Steps.R.Output.Go}}'",
-        "'{{ Param.Run }}'",
+        "'Steps.R.Output.Go'",
+        "' Param.Run '",
+        // A '{{' inside a string literal is text.
+        "\"'{{x}}' != RawParam.Scene\"",
     ] {
         decode_ok(&c_enable_if(value));
     }
@@ -738,10 +741,11 @@ fn enable_if_accepts_bools_and_bool_expressions() {
 #[test]
 fn enable_if_must_be_a_bool() {
     assert_errs(
-        &c_enable_if("'{{Steps.P.Output.Count}}'"),
+        &c_enable_if("'Steps.P.Output.Count'"),
         &[(
             "steps[3] -> enableIf",
-            "Failed to parse interpolation expression at [0, 24]. Cannot coerce int to bool\n  Steps.P.Output.Count\n  ~~~~~~~~~~~~~~~^~~~~",
+            "has type int, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  Steps.P.Output.Count",
         )],
     );
 }
@@ -749,47 +753,65 @@ fn enable_if_must_be_a_bool() {
 #[test]
 fn enable_if_may_not_be_a_static_null() {
     assert_errs(
-        &c_enable_if("'{{null}}'"),
+        &c_enable_if("'null'"),
         &[(
             "steps[3] -> enableIf",
-            "Failed to parse interpolation expression at [0, 8]. Cannot coerce nulltype to bool\n  null\n  ^~~~",
+            "has type nulltype, which does not fit type bool (Template Schemas §7.6).\n  null",
+        )],
+    );
+    assert_errs(
+        &c_enable_if("null"),
+        &[(
+            "steps[3] -> enableIf",
+            "must not be null: an expression field of type bool takes a boolean scalar or a \
+             string holding one expression (Template Schemas §7.6).",
         )],
     );
 }
 
 #[test]
-fn enable_if_text_resolves_to_a_string_coerced_to_bool() {
-    // Expression Language §1.3.2 and §1.2.3: a literal, or text around an
-    // expression, resolves to a string, converted with string -> bool.
-    for value in [
-        "'yes'",
-        "'True'",
-        "'off'",
-        "'0'",
-        "\"{{'y'}}es\"",
-        // Not static: converted when it is evaluated.
-        "'{{Param.Run}} '",
-        "'{{Steps.P.Output.Count}}{{Param.Run}}'",
+fn enable_if_converts_no_string_to_bool() {
+    // RFC 0010's Template Schemas §7.6 rule 2: a string expression is an
+    // error for a bool field, whatever its text, and a format string does
+    // not parse (rule 1).
+    for (value, message) in [
+        (
+            "'RawParam.Scene'",
+            "has type string, which does not fit type bool; an expression field converts no \
+             type except int to float (Template Schemas §7.6).\n  RawParam.Scene",
+        ),
+        (
+            "\"'yes'\"",
+            "has type string, which does not fit type bool; an expression field converts no \
+             type except int to float (Template Schemas §7.6).\n  'yes'",
+        ),
+        (
+            "'yes'",
+            "Invalid expression: Undefined variable: 'yes'.\n  yes\n  ^~~",
+        ),
+        (
+            "'{{Param.Run}}'",
+            "Invalid expression: Set literals are not supported. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  {{Param.Run}}\n  \
+             ^~~~~~~~~~~~~",
+        ),
+        (
+            "'x{{true}}'",
+            "Invalid expression: Syntax error: invalid syntax. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  x{{true}}\n   ^",
+        ),
+        (
+            "1",
+            "the integer scalar 1 does not fit type bool: an expression field of type bool \
+               takes a boolean scalar or a string holding one expression (Template Schemas \
+               §7.6).",
+        ),
     ] {
-        decode_ok(&c_enable_if(value));
+        assert_errs(&c_enable_if(value), &[("steps[3] -> enableIf", message)]);
     }
-    for (value, text) in [
-        ("'maybe'", "maybe"),
-        ("'true '", "true "),
-        ("'x{{1}}'", "x1"),
-        ("'{{true}}{{true}}'", "truetrue"),
-    ] {
-        assert_errs(
-            &c_enable_if(value),
-            &[(
-                "steps[3] -> enableIf",
-                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
-            )],
-        );
-    }
-    // The references of a multi-segment string are still checked.
+    // The references of an expression are still checked first.
     assert_errs(
-        &c_enable_if("'x{{Steps.Nope.Output.A}}'"),
+        &c_enable_if("'Steps.Nope.Output.A'"),
         &[(
             "steps[3] -> enableIf",
             "'Steps.Nope.Output.A': there is no Step named 'Nope'.",
@@ -801,23 +823,25 @@ fn enable_if_text_resolves_to_a_string_coerced_to_bool() {
 fn enable_if_may_not_read_let_task_session_or_path_params() {
     let cases = [
         (
-            "'{{run}}'",
-            "Failed to parse interpolation expression at [0, 7]. Undefined variable: 'run'.\n  run\n  ^~~",
+            "'run'",
+            "Invalid expression: Undefined variable: 'run'.\n  run\n  ^~~",
         ),
         (
-            "'{{Session.HasPathMappingRules}}'",
-            "Failed to parse interpolation expression at [0, 31]. Undefined variable: 'Session.HasPathMappingRules'.\n  Session.HasPathMappingRules\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~",
+            "'Session.HasPathMappingRules'",
+            "Invalid expression: Undefined variable: 'Session.HasPathMappingRules'.\n  \
+             Session.HasPathMappingRules\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~",
         ),
         (
-            "'{{Param.Scene != null}}'",
-            "Failed to parse interpolation expression at [0, 23]. Undefined variable: 'Param.Scene'. Did you mean: RawParam.Scene\n  Param.Scene != null\n  ~~~~~~^~~~~",
+            "'Param.Scene != null'",
+            "Invalid expression: Undefined variable: 'Param.Scene'. Did you mean: \
+             RawParam.Scene\n  Param.Scene != null\n  ~~~~~~^~~~~",
         ),
     ];
     for (value, msg) in cases {
         assert_errs(&c_enable_if(value), &[("steps[3] -> enableIf", msg)]);
     }
     let t = template(
-        "    enableIf: '{{Task.Param.X > 1}}'
+        "    enableIf: 'Task.Param.X > 1'
     parameterSpace:
       taskParameterDefinitions: [{name: X, type: INT, range: [1]}]
     script: {actions: {onRun: {command: echo}}}
@@ -827,7 +851,8 @@ fn enable_if_may_not_read_let_task_session_or_path_params() {
         &t,
         &[(
             "steps[3] -> enableIf",
-            "Failed to parse interpolation expression at [0, 20]. Undefined variable: 'Task.Param.X'.\n  Task.Param.X > 1\n  ~~~~~~~~~~~^",
+            "Invalid expression: Undefined variable: 'Task.Param.X'.\n  Task.Param.X > 1\n  \
+             ~~~~~~~~~~~^",
         )],
     );
 }
@@ -889,6 +914,53 @@ fn step_environment_enable_if_scope() {
             "Failed to parse interpolation expression at [0, 24]. Cannot coerce int to bool\n  Steps.P.Output.Count\n  ~~~~~~~~~~~~~~~^~~~~",
         )],
     );
+}
+
+#[test]
+fn environment_enable_if_text_resolves_to_a_string_coerced_to_bool() {
+    // An Environment's enableIf keeps its format-string form, so a literal
+    // or text around an expression resolves to a string, converted with
+    // EXPR's string -> bool coercion (Expression Language §1.3.2, §1.2.3).
+    let step_env = |value: &str| {
+        template(&format!(
+            "    stepEnvironments:\n      - {{name: SE, enableIf: {value}, variables: {{A: a}}}}\n{ECHO}"
+        ))
+    };
+    let job_env = |value: &str| {
+        template_with(
+            EXTENSIONS,
+            &format!(
+                "jobEnvironments:\n  - {{name: JE, enableIf: {value}, variables: {{A: a}}}}\n"
+            ),
+            ECHO,
+        )
+    };
+    for value in [
+        "'yes'",
+        "'off'",
+        "\"{{'y'}}es\"",
+        // Not static: converted when it is evaluated.
+        "'{{Param.Run}} '",
+    ] {
+        decode_ok(&step_env(value));
+        decode_ok(&job_env(value));
+    }
+    for (value, text) in [("'maybe'", "maybe"), ("'x{{1}}'", "x1")] {
+        assert_errs(
+            &step_env(value),
+            &[(
+                "steps[3] -> stepEnvironments[0] -> enableIf",
+                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
+            )],
+        );
+        assert_errs(
+            &job_env(value),
+            &[(
+                "jobEnvironments[0] -> enableIf",
+                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
+            )],
+        );
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1527,17 +1599,19 @@ fn check_order_dependency_before_member() {
 fn enable_if_may_not_read_any_session_symbol() {
     // `Session.HasPathMappingRules` is covered above.
     assert_errs(
-        &c_enable_if("'{{Session.WorkingDirectory != null}}'"),
+        &c_enable_if("'Session.WorkingDirectory != null'"),
         &[(
             "steps[3] -> enableIf",
-            "Failed to parse interpolation expression at [0, 36]. Undefined variable: 'Session.WorkingDirectory'.\n  Session.WorkingDirectory != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~",
+            "Invalid expression: Undefined variable: 'Session.WorkingDirectory'.\n  \
+             Session.WorkingDirectory != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~",
         )],
     );
     assert_errs(
-        &c_enable_if("'{{Session.PathMappingRulesFile != null}}'"),
+        &c_enable_if("'Session.PathMappingRulesFile != null'"),
         &[(
             "steps[3] -> enableIf",
-            "Failed to parse interpolation expression at [0, 40]. Undefined variable: 'Session.PathMappingRulesFile'.\n  Session.PathMappingRulesFile != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~~",
+            "Invalid expression: Undefined variable: 'Session.PathMappingRulesFile'.\n  \
+             Session.PathMappingRulesFile != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~~",
         )],
     );
 }

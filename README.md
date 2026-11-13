@@ -54,7 +54,7 @@ cargo test --workspace
 cargo test -p openjd-sessions
 ```
 
-The workspace has 8,900+ unit and integration tests across all crates (8,947 passing and 42 ignored by
+The workspace has 9,400+ unit and integration tests across all crates (9,425 passing and 43 ignored by
 `cargo test --workspace` on Linux at the time of writing).
 
 ### Cross-user tests (Docker)
@@ -81,24 +81,24 @@ Current coverage: 87.3% line coverage (see [COVERAGE_REPORT.md](COVERAGE_REPORT.
 
 ## Conformance
 
-Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 1,649 tests, with 19 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `69a9e95`, which adds the draft `CONTROL_FLOW` extension's tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
+Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 1,726 tests, with 19 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `cd45188`, which adds the draft `CONTROL_FLOW` extension's tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
 
 | Category | Tests |
 |----------|-------|
-| Template validation (base) | 455 |
-| Template validation (EXPR) | 220 |
+| Template validation (base) | 461 |
+| Template validation (EXPR) | 227 |
 | Template validation (FEATURE_BUNDLE_1) | 42 |
-| Template validation (TASK_CHUNKING) | 11 |
-| Template validation (CONTROL_FLOW) | 199 |
+| Template validation (TASK_CHUNKING) | 12 |
+| Template validation (CONTROL_FLOW) | 216 |
 | Environment template validation (all extensions, including 4 for CONTROL_FLOW) | 63 |
-| Job execution (base) | 196 |
-| Job execution (EXPR) | 157 |
-| Job execution (FEATURE_BUNDLE_1) | 12 |
-| Job execution (TASK_CHUNKING) | 7 |
+| Job execution (base) | 203 |
+| Job execution (EXPR) | 182 |
+| Job execution (FEATURE_BUNDLE_1) | 14 |
+| Job execution (TASK_CHUNKING) | 18 |
 | Job execution (REDACTED_ENV_VARS) | 8 |
 | Job execution (WRAP_ACTIONS) | 64 |
-| Job execution (CONTROL_FLOW) | 215 |
-| **Total** | **1,649** |
+| Job execution (CONTROL_FLOW) | 216 |
+| **Total** | **1,726** |
 
 ## Architecture
 

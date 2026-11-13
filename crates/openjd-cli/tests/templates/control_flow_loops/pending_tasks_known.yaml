@@ -5,7 +5,7 @@ name: PendingTasksKnown
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 1
     steps:
     - name: O
@@ -30,7 +30,7 @@ steps:
           onRun: {command: python, args: ['-c', "print('P ran {{Task.Param.I}}')"]}
     - name: Q
       dependencies: [{dependsOn: O}, {dependsOn: P}]
-      enableIf: "{{Steps.O.Output.N > 0}}"
+      enableIf: "Steps.O.Output.N > 0"
       parameterSpace:
         taskParameterDefinitions:
         - {name: J, type: INT, range: "{{Steps.P.TaskParam.I}}"}

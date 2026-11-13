@@ -6,9 +6,9 @@ parameterDefinitions:
 - {name: On, type: BOOL, default: false}
 steps:
 - name: L
-  enableIf: "{{Param.On}}"
+  enableIf: "Param.On"
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P

@@ -73,7 +73,7 @@ steps:
     dependencies:
       - dependsOn: QualityCheck
       - dependsOn: Rerender
-    enableIf: "{{Steps.QualityCheck.Output.MeanNoise > Param.NoiseThreshold}}"   # decided at binding
+    enableIf: "Steps.QualityCheck.Output.MeanNoise > Param.NoiseThreshold"   # decided at binding
     parameterSpace:
       taskParameterDefinitions:
         - name: Frame
@@ -87,7 +87,7 @@ steps:
     dependencies:
       - dependsOn: Rerender
       - dependsOn: Denoise          # satisfied whether Denoise ran or was skipped
-    enableIf: "{{Param.EncodeVideo}}"   # decided at job creation
+    enableIf: "Param.EncodeVideo"   # decided at job creation
     outputVariables:
       - name: VideoBytes
         type: INT

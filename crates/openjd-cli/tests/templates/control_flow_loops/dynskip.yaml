@@ -11,9 +11,9 @@ steps:
       onRun: {command: python, args: ['-c', "print('openjd_output_var: On=false')"]}
 - name: L
   dependencies: [{dependsOn: A}]
-  enableIf: "{{Steps.A.Output.On}}"
+  enableIf: "Steps.A.Output.On"
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P

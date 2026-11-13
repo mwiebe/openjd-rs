@@ -16,11 +16,11 @@ steps:
 - name: L
   dependencies: [{dependsOn: A}, {dependsOn: AB}]
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: Q
-      enableIf: "{{Loop.Iteration >= 1}}"
+      enableIf: "Loop.Iteration >= 1"
       script:
         actions:
           onRun: {command: python, args: ['-c', "print('Q_{{Steps.AB.Output.Base}}')"]}

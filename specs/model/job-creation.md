@@ -578,7 +578,8 @@ once at submission instead of per-task-per-worker.
 ### Step input binding (`CONTROL_FLOW`)
 
 RFC 0011 §Step input binding. A Step's materialization expressions — its
-format strings resolved before a Session exists, plus `enableIf` — fall into
+format strings resolved before a Session exists, plus `enableIf`, an expression
+field — fall into
 four groups, evaluated separately (`MaterializationGroup`), and in this order
 when more than one can be:
 
@@ -609,11 +610,15 @@ creation), and a `StepInputs`:
    `PendingInputs` with every group `Waiting` and nothing else evaluated, so a
    failing range in a Step whose `enableIf` is undecided is not reported. Each
    group's `on` still lists its own inputs that are not concrete (not counting
-   the enablement group's), so a report shows what is missing. `enableIf`
-   resolves with target type `bool`; a `null` result is an error at
-   `steps[i] -> enableIf`, and so is text around an expression that does not
-   resolve to a bool spelling (`'a{{Param.X}}' resolved to 'ab', which does
-   not convert to a bool.`). `false` makes the Step `Skipped`: nothing else of it
+   the enablement group's), so a report shows what is missing. `enableIf` is
+   an expression field of type `bool` (RFC 0010's Template Schemas §7.6),
+   evaluated by `expr_field::resolve` under the template's profile with no
+   host context (`binding::evaluate_condition`). An evaluation error is
+   reported at `steps[i] -> enableIf` as `could not be evaluated: <error>`
+   with the expression and a caret, and a `null` result, which a `bool?`
+   expression can produce, as `resolved to null, which does not fit type bool
+   (Template Schemas §7.6).` followed by the expression, so the message names
+   the field and the expression (RFC 0011 §How a Step is bound item 3). `false` makes the Step `Skipped`: nothing else of it
    is evaluated, including its `let` bindings and carried-forward checks, so a
    skipped Step's `let` may assume that the Step runs.
 3. Then each other group that has not evaluated and whose inputs are concrete,
@@ -650,7 +655,12 @@ creation), and a `StepInputs`:
    * The remaining group evaluates every `let` binding, then the script's
      carried-forward checks, then each Step Environment: its `enableIf` (an
      error is reported at `steps[i] -> stepEnvironments[j] -> enableIf`), and
-     its carried-forward checks if it is enabled. A disabled Environment is
+     its carried-forward checks if it is enabled. An Environment's `enableIf`
+     keeps its format-string form (`binding::evaluate_env_enable_if`): it
+     resolves with target type `bool`, and text around an expression resolves
+     to a string that must be a bool spelling (`'a{{Param.X}}' resolved to
+     'ab', which does not convert to a bool.`). A Job Environment's `enableIf`
+     is evaluated the same way at Job creation (step 9 above). A disabled Environment is
      never entered, so its fields are not checked.
 4. When every group is known, the parameter space and host requirements move
    into the Step's own fields, `resolved_symtab` is built from the Step's
@@ -857,7 +867,8 @@ as it keeps a Step's state. The functions are in `create_job/loops.rs`.
 
 `create_job` and `advance_loop_binding` bind a loop with three groups, in order:
 
-1. **Enablement** (`MaterializationGroup::Enablement`): `enableIf`, with `Step.Name` the
+1. **Enablement** (`MaterializationGroup::Enablement`): `enableIf`, an expression field
+   of type `bool` evaluated as a Step's is (see Step input binding), with `Step.Name` the
    loop's name. While its `Steps.*` inputs are not concrete, the loop is `PendingInputs`
    and nothing else of it is evaluated. `false` makes it `Skipped`.
 2. **Bound** (`LoopBound`): `maxIterations`, a literal or a format string of type `int`,
@@ -869,7 +880,10 @@ as it keeps a Step's state. The functions are in `create_job/loops.rs`.
    its constraints (messages prefixed `Loop variable '<V>': `); then
    `CallerLimits::max_loop_value_bytes` on the initial values (see Limits); then, for a
    `while` loop, the first `while` with `Loop.Iteration` 0 and the initial values. Its
-   inputs are the `Steps.*` symbols of the `initial`s and the `while`.
+   inputs are the `Steps.*` symbols of the `initial`s and the `while`. `while` and
+   `until` are expression fields of type `bool`, evaluated and reported as an `enableIf`
+   is (at `steps[i] -> loop -> while` or `-> until`); `maxIterations`, `initial`, `next`,
+   and the output `value`s are format strings.
 
 A group whose inputs are concrete at Job creation is evaluated then, and a failure in any
 of the three fails `create_job` (it is reported alone, as an `enableIf` error is). Later,

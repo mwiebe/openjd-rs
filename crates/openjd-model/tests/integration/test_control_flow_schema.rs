@@ -8,7 +8,7 @@
 //! Failure tests assert the full error output (count, path, and message), as
 //! `AGENTS.md` § Test Quality Standard requires.
 
-use openjd_model::template::{BoolOrFormatString, JobParameterDefinition};
+use openjd_model::template::{BoolOrFormatString, ExprField, JobParameterDefinition};
 use openjd_model::{
     decode_environment_template, decode_job_template, CallerLimits, JobParameterType,
     ModelExtension, OutputCollectMode,
@@ -164,6 +164,20 @@ fn output_variables_require_the_extension() {
 fn step_enable_if_requires_the_extension() {
     assert_errs(
         &job("[EXPR]", &["enableIf: true"]),
+        "JobTemplate",
+        &[(
+            "steps[0] -> enableIf",
+            "enableIf requires the CONTROL_FLOW extension.",
+        )],
+    );
+}
+
+#[test]
+fn a_null_step_enable_if_requires_the_extension() {
+    // An expression field's `null` is not an omitted field (RFC 0010's
+    // Template Schemas §7.6), so it is gated like any other value.
+    assert_errs(
+        &job("[EXPR]", &["enableIf: null"]),
         "JobTemplate",
         &[(
             "steps[0] -> enableIf",
@@ -330,39 +344,113 @@ fn environment_template_without_control_flow_is_unchanged() {
 // ══════════════════════════════════════════════════════════════
 
 #[test]
-fn enable_if_accepts_a_bool_or_a_format_string() {
+fn enable_if_decodes_a_bool_or_an_expression() {
     let jt = decode_ok(&job("[EXPR, CONTROL_FLOW]", &["enableIf: false"]));
-    assert!(matches!(
+    assert_eq!(
         jt.steps[0].as_step().unwrap().enable_if,
-        Some(BoolOrFormatString::Bool(false))
-    ));
+        Some(ExprField::Bool(false))
+    );
 
     let jt = decode_ok(&job(
         "[EXPR, CONTROL_FLOW]",
-        &["enableIf: '{{Job.Name == \"J\"}}'"],
+        &["enableIf: 'Job.Name == \"J\"'"],
     ));
-    match &jt.steps[0].as_step().unwrap().enable_if {
-        Some(BoolOrFormatString::FormatString(fs)) => {
-            assert_eq!(fs.raw(), "{{Job.Name == \"J\"}}")
-        }
-        other => panic!("expected a format string, got {other:?}"),
+    assert_eq!(
+        jt.steps[0].as_step().unwrap().enable_if,
+        Some(ExprField::Expression("Job.Name == \"J\"".into()))
+    );
+
+    // A string is always an expression, even one that reads like a literal.
+    let jt = decode_ok(&job("[EXPR, CONTROL_FLOW]", &["enableIf: 'true'"]));
+    assert_eq!(
+        jt.steps[0].as_step().unwrap().enable_if,
+        Some(ExprField::Expression("true".into()))
+    );
+}
+
+#[test]
+fn enable_if_rejects_a_list_or_a_mapping() {
+    for value in ["[true]", "{a: true}"] {
+        assert_decode_err(
+            &job("[EXPR, CONTROL_FLOW]", &[&format!("enableIf: {value}")]),
+            "enableIf must be a boolean, integer, float, or string (an expression field, Template Schemas §7.6)",
+        );
     }
 }
 
 #[test]
-fn enable_if_rejects_other_json_types() {
-    assert_decode_err(
-        &job("[EXPR, CONTROL_FLOW]", &["enableIf: 1"]),
-        "expected a bool or a format string, got a number",
+fn enable_if_rejects_a_format_string() {
+    assert_errs(
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["enableIf: '{{Job.Name == \"J\"}}'"],
+        ),
+        "JobTemplate",
+        &[(
+            "steps[0] -> enableIf",
+            "Invalid expression: Set literals are not supported. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  {{Job.Name == \"J\"}}\n  \
+             ^~~~~~~~~~~~~~~~~~~",
+        )],
+    );
+    assert_errs(
+        &job("[EXPR, CONTROL_FLOW]", &["enableIf: '{{Param.X'"]),
+        "JobTemplate",
+        &[(
+            "steps[0] -> enableIf",
+            "Invalid expression: Syntax error: '{' was never closed. An expression field takes an \
+             expression without '{{ }}' (Template Schemas §7.6).\n  {{Param.X\n  ^~~~~~~~~",
+        )],
     );
 }
 
 #[test]
-fn enable_if_rejects_a_malformed_format_string() {
-    assert_decode_err(
-        &job("[EXPR, CONTROL_FLOW]", &["enableIf: '{{Param.X'"]),
-        "Failed to parse interpolation expression at [0, 9]. Reason: Braces mismatch.\n  {{Param.X\n  ^~",
-    );
+fn enable_if_rejects_a_value_whose_type_is_not_bool() {
+    for (value, message) in [
+        (
+            "1",
+            "the integer scalar 1 does not fit type bool: an expression field of type bool takes \
+             a boolean scalar or a string holding one expression (Template Schemas §7.6).",
+        ),
+        (
+            "1.5",
+            "the float scalar 1.5 does not fit type bool: an expression field of type bool \
+             takes a boolean scalar or a string holding one expression (Template Schemas §7.6).",
+        ),
+        (
+            "null",
+            "must not be null: an expression field of type bool takes a boolean scalar or a \
+             string holding one expression (Template Schemas §7.6).",
+        ),
+        (
+            "'Job.Name'",
+            "has type string, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  Job.Name",
+        ),
+        (
+            "'null'",
+            "has type nulltype, which does not fit type bool (Template Schemas §7.6).\n  null",
+        ),
+        (
+            "'1'",
+            "has type int, which does not fit type bool; an expression field converts no type \
+             except int to float (Template Schemas §7.6).\n  1",
+        ),
+    ] {
+        assert_errs(
+            &job("[EXPR, CONTROL_FLOW]", &[&format!("enableIf: {value}")]),
+            "JobTemplate",
+            &[("steps[0] -> enableIf", message)],
+        );
+    }
+}
+
+#[test]
+fn enable_if_accepts_an_optional_bool() {
+    decode_ok(&job(
+        "[EXPR, CONTROL_FLOW]",
+        &["enableIf: 'null if Job.Name == \"J\" else true'"],
+    ));
 }
 
 #[test]
@@ -1166,13 +1254,36 @@ steps[0] -> parameterSpace -> taskParameterDefinitions[0]:
 
 #[test]
 fn decode_errors_name_the_json_kind() {
+    // An Environment's enableIf keeps its format-string form; a Step's is an
+    // expression field (see `enable_if_rejects_a_list_or_a_mapping`).
     assert_decode_err(
-        &job("[EXPR, CONTROL_FLOW]", &["enableIf: [true]"]),
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: [true]}]"],
+        ),
         "expected a bool or a format string, got a list",
     );
     assert_decode_err(
-        &job("[EXPR, CONTROL_FLOW]", &["enableIf: {a: 1}"]),
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: {a: 1}}]"],
+        ),
         "expected a bool or a format string, got a mapping",
+    );
+    assert_decode_err(
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: 1}]"],
+        ),
+        "expected a bool or a format string, got a number",
+    );
+    assert_decode_err(
+        &job(
+            "[EXPR, CONTROL_FLOW]",
+            &["stepEnvironments: [{name: E, enableIf: '{{Param.X'}]"],
+        ),
+        "Failed to parse interpolation expression at [0, 9]. Reason: Braces mismatch.\n  \
+         {{Param.X\n  ^~",
     );
     assert_decode_err(
         &with_outputs("[null]"),
