@@ -552,8 +552,10 @@ stage](#the-submission-stage):
   submission path format (plan A16 and decision 7), then, at spec `2892d96`, in some path
   format, or a URI the caller allowed.
 - The definition's **constraints** are checked against that stored value (constraint 6,
-  §4.5 item 2), using `JobParameterDefinition::check_constraints` with
-  `RangeExprLengthCheck::AsWrittenAndCanonical`
+  §4.5 item 2), using `EnvironmentParameterDefinition::check_value_constraints`, which applies
+  `JobParameterDefinition::check_constraints` with `RangeExprLengthCheck::AsWrittenAndCanonical`
+  and then the 1024-character limit of §4.5 item 5 on a STRING or PATH value and on each element
+  of a LIST[STRING] or LIST[PATH] one
   (for a literal, by the template-validation check), so every effective value of an
   Environment that is not disabled for its Step satisfies its definition. A RANGE_EXPR's
   `minLength` and `maxLength` check both the value as written and its canonical form, whatever

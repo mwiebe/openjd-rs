@@ -61,6 +61,8 @@ mod test_env_params_selection;
 mod test_env_params_selection_job;
 #[path = "integration/test_env_params_statuses.rs"]
 mod test_env_params_statuses;
+#[path = "integration/test_env_params_value_length.rs"]
+mod test_env_params_value_length;
 #[path = "integration/test_environment_template.rs"]
 mod test_environment_template;
 #[path = "integration/test_error_messages.rs"]

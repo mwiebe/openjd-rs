@@ -917,7 +917,11 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   `default` must be a string and an INT one an integer or `<intstring>`), coerces it with
   `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
   `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
-  Job Parameter `default`), and calls `check_constraints` with `AsWrittenAndCanonical`. A PATH
+  Job Parameter `default`), and calls `EnvironmentParameterDefinition::check_value_constraints`:
+  `check_constraints` with `AsWrittenAndCanonical`, then the length limit of §4.5 item 5 (a
+  STRING or PATH value, and each element of a LIST[STRING] or LIST[PATH] one, has at most 1024
+  characters, counted as characters). The same check applies to a literal value of an
+  `environment:` entry. A PATH
   value of any form, a relative literal `default` included, is used as given at every stage
   (§4.5 item 3 at spec `af53020`). An
   object or `null`, at any depth, is rejected; so is a list element containing `{{`

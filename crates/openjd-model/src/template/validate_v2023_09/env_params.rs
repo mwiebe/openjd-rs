@@ -1271,17 +1271,15 @@ pub(crate) fn convert_literal_value(
         };
     // A RANGE_EXPR literal is checked as written, which for an Environment
     // parameter checks both its string and its canonical form (§4.5 item 4,
-    // §2.10), hence `true` below.
+    // §2.10). `check_value_constraints` also applies the length limit of
+    // §4.5 item 5.
     let written = match (pt, lit.as_str()) {
         (JobParameterType::RangeExpr, Some(s)) => {
             Some(openjd_expr::ExprValue::String(s.to_string()))
         }
         _ => None,
     };
-    if let Err(e) = def.definition.check_constraints(
-        written.as_ref().unwrap_or(&value),
-        RangeExprLengthCheck::AsWrittenAndCanonical,
-    ) {
+    if let Err(e) = def.check_value_constraints(written.as_ref().unwrap_or(&value)) {
         errors.add(path, e);
         return (Some(value), false);
     }

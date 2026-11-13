@@ -157,6 +157,70 @@ impl EnvironmentParameterDefinition {
     pub fn type_name(&self) -> &str {
         self.definition.type_name()
     }
+
+    /// Check an effective value against this parameter's constraints
+    /// (§4.5 item 2): those of the Job Parameter of the same type, with a
+    /// RANGE_EXPR's lengths checked as written and in canonical form (§4.5
+    /// item 4), and the length limit of §4.5 item 5. `value` is in Job
+    /// Parameter form; a RANGE_EXPR is the string as written where there is
+    /// one.
+    pub(crate) fn check_value_constraints(
+        &self,
+        value: &openjd_expr::ExprValue,
+    ) -> Result<(), String> {
+        self.definition
+            .check_constraints(value, super::RangeExprLengthCheck::AsWrittenAndCanonical)?;
+        check_value_length(self.name(), self.job_param_type(), value)
+    }
+}
+
+/// The most characters a STRING or PATH effective value, and each element
+/// of a LIST[STRING] or LIST[PATH] one, may have (§4.5 item 5): the maximum
+/// length of a `<JobParameterStringValue>` (§2.5).
+pub(crate) const MAX_VALUE_CHARS: usize = 1024;
+
+/// §4.5 item 5 for a value of parameter `name` of type `pt`. Other types,
+/// RANGE_EXPR included, have no such limit here: a RANGE_EXPR's
+/// `maxLength` defaults to 1024 (§2.10).
+fn check_value_length(
+    name: &str,
+    pt: JobParameterType,
+    value: &openjd_expr::ExprValue,
+) -> Result<(), String> {
+    use openjd_expr::ExprValue;
+    let too_long = |n: usize| n > MAX_VALUE_CHARS;
+    match (pt, value) {
+        (
+            JobParameterType::String | JobParameterType::Path,
+            ExprValue::String(v) | ExprValue::Path { value: v, .. },
+        ) => {
+            let n = v.chars().count();
+            if too_long(n) {
+                return Err(format!(
+                    "Parameter '{name}': value has {n} characters, more than the \
+                     {MAX_VALUE_CHARS} an Environment parameter value may have \
+                     (Template Schemas §4.5 item 5)"
+                ));
+            }
+        }
+        (
+            JobParameterType::ListString | JobParameterType::ListPath,
+            ExprValue::ListString(items, _) | ExprValue::ListPath(items, _, _),
+        ) => {
+            for (i, v) in items.iter().enumerate() {
+                let n = v.chars().count();
+                if too_long(n) {
+                    return Err(format!(
+                        "Parameter '{name}': item[{i}] has {n} characters, more than the \
+                         {MAX_VALUE_CHARS} an element of an Environment parameter value may \
+                         have (Template Schemas §4.5 item 5)"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for EnvironmentParameterDefinition {

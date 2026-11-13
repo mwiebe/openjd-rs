@@ -44,7 +44,9 @@
 //!   given: it is never joined with a directory and need not be absolute
 //!   or have any one path format (§4.5 item 3 at spec af53020);
 //! - the definition's constraints are checked against the value
-//!   (constraint 6, §4.5 item 2);
+//!   (constraint 6, §4.5 item 2), and so is the 1024-character limit on a
+//!   STRING or PATH value and each element of a LIST[STRING] or LIST[PATH]
+//!   one (§4.5 item 5);
 //! - a RANGE_EXPR value is stored as its `range_expr`, whose transport form
 //!   is its canonical form, so two values are equal when they denote the
 //!   same integers (§3.2.2): `1-3` and `1,2,3` are equal. Its length
@@ -71,9 +73,7 @@ use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::job;
 use crate::template::expr_field::{self, ExprField, ExprFieldEval};
 use crate::template::validate_v2023_09::env_params as tv;
-use crate::template::{
-    self, EnvironmentParameterDefinition, EnvironmentParameterValue, RangeExprLengthCheck,
-};
+use crate::template::{self, EnvironmentParameterDefinition, EnvironmentParameterValue};
 use crate::types::{JobParameterType, ValidationContext};
 
 use super::parameters::coerce_from_str;
@@ -910,17 +910,15 @@ fn resolve_value(
     // checked above by the template-validation check, as written), so every
     // effective value satisfies its definition (§4.5 item 2). A RANGE_EXPR
     // with a written string is checked as that string, which for an
-    // Environment parameter checks both it and its canonical form, hence
-    // `AsWrittenAndCanonical` below.
+    // Environment parameter checks both it and its canonical form
+    // (`check_value_constraints` passes `AsWrittenAndCanonical`). It also
+    // applies the length limit of §4.5 item 5.
     if is_format_string {
         let checked = match &text {
             Some(s) => ExprValue::String(s.clone()),
             None => value.clone(),
         };
-        if let Err(e) = def
-            .definition
-            .check_constraints(&checked, RangeExprLengthCheck::AsWrittenAndCanonical)
-        {
+        if let Err(e) = def.check_value_constraints(&checked) {
             errors.add(path, e);
             return (Some(Effective { value }), false);
         }
