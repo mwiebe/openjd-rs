@@ -1316,6 +1316,8 @@ fn values_differing_in_name_type_or_count_compare_unequal() {
     for other in [
         "[{name: Y, type: INT, default: 1}]",
         "[{name: X, type: FLOAT, default: 1}]",
+        // The same transport text "1" with another type: only the type differs.
+        r#"[{name: X, type: STRING, default: "1"}]"#,
         "[{name: X, type: INT, default: 1}, {name: Z, type: INT, default: 1}]",
     ] {
         let o = step_with_defs(other);
