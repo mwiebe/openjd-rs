@@ -1533,7 +1533,10 @@ tests of the full 2023-09 suite that run there (its 19 Windows-only tests are sk
 against the spec at `69a9e95`, whose set has 418 tests (4 `env_templates`, 199 `job_templates`, and 215 `jobs`), all
 418 pass on Linux, and the full 2023-09 suite passes 1,649 tests, with the 19 Windows-only tests skipped. With M6,
 against the spec at `cd45188`, whose set has 436 tests (4 `env_templates`, 216 `job_templates`, and 216 `jobs`), all
-436 pass on Linux, and so do all 1,726 tests of the full 2023-09 suite that run there. Raise any
+436 pass on Linux, and so do all 1,726 tests of the full 2023-09 suite that run there. With M7, against the spec at
+`1ec05b0`, whose set has 524 tests (4 `env_templates`, 258 `job_templates`, and 262 `jobs`), all 524 pass on Linux,
+the 443 `ENV_PARAMS` tests pass as on the `ENV_PARAMS` prototype, and so do all 2,261 tests of the full 2023-09 suite
+that run there, with the 22 Windows-only tests skipped. Raise any
 disagreement between a test and an RFC on the RFC rather than changing the prototype to match the test.
 
 **Python parity (Q7)**: not applicable until openjd-model-for-python implements the extension. The M3 parser and the

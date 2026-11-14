@@ -656,11 +656,16 @@ pub(super) fn bind_step(
                 let mut errors = evaluate_remaining(cx, site, &step_symtab, &mut step)
                     .map_err(|e| GroupFailure::abort(Remaining, e))?;
                 // RFC 0011 `<Environment>` item 6: the single-layer rule,
-                // now that the Step Environments are decided.
-                if let Some(message) =
-                    super::external::step_wrap_layers_error(std::mem::take(&mut wrap_layers), &step)
-                {
-                    errors.add(path, message);
+                // now that the Step Environments are decided. A Step
+                // Environment whose `enableIf` failed is not decided, and
+                // fails the Step already.
+                if errors.is_empty() {
+                    if let Some(message) = super::external::step_wrap_layers_error(
+                        std::mem::take(&mut wrap_layers),
+                        &step,
+                    ) {
+                        errors.add(path, message);
+                    }
                 }
                 if !errors.is_empty() {
                     return Err(GroupFailure::collected(Remaining, errors));
@@ -741,6 +746,7 @@ fn early_wrap_layers_error(
     for sym in unknown {
         symtab.set(sym, ExprValue::unresolved(ExprType::ANY)).ok()?;
     }
+    let profile = template_expr_profile(cx.jt);
     // The `let` bindings that fail, and those that read one, however
     // indirectly: an `enableIf` that reads one is not determined, since the
     // remaining group fails on the binding when it is evaluated.
@@ -769,7 +775,7 @@ fn early_wrap_layers_error(
                 }
             }
             for (name, expr) in bindings.iter().filter_map(split) {
-                let reads_failed = openjd_expr::ParsedExpression::new(&expr)
+                let reads_failed = openjd_expr::ParsedExpression::with_profile(&expr, &profile)
                     .map(|p| {
                         p.accessed_symbols()
                             .iter()
@@ -782,7 +788,6 @@ fn early_wrap_layers_error(
             }
         }
     }
-    let profile = template_expr_profile(cx.jt);
     let library = openjd_expr::FunctionLibrary::for_profile(&profile);
     let ev = ExprFieldEval {
         profile: &profile,

@@ -1446,7 +1446,12 @@ pub(super) fn select_environments<'a>(
             match decision {
                 EnableIf::Disabled => {}
                 EnableIf::Enabled | EnableIf::NotEvaluated | EnableIf::Failed => {
-                    values.extend(de.commit(pending, &step.name, staged.at(Stage::Step7, i, doc)));
+                    values.extend(de.commit(
+                        pending,
+                        &step.name,
+                        control_flow,
+                        staged.at(Stage::Step7, i, doc),
+                    ));
                 }
             }
         }
@@ -1500,7 +1505,7 @@ pub(super) fn select_environments<'a>(
                     taken.insert(group, own_at(d.position));
                 }
                 let mut scratch = ValidationErrors::default();
-                let v = de.commit(d.pending, &step.name, &mut scratch);
+                let v = de.commit(d.pending, &step.name, control_flow, &mut scratch);
                 let at = staged.at(Stage::Step7, i, own_at(d.position));
                 for mut e in scratch.errors {
                     e.path = job_path.iter().cloned().chain(e.path).collect();

@@ -1463,7 +1463,7 @@ and `unit`), and an unknown type fail deserialization, as for an output variable
 cycles are pass 6's, and the expressions pass 8's.
 
 **A loop's `dependencies`** may not have an `environment:` entry, since a loop has no
-Sessions (RFC 0011 `<Environment>` item 1): `a loop's dependencies may not have an
+Sessions (RFC 0011 `<Environment>`, after item 8; RFC 0013 `<StepLoop>`): `a loop's dependencies may not have an
 'environment' entry: a loop has no Sessions. Put the entry on the body Steps that need the
 Environment (RFC 0011).`, at `steps[i] -> dependencies[k]`. Its `dependsOn` and `step`
 entries are allowed.

@@ -424,12 +424,16 @@ impl<'a> DeclaringEnvironment<'a> {
     /// for which the Environment is not disabled, and return its values
     /// (`None` when a parameter has no value or a check failed). A failed
     /// resolved `default` is reported once, naming the first Step that
-    /// reports it. The parameters it lacks (constraint 7) are the caller's
-    /// to report, from [`PendingValues::missing`], before this is called.
+    /// reports it; with `per_step` (`CONTROL_FLOW`), once for each Step,
+    /// since each Step's Environment selection is applied, or never made,
+    /// on its own (RFC 0011 `<Environment>` item 3). The parameters it
+    /// lacks (constraint 7) are the caller's to report, from
+    /// [`PendingValues::missing`], before this is called.
     pub(crate) fn commit(
         &self,
         pending: PendingValues<'a>,
         step_name: &str,
+        per_step: bool,
         errors: &mut ValidationErrors,
     ) -> Option<job::EnvironmentParameterValues> {
         for d in pending.deferred {
@@ -439,7 +443,7 @@ impl<'a> DeclaringEnvironment<'a> {
                     let Some(outcome) = self.defaults[k].get() else {
                         continue;
                     };
-                    if outcome.reported.replace(true) {
+                    if outcome.reported.replace(true) && !per_step {
                         continue;
                     }
                     for e in &outcome.errors {

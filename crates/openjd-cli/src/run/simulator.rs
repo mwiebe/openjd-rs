@@ -2683,8 +2683,10 @@ impl Simulator {
     }
 
     /// Record that running loop `li` stopped before its iteration in
-    /// progress completed, because the run stopped (a failed Environment, or
-    /// an interruption).
+    /// progress completed, because the run stopped between actions (an
+    /// interruption that failed no action). An instance whose own action,
+    /// or move to its Environments, failed or was interrupted fails the
+    /// loop through `finish_step` instead.
     pub(super) fn stop_loop(&mut self, li: usize, reason: &str) {
         if self.loop_records[li].state == SimStepState::Running {
             self.fail_loop(li, reason.to_string());

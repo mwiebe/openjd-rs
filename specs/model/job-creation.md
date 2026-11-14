@@ -1716,8 +1716,10 @@ error it holds:
   reported is the first in that order. It is reported with every error found before it:
   the Job Environments' and the earlier Steps' collected errors, and the selection errors
   of the Steps whose selections were applied before it (as `ENV_PARAMS` reports every
-  Step's), filed with its own Step's errors. The aborting Step's own selection is not
-  reported when its `enableIf` failed, since it was never made.
+  Step's), filed with its own Step's selection errors. The aborting Step's own selection is
+  not reported when its `enableIf` failed, since it was never made. The collected errors
+  are listed before the staged ones, as without an abort; the order is not specified
+  (Template Schemas §7.4.1).
 * A Step whose Environment selection is applied with errors fails its enablement group
   with them and evaluates nothing else; at Job creation they are reported with the other
   selection errors, in §7.4.1 order (`Failure::Selection`).
@@ -1779,10 +1781,12 @@ the selection of every Step, top-level and loop body, whatever its `enableIf`:
    for the Step, and keeps them per source rather than combining them with the Step's own.
 
 An error that holds for several Steps, such as an Environment's `enableIf` that fails, or is
-`false` for an `ALWAYS` Environment, or its `hostRequirements` failing to resolve, is filed
-once per Step, naming only that Step ("Resolved for Step 'A'."), since each Step's selection
-is applied or never made on its own. Without `CONTROL_FLOW` it is filed once, naming every
-Step it holds for. A Step's selection errors keep the paths and order `create_job` reports
+`false` for an `ALWAYS` Environment, its `hostRequirements` failing to resolve, or a
+non-literal parameter `default` that fails its definition, is filed once per Step, naming
+only that Step ("Resolved for Step 'A'.", "for Step 'T', which does not supply this
+parameter"), since each Step's selection is applied or never made on its own. Without
+`CONTROL_FLOW` it is filed once, naming every Step it holds for (a failed `default`, the
+first). A Step's selection errors keep the paths and order `create_job` reports
 them in (`JobTemplate ->` first when Environment Templates are attached).
 
 The Steps are then bound (see [Step input binding](#step-input-binding-control_flow)) with

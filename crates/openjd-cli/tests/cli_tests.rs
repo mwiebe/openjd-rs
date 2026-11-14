@@ -8093,7 +8093,7 @@ extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
 name: Sum
 steps:
 - name: P
-  outputVariables: [{name: Go, type: BOOL}]
+  outputVariables: [{name: Go, type: BOOL}, {name: N, type: RANGE_EXPR}]
   script:
     actions:
       onRun: {command: python, args: ['-c', 'pass']}
@@ -8109,6 +8109,15 @@ steps:
   stepEnvironments:
   - {name: PLAIN, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
   - {name: SE, enableIf: "Steps.P.Output.Go", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+- name: R
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions: [{name: I, type: INT, range: "{{Steps.P.Output.N}}"}]
+  stepEnvironments:
+  - {name: RT, enableIf: "true", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
   script:
     actions:
       onRun: {command: python, args: ['-c', 'pass']}
@@ -8129,6 +8138,11 @@ steps:
                 "  Session environments:\n    - PLAIN (stepEnvironments)\n    - SE \
                  (stepEnvironments, if its enableIf is true)\n"
             ),
+            "{stdout}"
+        );
+        // R's Tasks wait on P, but its Step Environments are decided.
+        assert!(
+            stdout.contains("  Session environments:\n    - RT (stepEnvironments)\n"),
             "{stdout}"
         );
         // JSON keeps `source` and marks the undecided one.

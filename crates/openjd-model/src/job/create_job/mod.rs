@@ -542,8 +542,16 @@ fn control_flow_job(
     if let Some(aborted) = aborted {
         match aborted.error {
             ModelError::ModelValidation(ve) => {
+                // A Step stopped by an error that is not part of its
+                // selection (an ambiguous entry name) has its later errors
+                // left out by `finish`; the abort is reported anyway.
+                let subject = if all_staged.stopped(aborted.subject) {
+                    staged::ANY
+                } else {
+                    aborted.subject
+                };
                 all_staged
-                    .at(staged::Stage::Step8, aborted.subject, staged::ANY)
+                    .at(staged::Stage::Step8, subject, staged::ANY)
                     .errors
                     .extend(
                         ve.errors

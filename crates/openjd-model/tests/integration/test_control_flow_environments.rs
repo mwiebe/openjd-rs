@@ -1385,3 +1385,371 @@ environment:
         "{err}"
     );
 }
+
+// ── Round 4 ───────────────────────────────────────────────────────
+
+#[test]
+fn a_failed_resolved_default_is_reported_for_each_step_whose_selection_is_applied() {
+    // S is skipped, T runs: T's selection still fails on E's default.
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+- {name: V, type: STRING, default: ab}
+jobEnvironments:
+- name: E
+  envParameterDefinitions: [{name: D, type: STRING, maxLength: 1, default: "{{Param.V}}"}]
+  script: {actions: {onEnter: {command: echo, args: ["{{Env.Param.D}}"]}}}
+steps:
+- name: S
+  enableIf: "Param.F"
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+- name: T
+  script: {actions: {onRun: {command: echo, args: [t]}}}
+"#,
+        HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &[
+            "jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tfor Step 'T', which \
+           does not supply this parameter: Parameter 'D': value length 2 exceeds maximum 1",
+        ],
+    );
+}
+
+#[test]
+fn an_ambiguous_entry_does_not_hide_the_steps_abort() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: S, type: STRING, default: a}
+steps:
+- name: S
+  enableIf: "int(Param.S) > 0"
+  dependencies: [{environment: X}]
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let x = || {
+        env_ok(
+            r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: X
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [x]}}}
+"#,
+        )
+    };
+    let err = create_with(&jt, &[x(), x()], &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for Submission"),
+        "{err}"
+    );
+    assert!(
+        err.contains("JobTemplate -> steps[0] -> enableIf:\n\tcould not be evaluated: Cannot convert 'a' to int"),
+        "{err}"
+    );
+    assert!(
+        err.contains("which 2 attached Environment Templates define"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_early_wrap_check_leaves_out_attribute_reads_of_a_failing_let() {
+    // `q` fails for S=a; reading `q.name`, directly or through `m`, is not
+    // determined.
+    let q = "\"q = path('/a/b') if int(Param.S) > 0 else path('/x')\", ";
+    for (lets, enable_if) in [
+        (q.to_string(), "q.name == 'z' or true"),
+        (format!("{q}\"m = q.name\", "), "m == 'z' or true"),
+    ] {
+        let jt = early_wrap_template(&lets, enable_if);
+        let job = created(&jt, &[("S", "a")]).job;
+        assert!(
+            matches!(step(&job, "B").binding, StepBinding::PendingInputs(_)),
+            "{lets}"
+        );
+        let err = create_with(&jt, &[], &[("S", "1")]).unwrap_err();
+        assert_errors(&err.to_string(), "JobTemplate", &[B_TWO_LAYERS]);
+    }
+}
+
+#[test]
+fn the_early_wrap_check_counts_only_wrapping_step_environments() {
+    let jt = jt_ok(
+        &format!(
+            r#"
+jobEnvironments:
+- name: JW{}
+steps:
+- name: C
+  dependencies: [{{environment: JW, enableIf: "false"}}]
+  outputVariables: [{{name: X, type: STRING}}]
+  script: {{actions: {{onRun: {{command: echo, args: [c]}}}}}}
+- name: B
+  enableIf: "Param.S != ''"
+  dependencies: [{{dependsOn: C}}]
+  let: ["c = Steps.C.Output.X"]
+  stepEnvironments:
+  - {{name: NW, script: {{actions: {{onEnter: {{command: echo, args: [nw]}}}}}}}}
+  script: {{actions: {{onRun: {{command: echo, args: ["{{{{c}}}}"]}}}}}}
+parameterDefinitions:
+- {{name: S, type: STRING, default: "1"}}
+"#,
+            wrap_hooks("  ")
+        ),
+        WRAP_HEADER,
+    );
+    let job = created(&jt, &[]).job;
+    assert!(matches!(
+        step(&job, "B").binding,
+        StepBinding::PendingInputs(_)
+    ));
+}
+
+#[test]
+fn the_early_wrap_check_fails_the_remaining_group_at_binding() {
+    // B's enableIf is decided at creation; SW's waits on C, and its
+    // remaining group waits on D too. Once C's value makes SW certain, B
+    // fails though D is still missing.
+    let jt = jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: S, type: STRING, default: "1"}}
+jobEnvironments:
+- name: JW{}
+steps:
+- name: C
+  dependencies: [{{environment: JW, enableIf: "false"}}]
+  outputVariables: [{{name: X, type: STRING}}]
+  script: {{actions: {{onRun: {{command: echo, args: [c]}}}}}}
+- name: D
+  dependencies: [{{environment: JW, enableIf: "false"}}]
+  outputVariables: [{{name: Y, type: STRING}}]
+  script: {{actions: {{onRun: {{command: echo, args: [d]}}}}}}
+- name: B
+  enableIf: "Param.S != ''"
+  dependencies: [{{dependsOn: C}}, {{dependsOn: D}}]
+  let: ["d = Steps.D.Output.Y"]
+  stepEnvironments:
+  - name: SW
+    enableIf: "Steps.C.Output.X == 'a'"{}
+  script: {{actions: {{onRun: {{command: echo, args: ["{{{{d}}}}"]}}}}}}
+"#,
+            wrap_hooks("  "),
+            wrap_hooks("    ")
+        ),
+        WRAP_HEADER,
+    );
+    let job = created(&jt, &[]).job;
+    let err = advance(
+        &jt,
+        &[],
+        &[],
+        &job,
+        "B",
+        "C",
+        &[("X", ExprValue::String("a".into()))],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.group,
+        openjd_model::job::MaterializationGroup::Remaining
+    );
+    assert_eq!(
+        err.to_string(),
+        "Step 'B' failed in its remaining group:\nModel validation error: 1 validation error \
+         for JobTemplate\nsteps[2]:\n\tits Sessions would enter 2 Environments that define wrap \
+         hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'JW', 'SW' (stepEnvironments). \
+         A Session may have at most one Environment defining wrap hooks (RFC 0008)."
+    );
+}
+
+#[test]
+fn an_abort_is_filed_with_its_own_steps_errors() {
+    // A (steps[0]) aborts in host selection; C (steps[1]), bound before it,
+    // fails to resolve H's requirement. A's error comes first.
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: M, type: INT, default: 2}
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  hostRequirements:
+    amounts: [{name: amount.worker.vcpu, min: 4}]
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
+- name: H
+  activation: ON_REQUEST
+  envParameterDefinitions: [{name: Index, type: INT, default: 5}]
+  hostRequirements:
+    amounts: [{name: amount.worker.memory, min: "{{ [1][Env.Param.Index] }}"}]
+  script: {actions: {onEnter: {command: echo, args: [h]}}}
+steps:
+- name: A
+  enableIf: "Param.M > 0"
+  dependencies: [{dependsOn: C}, {environment: E}]
+  hostRequirements:
+    amounts: [{name: amount.worker.vcpu, max: "{{Param.M}}"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: C
+  enableIf: "Param.M > 0"
+  dependencies: [{environment: H}]
+  script: {actions: {onRun: {command: echo, args: [c]}}}
+"#,
+        FB1_HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err().to_string();
+    let a = err.find("Step 'A': no host can satisfy").expect(&err);
+    let c = err.find("Resolved for Step 'C'.").expect(&err);
+    assert!(a < c, "{err}");
+}
+
+#[test]
+fn a_loops_abort_is_reported_with_the_errors_found_before_it() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: S, type: STRING, default: a}
+- {name: M, type: INT, default: 0}
+steps:
+- name: A
+  let: ["n = int(Param.S)"]
+  script: {actions: {onRun: {command: echo, args: ["{{n}}"]}}}
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    maxIterations: "{{Param.M}}"
+    until: "true"
+    steps:
+    - name: B
+      script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate"),
+        "{err}"
+    );
+    assert!(
+        err.contains("steps[0] -> let[0]:\n\tInvalid expression in let binding 'n'"),
+        "{err}"
+    );
+    assert!(err.contains("steps[1] -> loop -> maxIterations:"), "{err}");
+}
+
+#[test]
+fn step_environment_statuses_are_reported_for_a_pending_step_whose_remaining_group_is_known() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+steps:
+- name: P
+  outputVariables: [{name: R, type: RANGE_EXPR}]
+  script: {actions: {onRun: {command: echo, args: [p]}}}
+- name: S
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions: [{name: I, type: INT, range: "{{Steps.P.Output.R}}"}]
+  stepEnvironments:
+  - {name: SE, enableIf: "Param.F", script: {actions: {onEnter: {command: echo, args: [x]}}}}
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let created = created(&jt, &[]);
+    assert!(matches!(
+        step(&created.job, "S").binding,
+        StepBinding::PendingInputs(_)
+    ));
+    let statuses: Vec<(String, EnvironmentStatus)> = created.environment_statuses[1]
+        .environments
+        .iter()
+        .map(|s| (s.name.clone(), s.status))
+        .collect();
+    assert_eq!(statuses, [("SE".to_string(), EnvironmentStatus::Disabled)]);
+    assert_eq!(created.disabled_environments[1].step_environments, ["SE"]);
+}
+
+#[test]
+fn an_environment_enable_if_error_is_reported_once_per_step() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: I, type: INT, default: 5}
+jobEnvironments:
+- name: E
+  enableIf: "[1][Param.I] > 0"
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
+steps:
+- name: A
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate"),
+        "{err}"
+    );
+    assert_eq!(err.matches("Resolved for Step 'A'.").count(), 1, "{err}");
+    assert_eq!(err.matches("Resolved for Step 'B'.").count(), 1, "{err}");
+}
+
+#[test]
+fn a_step_environment_enable_if_that_fails_is_not_counted_as_a_wrap_layer() {
+    let jt = jt_ok(
+        &format!(
+            r#"
+jobEnvironments:
+- name: JW{}
+steps:
+- name: P
+  dependencies: [{{environment: JW, enableIf: "false"}}]
+  outputVariables: [{{name: Go, type: BOOL}}]
+  script: {{actions: {{onRun: {{command: echo, args: [p]}}}}}}
+- name: B
+  dependencies: [{{dependsOn: P}}]
+  stepEnvironments:
+  - name: SW
+    enableIf: "None if Steps.P.Output.Go else False"{}
+  script: {{actions: {{onRun: {{command: echo, args: [b]}}}}}}
+"#,
+            wrap_hooks("  "),
+            wrap_hooks("    ")
+        ),
+        WRAP_HEADER,
+    );
+    let job = created(&jt, &[]).job;
+    let err = advance(
+        &jt,
+        &[],
+        &[],
+        &job,
+        "B",
+        "P",
+        &[("Go", ExprValue::Bool(true))],
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("1 validation error for JobTemplate"),
+        "{message}"
+    );
+    assert!(
+        message.contains("steps[1] -> stepEnvironments[0] -> enableIf:"),
+        "{message}"
+    );
+}
