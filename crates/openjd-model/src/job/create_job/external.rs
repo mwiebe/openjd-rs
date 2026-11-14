@@ -372,19 +372,20 @@ struct Attachments<'a> {
     contexts: Vec<ValidationContext>,
     declaring: Vec<DeclaringEnvironment<'a>>,
     by_name: HashMap<&'a str, Vec<usize>>,
-    /// Attachments no entry can reach: named like a Job Environment
-    /// (§3.2.1 item 4) or like another attachment (item 3). The missing
-    /// parameters of one with `activation: ALWAYS` or `BY_DEFAULT` are
-    /// reported once, at the attachment, not per Step; one with
-    /// `ON_REQUEST` is never entered.
+    /// Attachments no enabled entry can reach: named like a Job
+    /// Environment (§3.2.1 item 4), which no entry reaches, or like another
+    /// attachment (item 3), which only a disabled entry reaches, to decline
+    /// it. The missing parameters of one with `activation: ALWAYS` or
+    /// `BY_DEFAULT` are reported once, at the attachment, not per Step; one
+    /// with `ON_REQUEST` is never entered.
     unreachable: HashSet<usize>,
     /// The attachment-level errors for an unreachable attachment with
     /// `activation: ALWAYS` or `BY_DEFAULT` and parameters without a
-    /// `default`, by attachment, path, and message. No entry can decline
-    /// such an attachment, so it applies to every Step whatever its own
-    /// `enableIf` or `exclusiveGroup` (§3.2 constraint 7), and
-    /// [`report_unreachable`](Self::report_unreachable) reports each one
-    /// that applies to some Step that is not stopped.
+    /// `default`, by attachment, path, and message. No enabled entry can
+    /// supply its parameters, so it applies to every Step that does not
+    /// decline it, whatever its own `enableIf` or `exclusiveGroup` (§3.2
+    /// constraint 7), and [`report_unreachable`](Self::report_unreachable)
+    /// reports each one that applies to some Step that is not stopped.
     unreachable_required: Vec<(usize, Vec<PathElement>, String)>,
 }
 
@@ -554,12 +555,21 @@ impl<'a> Attachments<'a> {
                     capped_name_list(required.iter().copied(), required.len()),
                     // A disabled entry can decline a `BY_DEFAULT` one, and
                     // this error is reported only where some Step does not.
-                    if env.activation() == EnvironmentActivation::ByDefault {
-                        "Its activation is BY_DEFAULT, and a Step does not decline it, so it \
-                         applies to that Step whatever its enableIf and exclusiveGroup (§3.2 \
-                         constraint 7)"
-                    } else {
-                        entered(env)
+                    match env.activation() {
+                        EnvironmentActivation::ByDefault
+                            if env.enable_if.is_some() || env.group().is_some() =>
+                        {
+                            "Its activation is BY_DEFAULT, so it applies to every Step that does \
+                             not decline it with a disabled entry, whatever its enableIf and \
+                             exclusiveGroup (§3.2 constraint 7), and at least one Step does not \
+                             decline it"
+                        }
+                        EnvironmentActivation::ByDefault => {
+                            "Its activation is BY_DEFAULT, so it applies to every Step that does \
+                             not decline it with a disabled entry, and at least one Step does not \
+                             decline it"
+                        }
+                        _ => entered(env),
                     }
                 ),
             ));
@@ -1798,10 +1808,11 @@ fn certainly_entered_per_step(
 ///   its group is checked. Their constraint 7 does not depend on the
 ///   group, so template validation checks it;
 /// - the unreachable attachments' parameters without a `default`: an error
-///   for one with `activation: ALWAYS` or `BY_DEFAULT` that applies to
-///   some Step (no entry decides it), whatever its own `enableIf` or
-///   `exclusiveGroup` (§3.2 constraint 7), reported after the Steps'
-///   values, as job creation orders them;
+///   for one with `activation: ALWAYS` or `BY_DEFAULT` that certainly
+///   applies to some Step (no enabled entry decides it, and a `BY_DEFAULT`
+///   one applies to each Step that does not decline it), whatever its own
+///   `enableIf` or `exclusiveGroup` (§3.2 constraint 7), reported after
+///   the Steps' values, as job creation orders them;
 /// - the `WRAP_ACTIONS` single-layer rule (RFC 0008) for each Step (one
 ///   whose only layers are the Job Template's own ungrouped ones passed
 ///   template validation, which counts them the same way; it counts no

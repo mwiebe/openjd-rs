@@ -1232,14 +1232,14 @@ fn every_ambiguous_copy_is_an_unreachable_error_whatever_its_group() {
     );
     // At job creation the ambiguous entry stops S, the only Step, after
     // §7.4.1 step 4, so only the ambiguity is reported there.
-    for amb in [&ungrouped, &grouped] {
+    for (amb, how) in [(&ungrouped, UNDECLINED_PLAIN), (&grouped, UNDECLINED)] {
         check_err_and_create_err(
             &jt,
             &[amb, amb],
             &[
                 ambiguous,
-                &unreachable_amb(0, (0, 1), UNDECLINED),
-                &unreachable_amb(1, (0, 1), UNDECLINED),
+                &unreachable_amb(0, (0, 1), how),
+                &unreachable_amb(1, (0, 1), how),
             ],
             &[ambiguous],
         );
@@ -1352,9 +1352,15 @@ const WHATEVER: &str = "Its activation is BY_DEFAULT, so it applies to every Ste
 /// How the unreachable error says an ambiguous `BY_DEFAULT` attachment
 /// applies to a Step, since a disabled entry could decline it (§3.2.1 item
 /// 3).
-const UNDECLINED: &str = "Its activation is BY_DEFAULT, and a Step does not decline it, so it \
-                          applies to that Step whatever its enableIf and exclusiveGroup (§3.2 \
-                          constraint 7)";
+const UNDECLINED: &str = "Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a \
+                          disabled entry, whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and at least \
+                          one Step does not decline it";
+
+/// As [`UNDECLINED`], for one with neither an `enableIf` nor an
+/// `exclusiveGroup`.
+const UNDECLINED_PLAIN: &str = "Its activation is BY_DEFAULT, so it applies to every Step that \
+                                does not decline it with a disabled entry, and at least one Step \
+                                does not decline it";
 
 #[test]
 fn an_ambiguous_copy_that_applies_to_a_step_not_stopped_is_an_unreachable_error() {
@@ -2239,4 +2245,44 @@ fn a_deferred_job_environments_failed_default_names_the_step_that_takes_it() {
            type INT: Index 4 out of bounds for list of length 1",
         ],
     );
+}
+
+#[test]
+fn an_unknown_entry_for_an_ambiguous_attachment_leaves_its_group_undetermined_at_check() {
+    // E, attached twice, is ON_REQUEST in group G, and L, attached after
+    // both, is in G too. S's entry for E has an `enableIf` that check does
+    // not know. Enabled, the entry is the §3.2.1 item 3 error, which stops
+    // S; disabled, it requests neither copy of E, so S enters L, and L's
+    // value `bad` is an error. Neither error holds for every value, so
+    // check reports neither (§7.6 rule 5): whether E supersedes L is not
+    // known, so L's values are not checked.
+    let jt = |mode: &str| {
+        format!(
+            "{HEAD}parameterDefinitions: [{{name: Mode, type: STRING, default: {mode}}}]\nsteps:\n\
+             - name: S\n  dependencies:\n  - {{environment: E, enableIf: \"Param.Mode == 'on'\"}}\n  \
+             - {{environment: L, parameters: {{Q: bad}}}}\n  script: {{actions: {{onRun: {{command: \
+             x}}}}}}\n"
+        )
+    };
+    let e = env("name: E, activation: ON_REQUEST, exclusiveGroup: G");
+    let l = env(
+        "name: L, activation: ON_REQUEST, exclusiveGroup: G, envParameterDefinitions: [{name: Q, \
+         type: STRING, allowedValues: [good]}]",
+    );
+    for mode in ["on", "off"] {
+        check_ok(&jt(mode), &[&e, &e, &l]);
+    }
+    let off = create(&jt("off"), &[&e, &e, &l])
+        .expect_err("expected job creation to fail")
+        .to_string();
+    assert!(off.contains("'bad' is not in allowed values"), "{off}");
+    assert!(!off.contains("§3.2.1 item 3"), "{off}");
+    let on = create(&jt("on"), &[&e, &e, &l])
+        .expect_err("expected job creation to fail")
+        .to_string();
+    assert!(
+        on.contains("an entry must match exactly one (Template Schemas §3.2.1 item 3)"),
+        "{on}"
+    );
+    assert!(!on.contains("allowed values"), "{on}");
 }

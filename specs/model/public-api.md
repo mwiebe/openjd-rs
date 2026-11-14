@@ -502,9 +502,10 @@ known to enter, which template validation leaves out; a disabled entry naming an
 attached `ALWAYS` Environment, an error; the
 attachment-level warnings and errors (a warning, when the Job Template
 lists `ENV_PARAMS`, for an attachment named like a Job Environment; an
-error for an attachment that no entry can reach and that has parameters
-without a `default`, when its `activation` is `ALWAYS` or `BY_DEFAULT`
-and it applies to some Step, whatever its own `enableIf` or
+error for an attachment that no enabled entry can reach and that has
+parameters without a `default`, when its `activation` is `ALWAYS` or
+`BY_DEFAULT` and it applies to some Step, which for a `BY_DEFAULT` one is a
+Step that does not decline it, whatever its own `enableIf` or
 `exclusiveGroup`), and the
 attachments' literal
 `default`s, the `WRAP_ACTIONS` single-layer rule for each Step, and the

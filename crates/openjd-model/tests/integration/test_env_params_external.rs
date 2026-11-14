@@ -1299,7 +1299,7 @@ steps:
         .unwrap_err();
     let msg = |doc: &str| {
         format!(
-            "{doc} -> environment -> envParameterDefinitions:\n\tEnvironment 'X' is defined by 2 attached Environment Templates (a.yaml, b.yaml), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is rejected (§3.2.1)."
+            "{doc} -> environment -> envParameterDefinitions:\n\tEnvironment 'X' is defined by 2 attached Environment Templates (a.yaml, b.yaml), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a disabled entry, and at least one Step does not decline it, and the submission is rejected (§3.2.1)."
         )
     };
     assert_errors(
