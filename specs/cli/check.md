@@ -130,7 +130,10 @@ Job Parameter definitions of the Job Template and the Environment Templates are 
 (`openjd_model::merge_job_parameter_definitions`, Template Schemas §1.2.1), so a conflicting
 definition is reported as `openjd run` reports it. Then
 `openjd_model::check_environment_templates` runs every check of job creation's submission
-stage that needs no Job Parameter values:
+stage that needs no Job Parameter values. With `CONTROL_FLOW`, the per-Step checks are made only for a Step known to be enabled
+([validation.md](../model/validation.md#known-to-be-enabled-control_flow)); for any other
+Step they are left to `openjd run`, except an ambiguous name, which is always reported, and
+the attachment-level errors. The checks:
 
 - each entry whose `enableIf` is known to be `true` (absent, the boolean scalar, or an
   expression whose value template validation knows, such as `"true"`, Template Schemas §7.6

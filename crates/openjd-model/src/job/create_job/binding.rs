@@ -45,7 +45,17 @@ pub(super) struct BindContext<'a> {
     pub(super) has_expr: bool,
     pub(super) limits: &'a EffectiveLimits,
     pub(super) budgets: EvalBudgets,
+    /// At Job creation, where each Step's own discarded host requirements
+    /// (Template Schemas §3.3) go, by Step name, for
+    /// `CreatedJob::discarded_host_requirements`. `None` at step input
+    /// binding, which has nowhere to report them.
+    pub(super) own_discarded: Option<&'a OwnDiscarded>,
 }
+
+/// Each Step's own discarded host requirements, by Step name, as job
+/// creation's host selection groups find them.
+pub(super) type OwnDiscarded =
+    std::cell::RefCell<Vec<(String, Vec<super::host_requirements::Discarded>)>>;
 
 /// The Step a binding is for: its template, where it is, and for a body Step
 /// instance the values of its iteration's loop.
@@ -95,6 +105,11 @@ pub(super) enum Failure {
     /// An `enableIf`, range, or host requirement error, a repeated
     /// `CHUNK[INT]` value, or a Task-count limit: reported alone.
     Abort(ModelError),
+    /// The Step's Environment selection, applied once its `enableIf` is
+    /// `true`, has errors (RFC 0011 `<Environment>` item 3). At Job
+    /// creation they are reported with the other selection errors, which
+    /// already hold them; at step input binding they fail the Step.
+    Selection(ModelError),
 }
 
 /// A failed group.
@@ -121,7 +136,7 @@ impl GroupFailure {
 
     pub(super) fn into_binding_error(self, step: &str) -> BindingError {
         let error = match self.failure {
-            Failure::Abort(e) => e,
+            Failure::Abort(e) | Failure::Selection(e) => e,
             Failure::Collected(errors) => match errors.into_result("JobTemplate") {
                 Err(e) => e,
                 Ok(()) => ModelError::DecodeValidation(
@@ -518,7 +533,10 @@ pub(super) fn bind_step(
         // part of the enablement group, made once `enableIf` is `true`.
         if let Some(selection) = environment_selection.take() {
             if !selection.errors.is_empty() {
-                return Err(GroupFailure::abort(Enablement, selection_error(&selection)));
+                return Err(GroupFailure {
+                    group: Enablement,
+                    failure: Failure::Selection(selection_error(&selection)),
+                });
             }
             step.environments = selection.environments;
             step.environment_parameters = selection.environment_parameters;
@@ -577,7 +595,12 @@ pub(super) fn bind_step(
                         };
                         GroupFailure::abort(HostSelection, e)
                     })?
-                    .and_then(|r| r.requirements);
+                    .and_then(|r| {
+                        if let Some(own) = cx.own_discarded {
+                            own.borrow_mut().push((st.name.clone(), r.discarded));
+                        }
+                        r.requirements
+                    });
                 // RFC 0011 `<Environment>` item 5: the Step's own
                 // requirements are combined with its Environments' here.
                 let mut conflicts = ValidationErrors::default();
@@ -614,8 +637,13 @@ pub(super) fn bind_step(
             // checked as soon as its outcome is determined, which can be
             // before the remaining group's inputs are all concrete.
             if !waiting.is_empty() {
+                let unknown: Vec<String> = groups
+                    .all()
+                    .filter(|s| !inputs.is_concrete(s))
+                    .cloned()
+                    .collect();
                 if let Some(message) =
-                    early_wrap_layers_error(cx, st, &step_symtab, &waiting, &wrap_layers)
+                    early_wrap_layers_error(cx, st, &step_symtab, &unknown, &wrap_layers)
                 {
                     let mut errors = ValidationErrors::default();
                     errors.add(path, message);
@@ -683,14 +711,16 @@ pub(super) fn bind_step(
 /// determined: the wrap layers `wrap_layers` of the Job Environments the
 /// Step's Sessions enter, with each wrapping Step Environment whose
 /// `enableIf` is known to be `true` (Template Schemas §7.6 rule 5) in
-/// `step_symtab` with the `waiting` symbols, and the `let` bindings that
-/// read them, unresolved. `None` when at most one layer is certain; the
-/// remaining group checks the full set once it is evaluated.
+/// `step_symtab` with the `unknown` symbols (the Step's inputs that are not
+/// concrete), and the `let` bindings that read them, unresolved. `None`
+/// when at most one layer is certain, or when a `let` binding fails, since
+/// the remaining group then fails on it; the remaining group checks the
+/// full set once it is evaluated.
 fn early_wrap_layers_error(
     cx: &BindContext<'_>,
     st: &StepTemplate,
     step_symtab: &SymbolTable,
-    waiting: &[String],
+    unknown: &[String],
     wrap_layers: &[String],
 ) -> Option<String> {
     let wrapping: Vec<&template::Environment> = st
@@ -707,13 +737,13 @@ fn early_wrap_layers_error(
         return None;
     }
     let mut symtab = step_symtab.clone();
-    for sym in waiting {
+    for sym in unknown {
         symtab.set(sym, ExprValue::unresolved(ExprType::ANY)).ok()?;
     }
     if cx.has_expr {
         if let Some(bindings) = &st.let_bindings {
-            // Errors are reported when the group is evaluated; a binding
-            // that fails here is left out, so what reads it is not known.
+            // A binding that fails here fails the remaining group when it
+            // is evaluated, so the rule's outcome is not determined.
             let mut scratch = ValidationErrors::default();
             crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
                 bindings,
@@ -724,6 +754,9 @@ fn early_wrap_layers_error(
                 &mut scratch,
                 |_| true,
             );
+            if !scratch.is_empty() {
+                return None;
+            }
         }
     }
     let profile = template_expr_profile(cx.jt);
@@ -1329,6 +1362,7 @@ pub fn advance_step_binding(
         has_expr,
         limits: &limits,
         budgets: EvalBudgets::from_ctx(ctx),
+        own_discarded: None,
     };
     bind_step(
         &cx,

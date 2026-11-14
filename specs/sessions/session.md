@@ -961,9 +961,10 @@ captured stdout from the `onEnter` script as `(identifier, stdout)`. The regular
 `enter_environment` wraps this and discards the stdout. It is itself
 `enter_environment_with_parameters` with no Environment parameter values (ENV_PARAMS).
 
-Used by the CLI's `run` command to display a unified output stream showing what each
-environment and task printed. The worker agent uses the regular `enter_environment`
-since it observes output through the real-time callback.
+The CLI's `run` command calls `enter_environment_with_parameters`, the general form, and
+streams each action's output as it runs rather than using the captured stdout. The worker
+agent uses the regular `enter_environment` since it observes output through the real-time
+callback.
 
 Note: stdout is only captured when `SessionConfig.debug_collect_stdout` is `true`.
 

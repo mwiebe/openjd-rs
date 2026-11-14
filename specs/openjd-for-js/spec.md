@@ -152,7 +152,7 @@ This mirrors the PyO3 pattern used in the Python bindings where `PyJobTemplate` 
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decodeJobTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate a job template from a string. `format` defaults to `DocumentType.Yaml` (YAML is a superset of JSON, so this accepts either). `limits` lets the host impose additional caps on top of the spec-defined limits; omit for spec-only behavior. `supportedExtensions` restricts which OpenJD extensions the template may declare; omit to allow every extension `getSupportedExtensions()` lists (`openjd_model::ModelExtension::ALL`, which includes the draft `ENV_PARAMS`), or pass `[]` to disable every extension. Mirrors the Python binding `decode_job_template_str`. Throws on failure. |
+| `decodeJobTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate a job template from a string. `format` defaults to `DocumentType.Yaml` (YAML is a superset of JSON, so this accepts either). `limits` lets the host impose additional caps on top of the spec-defined limits; omit for spec-only behavior. `supportedExtensions` restricts which OpenJD extensions the template may declare; omit to allow every extension `getSupportedExtensions()` lists (`openjd_model::ModelExtension::ALL`, which includes the draft `ENV_PARAMS` and `CONTROL_FLOW`), or pass `[]` to disable every extension. Mirrors the Python binding `decode_job_template_str`. Throws on failure. |
 | `decodeJobTemplateFromObject` | `(obj: object, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate from a pre-parsed JS object, skipping string parsing. Mirrors the Python binding `decode_job_template_dict`. |
 | `decodeEnvironmentTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → EnvironmentTemplate` | As above, for environment templates. Mirrors `decode_environment_template_str`. |
 | `decodeEnvironmentTemplateFromObject` | `(obj: object, limits?: CallerLimits, supportedExtensions?: string[]) → EnvironmentTemplate` | As above, for environment templates. Mirrors `decode_environment_template_dict`. |
@@ -277,7 +277,10 @@ earlier Job Environment of its `exclusiveGroup` supersedes) carries
 `environments`: a list of `{document, environment}`, the Job Environments it enters; a Step
 that enters every one has no `environments` key. A Step Environment whose `enableIf` is
 `false` for its Step is left out of `stepEnvironments`, and a disabled Environment has no
-`environmentParameters` entry. So a Job without Environment parameters, `ON_REQUEST`
+`environmentParameters` entry. With `CONTROL_FLOW`, a Step pending its `enableIf` has
+neither `environments` nor `environmentParameters` yet: its Environment selection, made at
+Job creation, is in `binding.environmentSelection` and is applied once the `enableIf` is
+`true`, which the bindings do not expose. So a Job without Environment parameters, `ON_REQUEST`
 Environments, Environment `enableIf`s or `exclusiveGroup`s, or disabled `environment:` entries
 serializes exactly as before.
 A Step's `hostRequirements` is its combined host requirements (Template Schemas §3.3.3): its

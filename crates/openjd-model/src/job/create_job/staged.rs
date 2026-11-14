@@ -12,7 +12,9 @@
 //! key order, and in the order they were filed within a key. An error that
 //! is not about one Step, such as an unreachable attachment's, is filed
 //! after the Steps' errors of its step ([`ANY`]); an error that names
-//! several Steps, such as a failed `enableIf`, is filed under the first.
+//! several Steps, such as a failed `enableIf`, is filed under the first,
+//! except with `CONTROL_FLOW`, where it is filed once per Step it names,
+//! since each Step's Environment selection is applied on its own.
 //!
 //! The checks job creation makes in the template-validation style before
 //! §7.4.1's steps (the carried-forward resolved-value checks and the
@@ -119,6 +121,26 @@ impl StagedErrors {
             out.extend(errors.errors);
         }
         out
+    }
+
+    /// The errors [`take_step`](Self::take_step) would move out, copied.
+    pub(crate) fn step_errors(&self, step: usize) -> Vec<ValidationError> {
+        let stopped = self.stopped(step);
+        self.buckets
+            .iter()
+            .filter(|((stage, s, _, job_level), _)| {
+                *s == step
+                    && !*job_level
+                    && *stage >= Stage::Step2
+                    && !(stopped && *stage >= Stage::Step5)
+            })
+            .flat_map(|(_, errors)| errors.errors.iter().cloned())
+            .collect()
+    }
+
+    /// Whether no error is filed.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buckets.values().all(|e| e.is_empty())
     }
 
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that

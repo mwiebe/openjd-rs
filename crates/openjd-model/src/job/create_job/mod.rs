@@ -374,8 +374,9 @@ fn control_flow_job(
     let limits = EffectiveLimits::from_context(ctx);
     let budgets = EvalBudgets::from_ctx(ctx);
     let mut subjects = std::mem::take(&mut job.steps);
+    let step_templates: Vec<_> = job_template.step_templates().collect();
     let paths: Vec<Vec<crate::error::PathElement>> =
-        job_template.step_templates().map(|st| st.path()).collect();
+        step_templates.iter().map(|st| st.path()).collect();
     let mut selected = external::select_environments(
         job,
         &mut subjects,
@@ -438,26 +439,6 @@ fn control_flow_job(
         })
         .collect();
 
-    let mut built = instantiate_steps_with_binding(
-        job_template,
-        &symtab,
-        has_expr,
-        &limits,
-        ctx,
-        budgets,
-        &environment_selections,
-        &mut check_errors,
-    )?;
-    // For each subject, the entry of its Step when it is a top-level Step.
-    let top_level: Vec<Option<usize>> = job_template
-        .step_templates()
-        .map(|st| st.body_index.is_none().then_some(st.entry_index))
-        .collect();
-    // Which subjects' selections were applied here: the top-level Steps
-    // whose `enableIf` was decided `true`, including one whose group failed
-    // later (its error is collected). Every other subject's errors are its
-    // own, for step input binding, and a skipped Step's are dropped.
-    let mut applied_at_creation = vec![false; top_level.len()];
     // The Job Template stage's errors and the submission stage's, in the
     // order and with the paths `finish_errors` reports them in, so a
     // Step's selection errors read as they would at Job creation.
@@ -469,6 +450,65 @@ fn control_flow_job(
     };
     all_staged.absorb(std::mem::take(&mut selected.body_staged), &job_prefix);
     all_staged.absorb(std::mem::take(&mut selected.staged), &[]);
+    // Each Step's selection carries its errors, so a Step whose `enableIf`
+    // is decided `true` fails its enablement group with them and evaluates
+    // nothing else.
+    for (i, selection) in environment_selections.iter_mut().enumerate() {
+        selection.errors = all_staged
+            .step_errors(i)
+            .into_iter()
+            .map(|e| job::SelectionError {
+                path: e.path,
+                message: e.message,
+            })
+            .collect();
+    }
+    // For each subject, the entry of its Step when it is a top-level Step.
+    let top_level: Vec<Option<usize>> = job_template
+        .step_templates()
+        .map(|st| st.body_index.is_none().then_some(st.entry_index))
+        .collect();
+
+    let own_discarded = std::cell::RefCell::new(Vec::new());
+    let (mut built, aborted) = instantiate_steps_with_binding(
+        job_template,
+        &symtab,
+        has_expr,
+        &limits,
+        ctx,
+        budgets,
+        &environment_selections,
+        &mut check_errors,
+        &own_discarded,
+    )?;
+    // Each Step's own discarded host requirements come first (§3.3).
+    let top_level_index: std::collections::HashMap<&str, usize> = step_templates
+        .iter()
+        .enumerate()
+        .filter(|(_, st)| st.body_index.is_none())
+        .map(|(i, st)| (st.step.name.as_str(), i))
+        .collect();
+    for (name, own) in own_discarded.into_inner() {
+        let Some(&i) = top_level_index.get(name.as_str()) else {
+            continue;
+        };
+        if let Some(d) = discarded.get_mut(i) {
+            let own = own
+                .into_iter()
+                .map(|(kind, name)| DiscardedHostRequirement {
+                    environment: None,
+                    kind: kind.into(),
+                    name,
+                });
+            *d = own.chain(std::mem::take(d)).collect();
+        }
+    }
+    // Which subjects' selections were applied here: the top-level Steps
+    // whose `enableIf` was decided `true`, including one whose group failed
+    // later (its error is collected) or whose selection failed it. Every
+    // other subject's errors are its own, for step input binding, and a
+    // skipped Step's, or a Step's not reached before an abort, are dropped.
+    let mut applied_at_creation = vec![false; top_level.len()];
     for (i, top) in top_level.iter().enumerate() {
         let applied = top.is_some_and(|e| match &built[e] {
             Some(binding::Built::Step(step)) => match &step.binding {
@@ -476,21 +516,14 @@ fn control_flow_job(
                 job::StepBinding::PendingInputs(p) => p.enablement.is_known(),
                 job::StepBinding::Skipped => false,
             },
-            _ => true,
+            Some(binding::Built::Loop(_)) => false,
+            None => aborted.as_ref().is_none_or(|a| a.applied[e]),
         });
         if applied {
             applied_at_creation[i] = true;
             continue;
         }
-        let errors: Vec<job::SelectionError> = all_staged
-            .take_step(i)
-            .into_iter()
-            .map(|e| job::SelectionError {
-                path: e.path,
-                message: e.message,
-            })
-            .collect();
-        environment_selections[i].errors = errors;
+        all_staged.take_step(i);
         if let Some(Some(binding::Built::Step(step))) = top.map(|e| &mut built[e]) {
             if let job::StepBinding::PendingInputs(p) = &mut step.binding {
                 // A selection with nothing to apply was not stored, but one
@@ -500,6 +533,37 @@ fn control_flow_job(
                 }
             }
         }
+    }
+    // An abort is reported alone, unless the Steps whose selections were
+    // applied before it have selection errors: then those are reported,
+    // with the abort's own when it is a validation error, as ENV_PARAMS
+    // reports every Step's.
+    if let Some(aborted) = aborted {
+        if all_staged.is_empty() {
+            return Err(aborted.error);
+        }
+        match aborted.error {
+            ModelError::ModelValidation(ve) => {
+                all_staged
+                    .at(staged::Stage::Step8, staged::ANY, staged::ANY)
+                    .errors
+                    .extend(
+                        ve.errors
+                            .into_iter()
+                            .map(|e| staged::prefixed(&job_prefix, e)),
+                    );
+            }
+            other => return Err(other),
+        }
+        finish_errors(
+            check_errors,
+            staged::StagedErrors::default(),
+            all_staged,
+            !attached.is_empty(),
+        )?;
+        return Err(ModelError::DecodeValidation(
+            "internal error: an aborted job creation reported no error".to_string(),
+        ));
     }
     let external::Selected {
         mut job,
@@ -545,9 +609,8 @@ fn control_flow_job(
         }
         if let Some(disabled) = disabled_environments.get_mut(i) {
             disabled.step_environments = if decided {
-                job_template
-                    .step_templates()
-                    .nth(i)
+                step_templates
+                    .get(i)
                     .into_iter()
                     .flat_map(|st| st.step.step_environments.iter().flatten())
                     .map(|e| e.name.clone())
@@ -578,14 +641,20 @@ fn control_flow_job(
         }
     }
     // Each loop's body Steps' selections, for their instances.
+    let mut body_selections: std::collections::HashMap<usize, Vec<job::EnvironmentSelection>> =
+        std::collections::HashMap::new();
+    for (st, sel) in step_templates.iter().zip(&environment_selections) {
+        if st.body_index.is_some() {
+            body_selections
+                .entry(st.entry_index)
+                .or_default()
+                .push(sel.clone());
+        }
+    }
     for job_loop in &mut loops {
-        let entry = job_loop.entry_index;
-        let selections: Vec<job::EnvironmentSelection> = job_template
-            .step_templates()
-            .zip(&environment_selections)
-            .filter(|(st, _)| st.entry_index == entry && st.body_index.is_some())
-            .map(|(_, sel)| sel.clone())
-            .collect();
+        let selections = body_selections
+            .remove(&job_loop.entry_index)
+            .unwrap_or_default();
         // None when no body Step has one to apply.
         if selections.iter().any(|s| !s.is_empty()) {
             job_loop.body_environment_selections = selections;
@@ -1130,7 +1199,8 @@ fn instantiate_steps_with_binding(
     budgets: EvalBudgets,
     selections: &[job::EnvironmentSelection],
     check_errors: &mut crate::error::ValidationErrors,
-) -> Result<Vec<Option<binding::Built>>, ModelError> {
+    own_discarded: &binding::OwnDiscarded,
+) -> Result<(Vec<Option<binding::Built>>, Option<Aborted>), ModelError> {
     use crate::template::StepEntry;
     let n = job_template.steps.len();
     // Validation rejects a cycle; template order is a safe fallback.
@@ -1150,12 +1220,16 @@ fn instantiate_steps_with_binding(
         has_expr,
         limits,
         budgets,
+        own_discarded: Some(own_discarded),
     };
     let mut built: Vec<Option<binding::Built>> = vec![None; n];
     let mut step_errors: Vec<crate::error::ValidationErrors> =
         (0..n).map(|_| Default::default()).collect();
     // u128, so the Job total is compared and reported exactly.
     let mut committed: u128 = 0;
+    // Whether each entry not built applied its Environment selection
+    // before it failed.
+    let mut applied = vec![false; n];
     for i in order {
         match &job_template.steps[i] {
             StepEntry::Step(st) => {
@@ -1172,11 +1246,22 @@ fn instantiate_steps_with_binding(
                     Err(binding::GroupFailure {
                         failure: binding::Failure::Collected(errors),
                         ..
-                    }) => step_errors[i] = errors,
+                    }) => {
+                        applied[i] = true;
+                        step_errors[i] = errors;
+                    }
+                    // Its errors are in the caller's selection errors.
                     Err(binding::GroupFailure {
-                        failure: binding::Failure::Abort(e),
+                        failure: binding::Failure::Selection(_),
                         ..
-                    }) => return Err(e),
+                    }) => applied[i] = true,
+                    Err(binding::GroupFailure {
+                        group,
+                        failure: binding::Failure::Abort(error),
+                    }) => {
+                        applied[i] = group != job::MaterializationGroup::Enablement;
+                        return Ok((built, Some(Aborted { error, applied })));
+                    }
                 }
             }
             StepEntry::Loop(l) => {
@@ -1184,9 +1269,9 @@ fn instantiate_steps_with_binding(
                 match loops::bind_loop(&cx, i, l, None, &inputs) {
                     Ok(job_loop) => built[i] = Some(binding::Built::Loop(job_loop)),
                     Err(binding::GroupFailure {
-                        failure: binding::Failure::Abort(e),
+                        failure: binding::Failure::Abort(error) | binding::Failure::Selection(error),
                         ..
-                    }) => return Err(e),
+                    }) => return Ok((built, Some(Aborted { error, applied }))),
                     Err(binding::GroupFailure {
                         failure: binding::Failure::Collected(errors),
                         ..
@@ -1198,5 +1283,13 @@ fn instantiate_steps_with_binding(
     for errors in step_errors {
         check_errors.errors.extend(errors.errors);
     }
-    Ok(built)
+    Ok((built, None))
+}
+
+/// A Job creation that a Step's or a loop's failed group stopped: the
+/// error, and for each entry of the template's `steps` whether its
+/// Environment selection was applied before then.
+struct Aborted {
+    error: ModelError,
+    applied: Vec<bool>,
 }

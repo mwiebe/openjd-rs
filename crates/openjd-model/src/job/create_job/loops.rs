@@ -696,6 +696,7 @@ macro_rules! bind_context {
             has_expr: $has_expr,
             limits: $limits,
             budgets: EvalBudgets::from_ctx($ctx),
+            own_discarded: None,
         }
     };
 }

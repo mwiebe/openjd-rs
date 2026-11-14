@@ -119,8 +119,9 @@ struct RunContext {
     started_at: Instant,
     tasks_run: usize,
     session_failed: bool,
-    /// The Environment whose entering failed the Session, if one did, so a
-    /// Step that fails because of it is not said to have failed a Task.
+    /// Why an Environment action failed the Session outside a Task, if one
+    /// did (`its Environment 'E' failed to enter`), so a Step that fails
+    /// because of it is not said to have failed a Task.
     failed_environment: Option<String>,
     /// The Session's working directory, once the Session has ended with
     /// `--preserve`.
@@ -288,18 +289,21 @@ impl RunContext {
                     }
                 }
                 self.session_failed = true;
-                self.failed_environment = Some(name.to_string());
+                self.failed_environment = Some(format!("its Environment '{name}' failed to enter"));
             }
         }
     }
 
     /// Set why `slot` failed when the run failed or stopped while it ran:
-    /// an Environment that failed to enter, or an interruption.
+    /// an interruption, or an Environment action that failed (an `onEnter`
+    /// of the Step's, or an `onExit` while the Session moved to the Step's
+    /// Environments).
     fn record_failure_reason(&mut self, sim: &mut simulator::Simulator, slot: simulator::Slot) {
-        if let Some(name) = self.failed_environment.take() {
-            sim.set_reason(slot, &format!("its Environment '{name}' failed to enter"));
-        } else if self.session_failed && self.interrupted.load(Ordering::SeqCst) {
+        let environment = self.failed_environment.take();
+        if self.session_failed && self.interrupted.load(Ordering::SeqCst) {
             sim.set_reason(slot, "the run was interrupted");
+        } else if let Some(reason) = environment {
+            sim.set_reason(slot, &reason);
         }
     }
 
@@ -326,6 +330,9 @@ impl RunContext {
             {
                 eprintln!("ERROR: Environment teardown failed: {e}");
                 self.session_failed = true;
+                self.failed_environment.get_or_insert_with(|| {
+                    format!("Environment '{}' failed to exit", entered.name)
+                });
             }
         }
     }

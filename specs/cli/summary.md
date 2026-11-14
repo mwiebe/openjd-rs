@@ -248,7 +248,9 @@ parameter definitions are arrays of `{"name", "type"}` objects. Optional fields
 empty. `environment_parameters` is an array of `{"environment", "document", "values"}`
 objects whose `values` are `{"name", "type", "value"}` objects, with the same strings as the
 human-readable form. With `ENV_PARAMS`, each Step also has `session_environments`, an array
-of `{"name", "source"}` objects (`source` is the declaring document, or `stepEnvironments`),
+of `{"name", "source"}` objects (`source` is the declaring document, or `stepEnvironments`;
+with `CONTROL_FLOW`, a Step Environment whose `enableIf` is not decided yet also has
+`"enable_if_undecided": true`),
 when an `enableIf` disabled or an `exclusiveGroup` superseded any, `disabled_environments`,
 `{"name", "source", "status"}` objects with `status` `disabled` or `superseded`, plus
 `"exclusive_group"` when the Environment has one and, on a superseded one, `"superseded_by"`,
@@ -329,7 +331,8 @@ For a template that lists `CONTROL_FLOW`:
   not decided its Step Environments' `enableIf` (RFC 0011 `<Environment>` item 4). Its
   `Session environments:` list marks each one that has an `enableIf` as `(stepEnvironments,
   if its enableIf is true)`, and its `Disabled environments:` list leaves the Step
-  Environments out.
+  Environments out. In JSON and YAML the entry keeps `source: stepEnvironments` and adds
+  `enable_if_undecided: true`.
 * **Job outputs** are listed after the Environments, with their types and units, and
   either the value `create_job` evaluated or the `Steps.*` symbols each waits on that are
   not concrete at creation (`common::concrete_at_creation`, decided from the Steps'
@@ -425,6 +428,10 @@ struct StepInfo<'a> {
     deps: Vec<String>,
     env_params: Vec<EnvParamInfo>,
     env_params_details: Option<EnvParamsDetails<'a>>, // Some with ENV_PARAMS
+    state: Option<&'static str>,         // CONTROL_FLOW only
+    binding_lines: Vec<String>,          // a pending Step's group lines
+    binding_json: Option<serde_json::Value>,
+    loop_info: Option<LoopInfo>,         // for a loop's entry
 }
 
 struct EnvParamsDetails<'a> {
@@ -445,16 +452,13 @@ struct DiscardedInfo {
 struct SessionEnvInfo {
     name: String,
     source: String,                      // the declaring document, or `stepEnvironments`
+    enable_if_undecided: bool,           // CONTROL_FLOW: a Step Environment not decided yet
 }
 
 struct EnvParamInfo {
     environment: String,
     document: String,                    // `JobTemplate` or the --environment path
     values: Vec<(String, String, String)>, // (name, TYPE, display value), in name order
-    state: Option<&'static str>,         // CONTROL_FLOW only
-    binding_lines: Vec<String>,          // a pending Step's group lines
-    binding_json: Option<serde_json::Value>,
-    loop_info: Option<LoopInfo>,         // for a loop's entry
 }
 
 struct LoopInfo {                        // see Loops

@@ -222,6 +222,14 @@ pub struct Step {
     /// list, so [`Step::same_environments`] can compare the field directly.
     /// The Step's own `step_environments` are also in its Environment set,
     /// entered after these, and are not listed here.
+    ///
+    /// With `CONTROL_FLOW`, the Step's Environment selection is applied
+    /// only once its `enableIf` is `true` (RFC 0011 `<Environment>` item
+    /// 3): until then this field and
+    /// [`environment_parameters`](Self::environment_parameters) are `None`
+    /// and the selection waits in
+    /// [`PendingBinding::environment_selection`](PendingBinding::environment_selection),
+    /// so a caller enters a Step's Environments only once it is bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<Vec<EnvironmentRef>>,
     /// The Step's output variable declarations (`CONTROL_FLOW`), or `None`
@@ -231,7 +239,8 @@ pub struct Step {
     /// The Step's binding state (`CONTROL_FLOW`): [`StepBinding::Bound`]
     /// unless the Step is pending inputs or skipped. A pending Step keeps
     /// `parameter_space`, `host_requirements`, and `resolved_symtab` as
-    /// `None`; a skipped Step keeps them `None` for good.
+    /// `None`, and until its `enableIf` is `true` also `environments` and
+    /// `environment_parameters`; a skipped Step keeps them `None` for good.
     #[serde(default, skip_serializing_if = "StepBinding::is_bound")]
     pub binding: StepBinding,
     /// The path-typed `Steps.*` values stored in `resolved_symtab` in their
@@ -245,7 +254,8 @@ impl Step {
     /// Whether this Step's Sessions enter the Job Environment `name`
     /// declared by `document` (Template Schemas §4 item 4): true for every
     /// Job Environment when [`environments`](Self::environments) is `None`,
-    /// else when it lists `(document, name)`.
+    /// else when it lists `(document, name)`. Meaningful for a bound Step:
+    /// a pending one's `environments` may not be set yet (`CONTROL_FLOW`).
     #[must_use]
     pub fn enters_environment(&self, document: &Document, name: &str) -> bool {
         self.environments.as_ref().is_none_or(|refs| {

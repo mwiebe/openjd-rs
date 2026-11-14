@@ -634,7 +634,8 @@ for `StepEnvironmentStatus`, which gained `exclusive_group` and `superseded_by`.
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need
-none: resolution by name of each entry whose `enableIf` is known to be
+none (with CONTROL_FLOW, the per-Step ones only for a Step known to be
+enabled; an ambiguous name and the attachment-level errors always): resolution by name of each entry whose `enableIf` is known to be
 `true` (absent, the boolean scalar, or an expression whose value template
 validation knows, §7.6 rule 5; any other is left to job creation),
 constraint 5; constraint 7 over the attachments that apply to each Step
@@ -1520,8 +1521,12 @@ pub struct job::Step {
     pub resolved_symtab: Option<SerializedSymbolTable>,
     /// ENV_PARAMS effective values, one entry per Environment the Step's
     /// Sessions enter that declares parameters (none for one its
-    /// `enableIf` disabled or its group superseded). Serde: default,
-    /// skipped when `None`.
+    /// `enableIf` disabled or its group superseded). With CONTROL_FLOW, a pending Step's
+    /// Environment selection is applied only once its `enableIf` is
+    /// `true`: until then it is `None` and the selection is in
+    /// `PendingBinding::environment_selection`, so a caller enters a Step's
+    /// Environments only once it is bound. Serde:
+    /// default, skipped when `None`.
     pub environment_parameters: Option<Vec<EnvironmentParameterValues>>,
     /// ENV_PARAMS: the Job Environments the Step's Sessions enter, in
     /// `Job::job_environments` order, by `activation`, the Step's entries
@@ -1530,13 +1535,19 @@ pub struct job::Step {
     /// Environment Template that does not list ENV_PARAMS), each
     /// Environment's own `enableIf`, and
     /// each `exclusiveGroup` (§4 item 7); `None` means every one, and a
-    /// created Job never holds `Some` of the full list. Serde: default,
-    /// skipped when `None`.
+    /// created Job never holds `Some` of the full list. With CONTROL_FLOW, a pending Step's
+    /// Environment selection is applied only once its `enableIf` is
+    /// `true`: until then this is `None` and the selection is in
+    /// `PendingBinding::environment_selection`, so a caller enters a Step's
+    /// Environments only once it is bound. Serde:
+    /// default, skipped when `None`.
     pub environments: Option<Vec<EnvironmentRef>>,
     /// CONTROL_FLOW: the Step's output declarations, or `None`.
     pub output_variables: Option<Vec<OutputVariable>>,
     /// CONTROL_FLOW: the binding state. A pending or skipped Step keeps
-    /// `parameter_space`, `host_requirements`, and `resolved_symtab` `None`.
+    /// `parameter_space`, `host_requirements`, and `resolved_symtab` `None`,
+    /// and, until its `enableIf` is `true`, `environments` and
+    /// `environment_parameters` `None` too.
     pub binding: StepBinding,
     /// CONTROL_FLOW: path-typed `Steps.*` values stored in
     /// `resolved_symtab` in submission form, recorded by
@@ -1546,7 +1557,8 @@ pub struct job::Step {
 
 impl job::Step {
     /// Whether the Step's Sessions enter the Job Environment `name` of
-    /// `document`.
+    /// `document`. Meaningful for a bound Step: a pending one's
+    /// `environments` may not be set yet (CONTROL_FLOW).
     #[must_use] pub fn enters_environment(&self, document: &Document, name: &str) -> bool;
     /// `self.environments == other.environments`: whether a Session can run
     /// both Steps' Tasks without exiting and entering Job Environments

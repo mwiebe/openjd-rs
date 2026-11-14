@@ -565,7 +565,7 @@ async fn run_loop(
             ))
             .await;
             if ctx.is_stopping() {
-                if ctx.failed_environment.is_some() {
+                if ctx.failed_environment.is_some() && !ctx.interrupted.load(Ordering::SeqCst) {
                     ctx.record_failure_reason(sim, slot);
                     sim.finish_step(slot, true, false)?;
                 } else {

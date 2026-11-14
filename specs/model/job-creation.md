@@ -1457,7 +1457,10 @@ for the order and number of errors: job creation reports them in §7.4.1 order a
 step after step 4 for a Step with an error from steps 1–4 (see
 [Error order](#error-order)), while this function reports every violation it is
 certain of, in its own order (so it can report a Step's value errors that job creation
-reports only once the Step's step 1–4 errors are fixed):
+reports only once the Step's step 1–4 errors are fixed). With `CONTROL_FLOW`, the per-Step
+checks below are made only for a Step known to be enabled (see
+[validation.md](validation.md#known-to-be-enabled-control_flow)); an ambiguous name and the
+attachment-level errors are reported for every Step:
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
    for an unreachable attachment is reported when it certainly applies to some Step (by its
@@ -1708,7 +1711,12 @@ error it holds:
   abort `create_job` with that error alone (a Step Environment's `enableIf`
   belongs to the remaining group, so its error is collected), as an invalid parameter does — also for a Step that would
   stay pending. Because Steps are bound in dependency order, the error
-  reported is the first in that order.
+  reported is the first in that order. When a Step bound before it had its Environment
+  selection applied with errors, those are reported too, with the abort's own (as
+  `ENV_PARAMS` reports every Step's selection errors).
+* A Step whose Environment selection is applied with errors fails its enablement group
+  with them and evaluates nothing else; at Job creation they are reported with the other
+  selection errors, in §7.4.1 order (`Failure::Selection`).
 
 Whether this path is taken, and whether the `CONTROL_FLOW` range rules apply, is decided
 by the template's own `extensions`, not by the context, which may enable more: a template
@@ -1740,7 +1748,7 @@ count (36893488147419103228) ...`. Without `CONTROL_FLOW`,
 
 #### Environment selection (`CONTROL_FLOW`)
 
-RFC 0011 `<Environment>` items 2–6. `CONTROL_FLOW` requires `ENV_PARAMS`, so every Step has
+RFC 0011 `<Environment>` items 1–8. `CONTROL_FLOW` requires `ENV_PARAMS`, so every Step has
 an **Environment selection** (`job::EnvironmentSelection`): the part of RFC 0010's job
 creation for one Step that does not depend on whether the Step runs (Template Schemas
 §7.4.1 steps 2 and 4–8, less the Step Environments' `enableIf`, the checks over the whole
@@ -1782,7 +1790,10 @@ selection in `PendingBinding::environment_selection`; one with nothing to apply 
 stored (`EnvironmentSelection::is_empty`). A loop's body Steps' selections are kept in
 `job::Loop::body_environment_selections`, body order, when any has something to apply, and
 each body Step instance applies its Step's. A skipped Step never applies its selection, so
-its errors are not reported. `CreatedJob`'s per-Step lists (`disabled_environments`,
+its errors are not reported. A Step's own discarded host requirements (§3.3), found by its
+host selection group, are listed first in `CreatedJob::discarded_host_requirements` when
+that group is evaluated at creation; `advance_step_binding` has nowhere to report them.
+`CreatedJob`'s per-Step lists (`disabled_environments`,
 `environment_statuses`, `discarded_host_requirements`) are for the top-level Steps, and are
 empty for a Step whose selection was not applied at creation; `warnings` are the
 submission's, whatever the Steps' enablement. For a Step whose selection was applied, a Step

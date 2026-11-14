@@ -985,5 +985,5 @@ via `Result::Err`, which `main()` prints to stderr before exiting with code 1.
 | Signal handling | SIGINT/SIGTERM handlers with `cancel()` | Tokio signal task cancels the session token |
 | Adaptive chunking | In `LocalSession._run_tasks_adaptive_chunking()` | Inline in task iteration loop |
 | Step ordering | `StepDependencyGraph` topological sort for all-steps mode | `StepDependencyGraph` topological sort |
-| Environment conversion | Implicit (Python sessions accept template types) | Explicit `convert_environment_with_symtab()` call |
+| Environment conversion | Implicit (Python sessions accept template types) | Done by job creation; the CLI enters the created Job's `job::Environment`s |
 | Callback | `LocalSession._action_callback()` handles states | No callback; result checked after each await |

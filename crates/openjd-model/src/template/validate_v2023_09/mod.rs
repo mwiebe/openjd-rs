@@ -4,7 +4,7 @@
 
 //! Template validation pipeline.
 //!
-//! Validates templates through multiple passes (passes 5–11 of the decode pipeline):
+//! Validates templates through multiple passes (passes 5–12 of the decode pipeline):
 //! - Pass 5: Enforce limits (EffectiveLimits)
 //! - Pass 6: Structural validation (EffectiveRules)
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)

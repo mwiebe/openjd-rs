@@ -102,7 +102,7 @@ Each of these was checked against the code at `be266ed`, before the prototype, o
 | Per-action environment variables are computed in `run_task` | `crates/openjd-sessions/src/session.rs:1785`, `evaluate_env_vars` at `:2393` |
 | Directives are recognized by `parse_directive` (prefix `openjd_`, then `<kind>: `) and turned into `ActionMessage`s by `process_line`, on the line-reader side; the Session applies them in `apply_message`. A malformed `openjd_env` sends `CancelMarkFailed` | `crates/openjd-sessions/src/action_filter.rs:45`, `crates/openjd-sessions/src/subprocess.rs:1219`, `crates/openjd-sessions/src/session.rs:2286` |
 | A recognized directive line is logged by default; `echo_openjd_directives` (default `true`) hides it when `false` | `crates/openjd-sessions/src/action_filter.rs:211`, the `SessionConfig` doc comment at `crates/openjd-sessions/src/session.rs:141`, and the CLI's setting at `crates/openjd-cli/src/run/execution.rs:289` |
-| Lines are silently truncated at 64 KiB in four places: `truncate_line` on the direct path, and in the helper `LineFramer::accumulate` (which drops the rest of an over-long line before it is decoded), `decode_and_truncate`, and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:62`, `crates/openjd-sessions/src/helper/src/framer.rs:195`, `:89`, `:116` |
+| Lines are silently truncated at 64 KiB in four places: `truncate_line` on the direct path, and in the helper `LineFramer::accumulate` (which drops the rest of an over-long line before it is decoded), `finish_line`, and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:63`, `crates/openjd-sessions/src/helper/src/framer.rs:267`, `:126`, `:182` |
 | Invalid UTF-8 on stdout is decoded with backslash escapes, not rejected | `decode_backslashreplace`, `crates/openjd-sessions/src/subprocess.rs:87` |
 | Under cross-user execution the embedded helper runs the action as the job user and streams `Response::Out` lines; its commands are `Run`, `Cancel`, and `Shutdown` | `crates/openjd-sessions/src/helper/src/protocol.rs:49`, `:69` |
 | `openjd run` runs every Step in topological order in one Session, and stops running Tasks after the first failure | `crates/openjd-cli/src/run/execution.rs:202`, `:341`, `:378` |
@@ -586,7 +586,7 @@ Added after the PRs below were merged. The spec branch now makes a Step's and a 
 ### M7. On ENV_PARAMS
 
 Added when the prototype was ported onto the `ENV_PARAMS` prototype, for spec `1ec05b0` (RFC 0011
-`<Environment>` items 1–6).
+`<Environment>` items 1–8).
 
 * `CONTROL_FLOW` requires `ENV_PARAMS` and `EXPR` (pass 12, `control_flow::check_prerequisites`). A loop's
   `dependencies` may not have an `environment:` entry.
@@ -599,7 +599,9 @@ Added when the prototype was ported onto the `ENV_PARAMS` prototype, for spec `1
   enablement group. A pending Step keeps it in `PendingBinding::environment_selection`, and a loop keeps its body
   Steps' in `job::Loop::body_environment_selections`.
 * Host selection combines the Step's own requirements with the entered Environments' (`ENV_PARAMS` discard rules),
-  and the remaining group decides the Step Environments' `enableIf` and checks the single-wrap-layer rule.
+  and the remaining group decides the Step Environments' `enableIf` and checks the single-wrap-layer rule. The rule is
+  also checked as soon as its outcome is determined, while the remaining group still waits
+  (`binding::early_wrap_layers_error`).
 * Checks that depend on whether a Step runs are made before job creation only for a Step known to be enabled
   (`KnownEnableIfs::step_known_enabled`, §7.6 rule 5).
 * `openjd run` uses `ENV_PARAMS`'s Session sharing between Steps for top-level Steps and body Step instances; its own
@@ -730,8 +732,8 @@ lists `unapply_rules` and `UnmapError`.
   (`subprocess.rs:1279`–`:1282`), which overwrites any earlier `fail_message` when the Session applies it
   (`session.rs:2322`), and RFC 0012 requires the failure to name the output, the problem, and the offending text.
   Pass the collector's message through as the `fail_message`.
-* Truncation: `truncate_line` (`subprocess.rs:62`), and in the helper `LineFramer::accumulate` (`framer.rs:195`),
-  `decode_and_truncate` (`framer.rs:89`), and `fit_out_payload` (`framer.rs:116`), cut long lines silently today.
+* Truncation: `truncate_line` (`subprocess.rs:63`), and in the helper `LineFramer::accumulate` (`framer.rs:267`),
+  `finish_line` (`framer.rs:126`), and `fit_out_payload` (`framer.rs:182`), cut long lines silently today.
   `accumulate` is the one that cuts an ordinary over-long line on the cross-user path; the other two helper sites
   then see an already-capped line. Each must report that it truncated (for the
   helper, a flag in `Response::Out`, which is a protocol change on both sides of the helper boundary). A truncated

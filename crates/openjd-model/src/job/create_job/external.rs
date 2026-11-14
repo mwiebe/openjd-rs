@@ -2065,6 +2065,11 @@ fn certainly_entered_per_step(
 ///   non-literal requirement of the same capability also takes part, job
 ///   creation may name other sources or bounds.
 ///
+/// With `CONTROL_FLOW`, the per-Step checks above are made only for a Step
+/// known to be enabled (Template Schemas §7.6 rule 5, RFC 0011
+/// `<Environment>` item 3); an ambiguous name and the attachment-level
+/// errors are reported for every Step.
+///
 /// Format-string values, non-literal `default`s, and non-literal
 /// `hostRequirements` are not resolved: they need Job Parameter values, so
 /// they are checked when the Job is created. Entries that name an

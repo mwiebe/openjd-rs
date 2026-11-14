@@ -287,6 +287,7 @@ impl From<&openjd_model::DiscardedHostRequirement> for DiscardedInfo {
             environment: d.environment.as_ref().map(|r| SessionEnvInfo {
                 name: r.environment.clone(),
                 source: r.document.to_string(),
+                enable_if_undecided: false,
             }),
         }
     }
@@ -314,6 +315,7 @@ fn status_env_info(s: &openjd_model::StepEnvironmentStatus) -> SessionEnvInfo {
                 s.document.to_string()
             }
         },
+        enable_if_undecided: false,
     }
 }
 
@@ -337,6 +339,7 @@ fn disabled_env_infos(statuses: &openjd_model::StepEnvironmentStatuses) -> Vec<D
                 superseded_by: s.superseded_by.as_ref().map(|w| SessionEnvInfo {
                     name: w.name.clone(),
                     source: w.document.to_string(),
+                    enable_if_undecided: false,
                 }),
             })
         })
@@ -359,6 +362,10 @@ struct SessionEnvInfo {
     /// The declaring document (`JobTemplate` or the `--environment`
     /// path), or `stepEnvironments` for the Step's own.
     source: String,
+    /// A Step Environment whose `enableIf` the Step's remaining group has
+    /// not decided yet (`CONTROL_FLOW`, RFC 0011 `<Environment>` item 4):
+    /// entered only if it is `true`.
+    enable_if_undecided: bool,
 }
 
 /// The Environments `step`'s Sessions enter, in order: the combined Job
@@ -395,6 +402,7 @@ fn session_env_infos(
         .map(|(env, doc)| SessionEnvInfo {
             name: env.name.clone(),
             source: doc.to_string(),
+            enable_if_undecided: false,
         })
         .chain(
             step.step_environments
@@ -402,11 +410,8 @@ fn session_env_infos(
                 .flatten()
                 .map(|env| SessionEnvInfo {
                     name: env.name.clone(),
-                    source: if undecided && has_enable_if(&env.name) {
-                        "stepEnvironments, if its enableIf is true".to_string()
-                    } else {
-                        "stepEnvironments".to_string()
-                    },
+                    source: "stepEnvironments".to_string(),
+                    enable_if_undecided: undecided && has_enable_if(&env.name),
                 }),
         )
         .collect()
@@ -1229,7 +1234,13 @@ impl EnvParamsDetails<'_> {
         let list = |envs: &[SessionEnvInfo]| {
             serde_json::json!(envs
                 .iter()
-                .map(|e| serde_json::json!({"name": e.name, "source": e.source}))
+                .map(|e| {
+                    let mut v = serde_json::json!({"name": e.name, "source": e.source});
+                    if e.enable_if_undecided {
+                        v["enable_if_undecided"] = serde_json::Value::Bool(true);
+                    }
+                    v
+                })
                 .collect::<Vec<_>>())
         };
         m.insert("session_environments".into(), list(self.session_envs));
@@ -1311,7 +1322,12 @@ impl EnvParamsDetails<'_> {
             writeln!(f, "{indent}  (none)")?;
         }
         for e in self.session_envs {
-            writeln!(f, "{indent}  - {} ({})", e.name, e.source)?;
+            let undecided = if e.enable_if_undecided {
+                ", if its enableIf is true"
+            } else {
+                ""
+            };
+            writeln!(f, "{indent}  - {} ({}{undecided})", e.name, e.source)?;
         }
         if !self.disabled_envs.is_empty() {
             writeln!(f, "{indent}Disabled environments:")?;

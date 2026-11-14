@@ -4247,6 +4247,71 @@ mod interruption {
             "the task must be canceled, not run to completion. output:\n{collected}"
         );
     }
+
+    /// An interruption while an Environment is entered is the Step's
+    /// failure reason, not the Environment's failed `onEnter`.
+    #[cfg(unix)]
+    #[test]
+    fn an_interruption_during_an_environment_enter_is_the_steps_failure_reason() {
+        use std::io::Write;
+        let mut job = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        job.write_all(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Intr
+steps:
+- name: S
+  stepEnvironments:
+  - name: SE
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ['-c', "import time; print('READY_FOR_SIGNAL', flush=True); time.sleep(60)"]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+"#
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut child = cli_command(&["run", job.path().to_str().unwrap(), "--output", "json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn openjd");
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader_thread = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut collected = String::new();
+        loop {
+            let line = rx
+                .recv_timeout(Duration::from_secs(60))
+                .expect("onEnter never signaled readiness");
+            collected.push_str(&line);
+            collected.push('\n');
+            if line.contains("READY_FOR_SIGNAL") {
+                break;
+            }
+        }
+        assert!(send_interrupt(&child), "failed to deliver SIGINT");
+        while let Ok(line) = rx.recv_timeout(Duration::from_secs(60)) {
+            collected.push_str(&line);
+            collected.push('\n');
+        }
+        reader_thread.join().expect("reader thread panicked");
+        assert_eq!(child.wait().unwrap().code(), Some(1), "{collected}");
+        let json_start = collected.find("\n{").expect("a JSON result") + 1;
+        let result: serde_json::Value = serde_json::from_str(&collected[json_start..]).unwrap();
+        assert_eq!(result["steps"][0]["reason"], "the run was interrupted");
+    }
 }
 
 // ============================================================
@@ -7993,7 +8058,7 @@ steps:
 - name: S
   stepEnvironments:
   - {name: SOFF, enableIf: "false", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
-  - {name: SON, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  - {name: SON, enableIf: "true", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
   script:
     actions:
       onRun: {command: python, args: ['-c', 'pass']}
@@ -8021,6 +8086,95 @@ steps:
                 "  Session environments:\n    - SE (stepEnvironments, if its enableIf is true)\n"
             ),
             "{stdout}"
+        );
+        // JSON keeps `source` and marks the undecided one.
+        let (code, stdout, stderr) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let steps = result["steps"].as_array().unwrap();
+        assert_eq!(
+            steps[1]["session_environments"],
+            serde_json::json!([{"name": "SON", "source": "stepEnvironments"}])
+        );
+        assert_eq!(
+            steps[2]["session_environments"],
+            serde_json::json!([{"name": "SE", "source": "stepEnvironments",
+                                "enable_if_undecided": true}])
+        );
+    }
+
+    /// The failure reason of a body Step instance whose Job Environment,
+    /// or a Step or body Step instance whose Step Environment, fails to
+    /// enter; and of a Step whose move to its Job Environments fails an
+    /// earlier Environment's `onExit`.
+    #[test]
+    fn an_environment_action_that_fails_is_the_failure_reason() {
+        let fail = "{command: python, args: ['-c', 'import sys; sys.exit(1)']}";
+        let ok = "{command: python, args: ['-c', 'pass']}";
+        let reasons = |template: String| -> Vec<(String, String)> {
+            let job = write(&template);
+            let (code, stdout, stderr) =
+                run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+            assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+            json(&stdout)["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|s| {
+                    Some((
+                        s["name"].as_str()?.to_string(),
+                        s["reason"].as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        };
+        let header = "specificationVersion: jobtemplate-2023-09\n\
+                      extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]\nname: R\n";
+        // A body instance's ON_REQUEST Job Environment fails to enter.
+        let body_job_env = format!(
+            "{header}jobEnvironments:\n- name: E\n  activation: ON_REQUEST\n  \
+             script: {{actions: {{onEnter: {fail}}}}}\nsteps:\n- name: L\n  loop:\n    \
+             until: \"Loop.Iteration >= 0\"\n    maxIterations: 1\n    steps:\n    \
+             - name: B\n      dependencies: [{{environment: E}}]\n      \
+             script: {{actions: {{onRun: {ok}}}}}\n"
+        );
+        assert!(reasons(body_job_env).contains(&(
+            "L[0].B".into(),
+            "its Environment 'E' failed to enter".into()
+        )));
+        // A top-level Step's Step Environment fails to enter.
+        let step_env = format!(
+            "{header}steps:\n- name: S\n  stepEnvironments:\n  - name: SE\n    \
+             script: {{actions: {{onEnter: {fail}}}}}\n  script: {{actions: {{onRun: {ok}}}}}\n"
+        );
+        assert_eq!(
+            reasons(step_env),
+            [("S".into(), "its Environment 'SE' failed to enter".into())]
+        );
+        // A body instance's Step Environment fails to enter.
+        let body_step_env = format!(
+            "{header}steps:\n- name: L\n  loop:\n    until: \"Loop.Iteration >= 0\"\n    \
+             maxIterations: 1\n    steps:\n    - name: B\n      stepEnvironments:\n      \
+             - name: BSE\n        script: {{actions: {{onEnter: {fail}}}}}\n      \
+             script: {{actions: {{onRun: {ok}}}}}\n"
+        );
+        assert!(reasons(body_step_env).contains(&(
+            "L[0].B".into(),
+            "its Environment 'BSE' failed to enter".into()
+        )));
+        // P declines the ON_REQUEST E; C enters it with other values, so
+        // the Session exits P's E first, and its onExit fails.
+        let exit_fails = format!(
+            "{header}jobEnvironments:\n- name: E\n  envParameterDefinitions: [{{name: K, type: STRING, \
+             default: d}}]\n  script: {{actions: {{onEnter: {ok}, onExit: {fail}}}}}\nsteps:\n\
+             - name: P\n  script: {{actions: {{onRun: {ok}}}}}\n- name: C\n  \
+             dependencies: [{{dependsOn: P}}, {{environment: E, parameters: {{K: c}}}}]\n  \
+             script: {{actions: {{onRun: {ok}}}}}\n"
+        );
+        assert_eq!(
+            reasons(exit_fails),
+            [("C".into(), "Environment 'E' failed to exit".into())]
         );
     }
 
