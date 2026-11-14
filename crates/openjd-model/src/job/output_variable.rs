@@ -645,8 +645,8 @@ impl EnvironmentSelection {
     }
 }
 
-/// One error of an [`EnvironmentSelection`], at its path in the
-/// submission.
+/// One error or warning of an [`EnvironmentSelection`], at its path in
+/// the submission.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionError {

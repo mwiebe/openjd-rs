@@ -1023,7 +1023,38 @@ fn create_job_from_template<'a>(
         let mut selections = Vec::new();
         for (i, st) in job_template.step_templates().enumerate() {
             shells.push(instantiate::step_shell(st.step)?);
-            let entry_symtab = binding::creation_scope_symtab(st.step, &symtab, has_expr, ctx)?;
+            let (entry_symtab, let_errors) =
+                binding::creation_scope_symtab(st.step, &st.path(), &symtab, has_expr, ctx)?;
+            if !let_errors.is_empty() {
+                // A `let` an entry reads failed: the entries cannot be
+                // resolved, so the Step's selection fails with the error
+                // (a §7.4.1 step 2 error, which stops the Step), and the
+                // entries are not evaluated.
+                staged
+                    .at(staged::Stage::Step2, i, staged::ANY)
+                    .errors
+                    .extend(let_errors);
+                let mut no_entries = st.step.clone();
+                no_entries.dependencies = no_entries.dependencies.map(|deps| {
+                    deps.into_iter()
+                        .filter(|d| d.environment().is_none())
+                        .collect()
+                });
+                selections.push(
+                    env_params::resolve_step_entries(
+                        &no_entries,
+                        i,
+                        &st.path(),
+                        &entry_symtab,
+                        &job_envs,
+                        env_policy,
+                        false,
+                        &mut staged,
+                    )
+                    .selection,
+                );
+                continue;
+            }
             selections.push(
                 env_params::resolve_step_entries(
                     st.step,

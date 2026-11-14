@@ -313,33 +313,91 @@ pub(super) fn creation_scope_lets(st: &StepTemplate) -> BTreeSet<usize> {
 
 /// The scope of `st`'s `environment:` entries at job creation (RFC 0011
 /// `<Environment>` item 2): the job table, `Step.Name`, and the Step's
-/// [`creation_scope_lets`]. A binding that fails here is left out; its
-/// error is reported by the group that evaluates it.
+/// [`creation_scope_lets`].
+///
+/// Also returns the errors, at `step_path -> let[j]`, of the bindings that
+/// fail and that an entry reads, directly or through another binding: the
+/// entry cannot be resolved, so the error belongs to the Step's
+/// Environment selection, as it stops an `ENV_PARAMS` Step before its
+/// entries are resolved. A binding that fails and that no entry reads is
+/// left to the group that evaluates it.
 pub(super) fn creation_scope_symtab(
     st: &StepTemplate,
+    step_path: &[PathElement],
     symtab: &SymbolTable,
     has_expr: bool,
     ctx: &ValidationContext,
-) -> Result<SymbolTable, ModelError> {
+) -> Result<(SymbolTable, Vec<crate::error::ValidationError>), ModelError> {
     let mut out = symtab.clone();
     if !has_expr {
-        return Ok(out);
+        return Ok((out, Vec::new()));
     }
     out.set("Step.Name", ExprValue::String(st.name.clone()))?;
-    if let Some(bindings) = &st.let_bindings {
-        let include = creation_scope_lets(st);
-        let mut scratch = ValidationErrors::default();
-        crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
-            bindings,
-            &[],
-            &mut out,
-            ctx,
-            openjd_expr::HostContext::None,
-            &mut scratch,
-            |j| include.contains(&j),
-        );
+    let Some(bindings) = &st.let_bindings else {
+        return Ok((out, Vec::new()));
+    };
+    let include = creation_scope_lets(st);
+    let mut scratch = ValidationErrors::default();
+    crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
+        bindings,
+        &path_field(step_path, "let"),
+        &mut out,
+        ctx,
+        openjd_expr::HostContext::None,
+        &mut scratch,
+        |j| include.contains(&j),
+    );
+    if scratch.errors.is_empty() {
+        return Ok((out, Vec::new()));
     }
-    Ok(out)
+    // The failed bindings, and those that read one, however indirectly.
+    let lets = LetRefs::of(st);
+    let let_path = path_field(step_path, "let");
+    let failed_index = |e: &crate::error::ValidationError| match e.path.get(let_path.len()) {
+        Some(PathElement::Index(j)) if e.path.starts_with(&let_path) => Some(*j),
+        _ => None,
+    };
+    let failed: BTreeSet<usize> = scratch.errors.iter().filter_map(failed_index).collect();
+    let profile = template_expr_profile_for(ctx);
+    let reads_failed = |symbols: &mut dyn Iterator<Item = String>| {
+        let (_, used) = lets.expand(symbols.collect());
+        used.iter().any(|j| failed.contains(j))
+    };
+    let entry_reads_failed = st.dependencies.iter().flatten().any(|dep| {
+        if dep.environment().is_none() {
+            return false;
+        }
+        let from_enable_if = dep
+            .enable_if
+            .as_ref()
+            .map(|f| expr_field::accessed_symbols_with_profile(f, &profile))
+            .unwrap_or_default();
+        let from_values = dep
+            .parameters
+            .iter()
+            .flat_map(|p| p.0.values())
+            .flat_map(|v| match v {
+                template::EnvironmentParameterValue::FormatString(fs) => fs.accessed_symbols(),
+                _ => Default::default(),
+            });
+        reads_failed(&mut from_enable_if.into_iter().chain(from_values))
+    });
+    let errors = if entry_reads_failed {
+        scratch
+            .errors
+            .into_iter()
+            .filter(|e| failed_index(e).is_some())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((out, errors))
+}
+
+/// The Expression Language profile of the template scope under `ctx`, with
+/// no host context.
+fn template_expr_profile_for(ctx: &ValidationContext) -> openjd_expr::ExprProfile {
+    ctx.profile.to_expr_profile(openjd_expr::HostContext::None)
 }
 
 pub(super) fn steps_symbols(symbols: impl IntoIterator<Item = String>) -> BTreeSet<String> {

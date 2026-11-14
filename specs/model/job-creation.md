@@ -1813,7 +1813,11 @@ each selection also carries its own in `EnvironmentSelection::warnings`, for the
 report when it applies a selection made later (`openjd run` prints them then);
 one about an attachment (item 4) is reported whatever the Steps' `enableIf`. An entry whose
 `enableIf` fails is still checked for an ambiguous name, reported at Job creation whatever
-its Step's `enableIf` ("What stays at Job creation").
+its Step's `enableIf` ("What stays at Job creation"). A `let` binding that an entry reads and that fails at
+Job creation (`10 // Param.D` with D 0) fails the Step's selection with the binding's error at
+`steps[i] -> let[j]`, as it stops an `ENV_PARAMS` Step before its entries are resolved
+(`binding::creation_scope_symtab`); its entries are then not evaluated, and a skipped Step
+reports nothing.
 
 The checks that depend on whether a Step runs are made before job creation only for a Step
 known to be enabled (see [validation.md](validation.md#known-to-be-enabled-control_flow)):

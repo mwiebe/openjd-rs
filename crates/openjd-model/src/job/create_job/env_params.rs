@@ -1233,8 +1233,18 @@ fn resolve_enable_if(
     };
     match expr_field::resolve(field, &ExprType::BOOL, symtab, &ev) {
         Ok(ExprValue::Bool(b)) => Some(b),
-        // `resolve` returns only values that fit `bool`.
-        Ok(other) => unreachable!("an expression field of type bool resolved to {other:?}"),
+        // `resolve` returns only values that fit `bool`, but one that reads
+        // a symbol that is not concrete resolves to an unresolved value.
+        Ok(other) => {
+            errors.add(
+                &path_field(owner_path, "enableIf"),
+                format!(
+                    "internal error: resolved to {} rather than a bool.",
+                    other.expr_type()
+                ),
+            );
+            None
+        }
         Err(msg) => {
             errors.add(&path_field(owner_path, "enableIf"), msg);
             None

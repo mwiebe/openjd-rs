@@ -297,6 +297,11 @@ pub struct CreatedJob {
     pub job: job::Job,
     /// The document of each `job.job_environments` entry, index for index.
     pub environment_documents: Vec<job::Document>,
+    /// With CONTROL_FLOW, an entry's warning is here only for a Step whose
+    /// selection is applied at Job creation; any other Step's are in its
+    /// `EnvironmentSelection::warnings`, reported when it is applied. The
+    /// per-Step lists below are likewise empty for a Step whose selection
+    /// is not applied at Job creation.
     pub warnings: Vec<SubmissionWarning>,
     /// Per Step of `job`, index for index, the Environments an `enableIf`
     /// on the Environment (§4 item 6) disabled for it, or an earlier one
@@ -1808,6 +1813,7 @@ impl job::EnvironmentSelection {
     #[must_use] pub fn is_empty(&self) -> bool;
 }
 
+/// One error or warning of an `EnvironmentSelection`, at its path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct job::SelectionError {

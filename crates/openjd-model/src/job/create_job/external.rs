@@ -147,6 +147,12 @@ pub struct CreatedJob {
     /// are named implicitly" item 3); and an enabled `required: false`
     /// entry whose `parameters` an attached Environment that declares none
     /// ignores (§3.2.1 item 1).
+    ///
+    /// With `CONTROL_FLOW`, an entry's warning is part of its Step's
+    /// Environment selection, so it is here only for a Step whose selection
+    /// is applied at Job creation; any other Step's are in its
+    /// [`EnvironmentSelection::warnings`](job::EnvironmentSelection::warnings),
+    /// for the caller to report when the selection is applied.
     pub warnings: Vec<SubmissionWarning>,
     /// For each Step of `job`, index for index, the Environments disabled
     /// for that Step (Template Schemas §3.2.2): those its own `enableIf`
@@ -156,6 +162,10 @@ pub struct CreatedJob {
     /// [`environments`](job::Step::environments) and
     /// [`step_environments`](job::Step::step_environments). For display;
     /// empty for a Step with none.
+    ///
+    /// With `CONTROL_FLOW`, the per-Step lists cover the top-level Steps
+    /// and are empty for a Step whose Environment selection is not applied
+    /// at Job creation.
     pub disabled_environments: Vec<StepDisabledEnvironments>,
     /// For each Step of `job`, index for index, every Environment the Step
     /// considered, in the Job's Environment order, with whether its
@@ -164,12 +174,20 @@ pub struct CreatedJob {
     /// named no Environment. A superset of
     /// [`disabled_environments`](Self::disabled_environments), which is its
     /// `Disabled` and `Superseded` items.
+    ///
+    /// With `CONTROL_FLOW`, the per-Step lists cover the top-level Steps
+    /// and are empty for a Step whose Environment selection is not applied
+    /// at Job creation.
     pub environment_statuses: Vec<StepEnvironmentStatuses>,
     /// For each Step of `job`, index for index, the host requirements that
     /// resolved to nothing for that Step and were discarded (`ENV_PARAMS`,
     /// Template Schemas §3.3): the Step's own first, then each entered
     /// Environment's, in Job order, each in written order with amounts
     /// first. For display; empty for a Step with none.
+    ///
+    /// With `CONTROL_FLOW`, the per-Step lists cover the top-level Steps
+    /// and are empty for a Step whose Environment selection is not applied
+    /// at Job creation.
     pub discarded_host_requirements: Vec<Vec<DiscardedHostRequirement>>,
 }
 

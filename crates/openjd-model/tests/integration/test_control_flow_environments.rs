@@ -2195,3 +2195,135 @@ steps:
         ],
     );
 }
+
+// ── Round 7 ───────────────────────────────────────────────────────
+
+/// Step S's entry reads `x`, which fails for D=0; S's `enableIf` is
+/// `s_enable_if`, and a loop L has a body Step B with the same entry.
+fn failing_let_template(entry: &str, s_enable_if: &str, loop_enable_if: &str) -> JobTemplate {
+    jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: D, type: INT, default: 0}}
+jobEnvironments:
+- name: JE
+  activation: ON_REQUEST
+  envParameterDefinitions: [{{name: Q, type: INT}}]
+  script: {{actions: {{onEnter: {{command: echo, args: ["{{{{Env.Param.Q}}}}"]}}}}}}
+steps:
+- name: S
+  enableIf: "{s_enable_if}"
+  let: ["x = 10 // Param.D"]
+  dependencies: [{{environment: JE, {entry}}}]
+  script: {{actions: {{onRun: {{command: echo, args: [s]}}}}}}
+- name: L
+  enableIf: "{loop_enable_if}"
+  loop:
+    until: "true"
+    maxIterations: 1
+    steps:
+    - name: B
+      let: ["x = 10 // Param.D"]
+      dependencies: [{{environment: JE, {entry}}}]
+      script: {{actions: {{onRun: {{command: echo, args: [b]}}}}}}
+"#
+        ),
+        HEADER,
+    )
+}
+
+const S_LET_ERROR: &str = "steps[0] -> let[0]:\n\tInvalid expression in let binding 'x': Division \
+                           by zero";
+
+#[test]
+fn a_let_an_entry_reads_that_fails_fails_the_steps_selection() {
+    for entry in [
+        r#"enableIf: "x > 0", parameters: {Q: 1}"#,
+        r#"parameters: {Q: "{{x}}"}"#,
+    ] {
+        // Enabled at creation: the let error, as without CONTROL_FLOW.
+        let jt = failing_let_template(entry, "true", "false");
+        let err = create_with(&jt, &[], &[]).unwrap_err();
+        assert_errors(&err.to_string(), "JobTemplate", &[S_LET_ERROR]);
+        // Skipped, and a skipped loop's body Step: nothing.
+        let jt = failing_let_template(entry, "Param.D > 0", "false");
+        let job = created(&jt, &[]).job;
+        assert_eq!(step(&job, "S").binding, StepBinding::Skipped, "{entry}");
+    }
+}
+
+#[test]
+fn a_let_an_entry_reads_that_fails_fails_a_body_step_instance() {
+    let jt = failing_let_template(
+        r#"enableIf: "x > 0", parameters: {Q: 1}"#,
+        "Param.D > 0",
+        "true",
+    );
+    let job = created(&jt, &[]).job;
+    let values = job_params_with(&jt, &[], &[]);
+    let progress = openjd_model::job::LoopProgress::new(&job.loops[0]).unwrap();
+    let err = openjd_model::start_iteration(
+        &jt,
+        &values,
+        &template_ctx(&jt),
+        &job,
+        0,
+        &progress,
+        &StepInputs::default(),
+        0,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.starts_with(
+            "Step 'L[0].B' failed in its enablement group:\nModel validation error: 1 validation \
+             error for JobTemplate\nsteps[1] -> loop -> steps[0] -> let[0]:\n\tInvalid \
+             expression in let binding 'x': Division by zero"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_pending_steps_failed_entry_enable_if_fails_its_binding() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: S, type: STRING, default: abc}
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
+steps:
+- name: A
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  enableIf: "Steps.A.Output.Ok"
+  dependencies: [{dependsOn: A}, {environment: E, enableIf: "int(Param.S) > 0"}]
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let job = created(&jt, &[]).job;
+    let err = advance(
+        &jt,
+        &[],
+        &[],
+        &job,
+        "B",
+        "A",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.starts_with(
+            "Step 'B' failed in its enablement group:\nModel validation error: 1 validation \
+             error for JobTemplate\nsteps[1] -> dependencies[1] -> enableIf:\n\tcould not be \
+             evaluated: "
+        ),
+        "{err}"
+    );
+}

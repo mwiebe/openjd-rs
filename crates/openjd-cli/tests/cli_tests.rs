@@ -8268,6 +8268,40 @@ steps:
         assert_eq!(reasons(task_then_exit), [r("S", "FAILED", "a Task failed")]);
     }
 
+    /// A body Step instance pending its `enableIf` prints its entry
+    /// warnings once, when it is enabled, and none when it is skipped.
+    #[test]
+    fn a_pending_body_step_instance_prints_its_warnings_once_enabled() {
+        for (ok, warnings) in [("true", 1), ("false", 0)] {
+            let job = write(&format!(
+                r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Warn
+steps:
+- name: L
+  loop:
+    until: "Loop.Iteration >= 0"
+    maxIterations: 1
+    steps:
+    - name: P
+      outputVariables: [{{name: Ok, type: BOOL}}]
+      script:
+        actions:
+          onRun: {{command: python, args: ['-c', "print('openjd_output_var: Ok={ok}')"]}}
+    - name: C
+      enableIf: "Steps.P.Output.Ok"
+      dependencies: [{{dependsOn: P}}, {{environment: Missing2, required: false}}]
+      script:
+        actions:
+          onRun: {{command: python, args: ['-c', 'pass']}}
+"#
+            ));
+            let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+            assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+            assert_eq!(stderr.matches("WARNING:").count(), warnings, "{stderr}");
+        }
+    }
+
     /// A Step Environment that step input binding disabled prints that it
     /// is not entered.
     #[test]
@@ -8354,6 +8388,10 @@ steps:
     until: "Loop.Iteration >= 0"
     maxIterations: 1
     steps:
+    - name: C0
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', 'pass']}
     - name: C
       dependencies: [{environment: Missing2, required: false}]
       script:
@@ -8374,7 +8412,7 @@ steps:
             stderr,
             warning("steps[1] -> dependencies[1]", "Missing")
                 + &warning(
-                    "steps[2] -> loop -> steps[0] -> dependencies[0]",
+                    "steps[2] -> loop -> steps[1] -> dependencies[0]",
                     "Missing2"
                 ),
         );
