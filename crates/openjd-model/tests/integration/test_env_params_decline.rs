@@ -20,7 +20,8 @@
 //!
 //! A disabled entry's name is resolved, against `jobEnvironments` and then
 //! the attached Environments (§3.2.1), to learn the `activation`; one that
-//! matches no attachment has no effect, whatever `required` says.
+//! matches no attachment has no effect, whatever `required` says, and one
+//! that matches several has its effect on each (item 3).
 
 use openjd_model::job::{Document, Job};
 use openjd_model::template::EnvironmentTemplate;
@@ -598,24 +599,79 @@ fn a_disabled_required_entry_naming_no_attachment_has_no_effect() {
     }
 }
 
+/// The §3.2.1 item 3 error for Step A's `dependencies[0]`, an enabled
+/// entry naming `Conda`, which two attachments define.
+const AMBIGUOUS: &str = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
+                         Environment 'Conda', which 2 attached Environment Templates define \
+                         (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                         exactly one (Template Schemas §3.2.1 item 3).";
+
 #[test]
-fn a_disabled_entry_naming_an_ambiguous_attachment_is_an_error() {
-    // §3.2.1 item 3 applies to a disabled entry: it must match exactly one
-    // attachment for its activation to be known.
+fn a_disabled_entry_naming_an_ambiguous_name_applies_to_each_attachment() {
+    // §3.2.1 item 3: a disabled entry whose name two attachments define is
+    // not an error. It has a disabled entry's effect on each of them: it
+    // declines each `BY_DEFAULT` one, has no effect on an `ON_REQUEST` one,
+    // and is an error for each `ALWAYS` one.
+    let src = external_entry("false");
     let by_default = conda("BY_DEFAULT");
-    let expected = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
-                    Environment 'Conda', which 2 attached Environment Templates define \
-                    (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
-                    exactly one (Template Schemas §3.2.1 item 3).";
-    let err = check(&external_entry("false"), &[&by_default, &by_default]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[expected]);
-    create_err(
-        &external_entry("false"),
-        &[&by_default, &by_default],
-        &[],
-        "Submission",
-        &[expected],
+    let on_request = conda("ON_REQUEST");
+    let always = conda("ALWAYS");
+    let first = Document::environment_template(0, None);
+    let second = Document::environment_template(1, None);
+    assert_eq!(
+        check(&src, &[&by_default, &by_default]).unwrap(),
+        Vec::<String>::new()
     );
+    let created = create_ok(&src, &[&by_default, &by_default], &[]);
+    assert!(!enters(&created, 0, &first, "Conda"));
+    assert!(!enters(&created, 0, &second, "Conda"));
+    let statuses: Vec<_> = created.environment_statuses[0]
+        .environments
+        .iter()
+        .map(|e| e.status)
+        .collect();
+    assert_eq!(
+        statuses,
+        [EnvironmentStatus::Declined, EnvironmentStatus::Declined]
+    );
+    // A `BY_DEFAULT` one and an `ON_REQUEST` one: the first is declined, and
+    // the second is not requested.
+    let created = create_ok(&src, &[&by_default, &on_request], &[]);
+    assert!(!enters(&created, 0, &first, "Conda"));
+    assert!(!enters(&created, 0, &second, "Conda"));
+    // A `BY_DEFAULT` one and one from a document that does not list
+    // `ENV_PARAMS`, which behaves as `ALWAYS` and which the entry does not
+    // affect (§4 item 4): only the first is declined.
+    let pre_extension = "specificationVersion: environment-2023-09\nenvironment:\n  name: \
+                         Conda\n  variables: {V: x}\n";
+    assert_eq!(
+        check(&src, &[&by_default, pre_extension]).unwrap(),
+        Vec::<String>::new()
+    );
+    let created = create_ok(&src, &[&by_default, pre_extension], &[]);
+    assert!(!enters(&created, 0, &first, "Conda"));
+    assert!(enters(&created, 0, &second, "Conda"));
+    // Two `ALWAYS` ones: the error of a disabled entry for each.
+    let expected = [
+        always_error(
+            "JobTemplate -> ",
+            0,
+            0,
+            "A",
+            "'Conda' (EnvironmentTemplate[0])",
+        ),
+        always_error(
+            "JobTemplate -> ",
+            0,
+            0,
+            "A",
+            "'Conda' (EnvironmentTemplate[1])",
+        ),
+    ];
+    let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+    let err = check(&src, &[&always, &always]).unwrap_err();
+    assert_errors(&err.to_string(), "Submission", &expected);
+    create_err(&src, &[&always, &always], &[], "Submission", &expected);
 }
 
 // ── WRAP_ACTIONS single-layer rule (§4, after item 10) ──────────────
@@ -754,10 +810,9 @@ environment:
 }
 
 #[test]
-fn an_ambiguous_disabled_entry_reports_only_the_ambiguity() {
-    // Neither attached Conda is applied to A, so their hostRequirements do
-    // not combine with A's own: the §3.2.1 item 3 error is the only one,
-    // at check and at job creation.
+fn a_disabled_entry_declining_ambiguous_attachments_leaves_out_their_host_requirements() {
+    // A declines both attached Conda, so their hostRequirements do not
+    // combine with A's own, at check or at job creation (§3.2.1 item 3).
     let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -770,44 +825,66 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let conda = gpu_attachment("Conda");
-    let expected = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
-                    Environment 'Conda', which 2 attached Environment Templates define \
-                    (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
-                    exactly one (Template Schemas §3.2.1 item 3).";
-    let err = check(src, &[&conda, &conda]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[expected]);
-    create_err(src, &[&conda, &conda], &[], "Submission", &[expected]);
-}
-
-#[test]
-fn an_ambiguous_entry_with_an_expression_enable_if_is_reported_at_check() {
-    // A disabled entry's name is resolved as an enabled one's is, so the
-    // §3.2.1 item 3 error holds whatever the expression resolves to, and
-    // check reports it (§7.6 rule 5), as job creation does.
-    let conda = conda("BY_DEFAULT");
-    let expected = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
-                    Environment 'Conda', which 2 attached Environment Templates define \
-                    (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
-                    exactly one (Template Schemas §3.2.1 item 3).";
-    for enable_if in [r#""false""#, MODE_ON] {
-        let src = external_entry(enable_if);
-        let err = check(&src, &[&conda, &conda]).unwrap_err();
-        assert_errors(&err.to_string(), "Submission", &[expected]);
-        create_err(&src, &[&conda, &conda], &[], "Submission", &[expected]);
-        create_err(
-            &src,
-            &[&conda, &conda],
-            &[("Mode", "on")],
-            "Submission",
-            &[expected],
-        );
+    assert_eq!(check(src, &[&conda, &conda]).unwrap(), Vec::<String>::new());
+    let created = create_ok(src, &[&conda, &conda], &[]);
+    for doc in 0..2 {
+        assert!(!enters(
+            &created,
+            0,
+            &Document::environment_template(doc, None),
+            "Conda"
+        ));
     }
+    assert_eq!(requirement_names(&created.job, 0), ["amount.worker.gpu"]);
 }
 
 #[test]
-fn an_ambiguous_expression_entry_reports_only_the_ambiguity_at_check() {
-    // Neither ALWAYS Conda is applied to A, so their host requirements do
-    // not combine with A's own at check, as at job creation.
+fn an_ambiguous_entry_is_an_error_only_where_it_is_enabled() {
+    // An entry whose `enableIf` is known to be `false` declines both
+    // attachments. One whose `enableIf` is not known is not reported at
+    // check, since the §3.2.1 item 3 error holds only if it is enabled
+    // (§7.6 rule 5), and job creation reports it only where it is.
+    let conda = conda("BY_DEFAULT");
+    let src = external_entry(r#""false""#);
+    assert_eq!(
+        check(&src, &[&conda, &conda]).unwrap(),
+        Vec::<String>::new()
+    );
+    create_ok(&src, &[&conda, &conda], &[]);
+    let src = external_entry(MODE_ON);
+    assert_eq!(
+        check(&src, &[&conda, &conda]).unwrap(),
+        Vec::<String>::new()
+    );
+    let created = create_ok(&src, &[&conda, &conda], &[("Mode", "off")]);
+    assert!(!enters(
+        &created,
+        0,
+        &Document::environment_template(0, None),
+        "Conda"
+    ));
+    create_err(
+        &src,
+        &[&conda, &conda],
+        &[("Mode", "on")],
+        "Submission",
+        &[AMBIGUOUS],
+    );
+    // An enabled entry is an error at check too.
+    let src = external_entry("true");
+    let err = check(&src, &[&conda, &conda]).unwrap_err();
+    assert_errors(&err.to_string(), "Submission", &[AMBIGUOUS]);
+    create_err(&src, &[&conda, &conda], &[], "Submission", &[AMBIGUOUS]);
+}
+
+#[test]
+fn an_ambiguous_expression_entry_for_always_attachments_is_reported_at_job_creation() {
+    // The entry's `enableIf` is not known at check. Enabled, it is the
+    // §3.2.1 item 3 error; disabled, it is a disabled entry's error for
+    // each `ALWAYS` Conda. Neither holds for every value, so check reports
+    // neither (§7.6 rule 5), and it does not combine either Conda's host
+    // requirements with A's own, as job creation, which stops the Step,
+    // does not.
     let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -824,21 +901,38 @@ steps:
         "  envParameterDefinitions",
         "  activation: ALWAYS\n  envParameterDefinitions",
     );
-    let expected = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
-                    Environment 'Conda', which 2 attached Environment Templates define \
-                    (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
-                    exactly one (Template Schemas §3.2.1 item 3).";
-    let err = check(src, &[&conda, &conda]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[expected]);
-    for mode in ["on", "off"] {
-        create_err(
-            src,
-            &[&conda, &conda],
-            &[("Mode", mode)],
-            "Submission",
-            &[expected],
-        );
-    }
+    assert_eq!(check(src, &[&conda, &conda]).unwrap(), Vec::<String>::new());
+    create_err(
+        src,
+        &[&conda, &conda],
+        &[("Mode", "on")],
+        "Submission",
+        &[AMBIGUOUS],
+    );
+    let expected = [
+        always_error(
+            "JobTemplate -> ",
+            0,
+            0,
+            "A",
+            "'Conda' (EnvironmentTemplate[0])",
+        ),
+        always_error(
+            "JobTemplate -> ",
+            0,
+            0,
+            "A",
+            "'Conda' (EnvironmentTemplate[1])",
+        ),
+    ];
+    let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+    create_err(
+        src,
+        &[&conda, &conda],
+        &[("Mode", "off")],
+        "Submission",
+        &expected,
+    );
 }
 
 #[test]
@@ -874,11 +968,12 @@ steps:
             "'Conda' (EnvironmentTemplate[0])",
         )],
     );
+    // Enabled, an entry naming two attachments is an error.
     let conda = conda("BY_DEFAULT");
     create_err(
         src,
         &[&conda, &conda],
-        &[],
+        &[("Mode", "on")],
         "Submission",
         &[
             "JobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tnames Environment \

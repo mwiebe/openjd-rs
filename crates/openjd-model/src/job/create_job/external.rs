@@ -520,12 +520,13 @@ impl<'a> Attachments<'a> {
             ));
             contexts.push(att_ctx);
         }
-        // §3.2.1 item 3: an entry naming an Environment that two or more
-        // attachments define is rejected, so no entry can supply their
-        // parameters. One without a `default` rejects the submission; say
-        // so once per attachment, rather than per Step with "must supply"
-        // advice that an entry could only follow by naming the ambiguous
-        // name.
+        // §3.2.1 item 3: an enabled entry naming an Environment that two or
+        // more attachments define is rejected, so no entry can supply their
+        // parameters (a disabled one can only decline a `BY_DEFAULT` one).
+        // One without a `default` rejects the submission where it applies
+        // to a Step; say so once per attachment, rather than per Step with
+        // "must supply" advice that an entry could only follow by naming
+        // the ambiguous name.
         for (doc, att) in attached.iter().enumerate() {
             let env = att.template.environment();
             let Some(others) = by_name.get(env.name.as_str()).filter(|d| d.len() > 1) else {
@@ -544,14 +545,22 @@ impl<'a> Attachments<'a> {
                 ),
                 format!(
                     "Environment '{}' is defined by {} attached Environment Templates ({}), so \
-                     no 'environment:' dependency can reach it (Template Schemas §3.2.1 item \
-                     3), and it has parameters without a default that no Step can supply: {}. \
-                     {}, and the submission is rejected (§3.2.1).",
+                     no enabled 'environment:' dependency can reach it (Template Schemas \
+                     §3.2.1 item 3), and it has parameters without a default that no Step can \
+                     supply: {}. {}, and the submission is rejected (§3.2.1).",
                     env.name,
                     others.len(),
                     capped_name_list(others.iter().map(|d| doc_names[*d].as_str()), others.len()),
                     capped_name_list(required.iter().copied(), required.len()),
-                    entered(env)
+                    // A disabled entry can decline a `BY_DEFAULT` one, and
+                    // this error is reported only where some Step does not.
+                    if env.activation() == EnvironmentActivation::ByDefault {
+                        "Its activation is BY_DEFAULT, and a Step does not decline it, so it \
+                         applies to that Step whatever its enableIf and exclusiveGroup (§3.2 \
+                         constraint 7)"
+                    } else {
+                        entered(env)
+                    }
                 ),
             ));
         }
@@ -628,8 +637,7 @@ impl<'a> Attachments<'a> {
         errors: &mut ValidationErrors,
         warnings: &mut Vec<SubmissionWarning>,
     ) -> EntryMatch<'_> {
-        let candidates = self.by_name.get(environment).map_or(&[][..], Vec::as_slice);
-        match candidates {
+        match self.candidates(environment) {
             [] => {
                 let attached_list = if self.doc_names.is_empty() {
                     "no Environment Template is attached".to_string()
@@ -682,6 +690,13 @@ impl<'a> Attachments<'a> {
                 EntryMatch::Many(many)
             }
         }
+    }
+
+    /// The attachments that define an Environment named `environment`, in
+    /// the order they are attached: none, one, or, for an ambiguous name,
+    /// several (§3.2.1 items 1–3).
+    fn candidates(&self, environment: &str) -> &[usize] {
+        self.by_name.get(environment).map_or(&[][..], Vec::as_slice)
     }
 
     /// The labels of the attachments named in `names`, the names of a
@@ -829,8 +844,9 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// one of its enabled entries refers to. For each one that applies to it
 /// and declares parameters, the Step gets effective values from its entry
 /// if one refers to it and from the `default`s otherwise (a Step whose
-/// entry names an ambiguous attachment is stopped, so the one mistake is
-/// reported once). Constraint 5 (keys) and constraint 7 (every parameter
+/// enabled entry names an ambiguous attachment is stopped, so the one
+/// mistake is reported once; a disabled one refers to each of them, §3.2.1
+/// item 3). Constraint 5 (keys) and constraint 7 (every parameter
 /// without a `default` supplied) are checked for every Environment that
 /// applies to the Step, whatever its own `enableIf` or `exclusiveGroup`
 /// (§3.2 constraint 7, §7.4.1 step 5). Then the attachments and the Job
@@ -918,9 +934,10 @@ pub(crate) fn apply_environment_templates(
 
     let mut staged = StagedErrors::default();
     let mut warnings = Vec::new();
-    // `default`s resolve against the merged Job Parameters, without
-    // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).
-    let default_symtab = build_symbol_table(job_parameter_values)?;
+    // `default`s resolve against the merged Job Parameters and `Job.Name`,
+    // without `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).
+    let mut default_symtab = build_symbol_table(job_parameter_values)?;
+    default_symtab.set("Job.Name", ExprValue::String(job.name.clone()))?;
     let job_lists_env_params = job
         .extensions
         .as_ref()
@@ -966,51 +983,31 @@ pub(crate) fn apply_environment_templates(
         // decides what it means (§3.2.1, §3.2 item 3.2). It supplies nothing,
         // so constraints 5 and 6 are not checked for it, and one that
         // matches no attachment has no effect, whatever `required` says
-        // (item 2 does not apply). An ambiguous name is an error as for an
-        // enabled entry (item 3).
+        // (item 2 does not apply). One whose name two or more attachments
+        // define is not an error: it refers to each of them, with a
+        // disabled entry's effect on each (item 3).
         for entry in &selection.disabled {
-            if !set.by_name.contains_key(entry.environment.as_str()) {
-                continue;
-            }
             let entry_path = path_index(&deps_path, entry.dependency_index);
-            match set.match_entry(
-                &entry.environment,
-                true,
-                path_field(&entry_path, "environment"),
-                staged.at(Stage::Step3, i, entry.dependency_index),
-                &mut warnings,
-            ) {
-                EntryMatch::Absent => {}
-                EntryMatch::One(doc) => {
-                    let de = &set.declaring[doc];
-                    match de.activation {
-                        EnvironmentActivation::OnRequest => {}
-                        EnvironmentActivation::ByDefault => {
-                            step_declined.insert(doc);
-                        }
-                        // From a document that does not list `ENV_PARAMS`:
-                        // it behaves as `ALWAYS`, and the entry has no
-                        // effect and is not an error (§4 item 4, §3.2 item
-                        // 3.2, §7.4.1 step 4).
-                        EnvironmentActivation::Always if de.pre_extension => {}
-                        // No Step can leave it out (§3.2.2 item 6): a
-                        // §7.4.1 step 4 error, which stops the Step.
-                        EnvironmentActivation::Always => {
-                            staged.at(Stage::Step4, i, entry.dependency_index).add(
-                                &path_field(&entry_path, "enableIf"),
-                                always_entry_disabled_message(
-                                    &job_template.steps[i].name,
-                                    &de.label,
-                                ),
-                            )
-                        }
+            for &doc in set.candidates(&entry.environment) {
+                let de = &set.declaring[doc];
+                match de.activation {
+                    EnvironmentActivation::OnRequest => {}
+                    EnvironmentActivation::ByDefault => {
+                        step_declined.insert(doc);
+                    }
+                    // From a document that does not list `ENV_PARAMS`: it
+                    // behaves as `ALWAYS`, and the entry has no effect and is
+                    // not an error (§4 item 4, §3.2 item 3.2, §7.4.1 step 4).
+                    EnvironmentActivation::Always if de.pre_extension => {}
+                    // No Step can leave it out (§3.2.2 item 6): a §7.4.1 step
+                    // 4 error, which stops the Step.
+                    EnvironmentActivation::Always => {
+                        staged.at(Stage::Step4, i, entry.dependency_index).add(
+                            &path_field(&entry_path, "enableIf"),
+                            always_entry_disabled_message(&job_template.steps[i].name, &de.label),
+                        )
                     }
                 }
-                // An ambiguous name (reported) stops the Step after §7.4.1
-                // step 4, so no value of its is computed and the rejected
-                // entry does not also produce "must supply" or "does not
-                // supply" errors.
-                EntryMatch::Many(_) => {}
             }
         }
         for entry in &selection.frozen {
@@ -1772,7 +1769,9 @@ fn certainly_entered_per_step(
 ///   one, naming the Step and the Environment (§3.2 item 3.2), and has no
 ///   effect on one whose Environment Template does not list `ENV_PARAMS`,
 ///   which behaves as `ALWAYS` (§4 item 4) and is entered whatever the
-///   entry says; an ambiguous name is an error either way. One whose
+///   entry says. A disabled entry whose name two or more attachments
+///   define has that effect on each of them, and is not an error; an
+///   enabled one is an error (§3.2.1 item 3). One whose
 ///   `enableIf` is not known is checked only when the Job is created, and
 ///   so is every attachment it may name, for its Step;
 /// - for an entry that resolves, constraint 5 (keys); and, when the
@@ -1937,38 +1936,25 @@ pub fn check_environment_templates(
                 // resolved to learn what it means (§3.2 item 3.2, §3.2.1),
                 // as `apply_environment_templates` does: one that matches
                 // no attachment has no effect.
+                // A name that two or more attachments define is not an
+                // error for a disabled entry: it refers to each of them
+                // (§3.2.1 item 3).
                 Some(false) => {
                     step_disabled.push(name);
-                    if !set.by_name.contains_key(name) {
-                        continue;
-                    }
-                    match set.match_entry(
-                        name,
-                        true,
-                        path_field(&entry_path, "environment"),
-                        &mut errors,
-                        &mut warnings,
-                    ) {
-                        EntryMatch::Absent => {}
-                        EntryMatch::One(doc) => {
-                            let de = &set.declaring[doc];
-                            match de.activation {
-                                EnvironmentActivation::OnRequest => {}
-                                EnvironmentActivation::ByDefault => {
-                                    step_declined.insert(doc);
-                                }
-                                // No effect on a pre-extension one, which
-                                // behaves as `ALWAYS` (§4 item 4).
-                                EnvironmentActivation::Always if de.pre_extension => {}
-                                EnvironmentActivation::Always => errors.add(
-                                    &path_field(&entry_path, "enableIf"),
-                                    always_entry_disabled_message(&step.name, &de.label),
-                                ),
+                    for &doc in set.candidates(name) {
+                        let de = &set.declaring[doc];
+                        match de.activation {
+                            EnvironmentActivation::OnRequest => {}
+                            EnvironmentActivation::ByDefault => {
+                                step_declined.insert(doc);
                             }
-                        }
-                        EntryMatch::Many(many) => {
-                            step_unapplied.extend(many.iter().copied());
-                            step_ambiguous.extend(many.iter().copied());
+                            // No effect on a pre-extension one, which
+                            // behaves as `ALWAYS` (§4 item 4).
+                            EnvironmentActivation::Always if de.pre_extension => {}
+                            EnvironmentActivation::Always => errors.add(
+                                &path_field(&entry_path, "enableIf"),
+                                always_entry_disabled_message(&step.name, &de.label),
+                            ),
                         }
                     }
                     continue;
@@ -1976,27 +1962,19 @@ pub fn check_environment_templates(
                 // Whether the entry is enabled is known only when the Job
                 // is created (§7.6 rule 5), so the Environment it may name
                 // is not checked for this Step (§3.2, checked-at
-                // paragraph). Its name is
-                // resolved either way (§3.2.1), so a name that two
-                // attachments define is an error whatever the `enableIf`
-                // resolves to, and is reported now (§7.6 rule 5).
+                // paragraph). A name that two attachments define is an
+                // error only for an enabled entry (§3.2.1 item 3), so it is
+                // not reported now either (§7.6 rule 5).
                 None => {
-                    if let Some(candidates) = set.by_name.get(name) {
-                        if candidates.len() > 1 {
-                            set.match_entry(
-                                name,
-                                true,
-                                path_field(&entry_path, "environment"),
-                                &mut errors,
-                                &mut warnings,
-                            );
-                            // As for a disabled entry, the ambiguous
-                            // attachments are not combined for this Step.
-                            step_ambiguous.extend(candidates.iter().copied());
-                        }
-                        step_unapplied.extend(candidates.iter().copied());
-                        step_undetermined.extend(candidates.iter().copied());
+                    let candidates = set.candidates(name);
+                    if candidates.len() > 1 {
+                        // Job creation stops the Step if the entry is
+                        // enabled, so the ambiguous attachments are not
+                        // combined for this Step.
+                        step_ambiguous.extend(candidates.iter().copied());
                     }
+                    step_unapplied.extend(candidates.iter().copied());
+                    step_undetermined.extend(candidates.iter().copied());
                     continue;
                 }
             }
@@ -2114,14 +2092,22 @@ pub fn check_environment_templates(
             } else {
                 attached_enabled[doc]
             };
-            applies_to_some_step[doc] |= enters;
+            // A `BY_DEFAULT` one that an entry whose `enableIf` is not known
+            // may name may still be declined, so it applies to the Step only
+            // if no such entry does.
+            applies_to_some_step[doc] |= enters
+                && !(de.activation == EnvironmentActivation::ByDefault
+                    && undetermined[i].contains(&doc));
             // An attachment an entry whose `enableIf` is not known may name
             // is in `undetermined`: whether that entry requests or declines
-            // it is decided at job creation. No entry decides an unreachable
-            // one (named like a Job Environment, or ambiguous, which is
-            // reported): it is entered by its `activation` and `enableIf`
-            // alone, and its values are not checked (job creation stops a
-            // Step whose entry names an ambiguous one). An `enableIf` that
+            // it is decided at job creation, also for an ambiguous one,
+            // which only a disabled entry can decide. No enabled entry
+            // decides an unreachable one (named like a Job Environment, or
+            // ambiguous, which is reported for an enabled entry): it is
+            // entered by its `activation`, `enableIf`, and the disabled
+            // entries that decline it, and its values are not checked (job
+            // creation stops a Step whose enabled entry names an ambiguous
+            // one). An `enableIf` that
             // reads a literal that does not convert is certainly not
             // evaluated, so it does not disable the attachment even when it
             // is known to be `false` (§3.2.2 item 2).
@@ -2132,7 +2118,7 @@ pub fn check_environment_templates(
             );
             let state = if enabled == Some(false) && !not_evaluated {
                 Known::NotEntered
-            } else if undetermined[i].contains(&doc) && !set.unreachable.contains(&doc) {
+            } else if undetermined[i].contains(&doc) {
                 Known::Undetermined
             } else if !enters {
                 Known::NotEntered

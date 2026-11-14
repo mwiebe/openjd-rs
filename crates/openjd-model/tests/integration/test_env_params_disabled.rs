@@ -722,17 +722,21 @@ fn an_unreachable_attachment_needs_its_values_whatever_its_enable_if() {
     };
     let item_3 = |doc: usize, entered: &str| {
         format!(
-            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
-             Environment 'Gpu' is defined by 2 attached Environment Templates \
-             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency \
-             can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a \
-             default that no Step can supply: X. {entered}, and the submission is rejected \
-             (§3.2.1)."
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment 'Gpu' \
+             is defined by 2 attached Environment Templates (EnvironmentTemplate[0], \
+             EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template \
+             Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: \
+             X. {entered}, and the submission is rejected (§3.2.1)."
         )
     };
     const EVERY: &str = "Its activation is BY_DEFAULT, so every Session enters it";
     const WHATEVER: &str = "Its activation is BY_DEFAULT, so it applies to every Step whatever \
                             its enableIf and exclusiveGroup (§3.2 constraint 7)";
+    // A disabled entry could decline an ambiguous one (§3.2.1 item 3), so
+    // its message says that some Step does not.
+    const UNDECLINED: &str = "Its activation is BY_DEFAULT, and a Step does not decline it, so \
+                              it applies to that Step whatever its enableIf and exclusiveGroup \
+                              (§3.2 constraint 7)";
     // Without an enableIf, and with `false`, an expression that is `false`
     // or `true` for S, or one that reads X, which no Step can supply:
     // rejected, by check and by job creation.
@@ -752,7 +756,7 @@ fn an_unreachable_attachment_needs_its_values_whatever_its_enable_if() {
             &[&env, &env],
             &[],
             "Submission",
-            &[&item_3(0, entered), &item_3(1, entered)],
+            &[&item_3(0, UNDECLINED), &item_3(1, UNDECLINED)],
         );
     }
 }
@@ -1050,13 +1054,13 @@ fn an_ambiguous_attachment_that_is_disabled_is_still_held_to_constraint_7_by_che
                      §3.2.1 item 3).";
     let item_3 = |doc: usize| {
         format!(
-            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
-             Environment 'Lic' is defined by 2 attached Environment Templates \
-             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency \
-             can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a \
-             default that no Step can supply: P. Its activation is BY_DEFAULT, so it applies to \
-             every Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the \
-             submission is rejected (§3.2.1)."
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment 'Lic' \
+             is defined by 2 attached Environment Templates (EnvironmentTemplate[0], \
+             EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template \
+             Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: \
+             P. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that \
+             Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is \
+             rejected (§3.2.1)."
         )
     };
     create_err(jt, &[env, env], &[], "Submission", &[ambiguous]);
@@ -1296,13 +1300,13 @@ fn an_ambiguous_attachment_with_an_enable_if_is_an_error_saying_it_applies_whate
               steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n";
     let item_3 = |doc: usize| {
         format!(
-            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
-             Environment 'Lic' is defined by 2 attached Environment Templates \
-             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency \
-             can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a \
-             default that no Step can supply: Q. Its activation is BY_DEFAULT, so it applies to \
-             every Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the \
-             submission is rejected (§3.2.1)."
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment 'Lic' \
+             is defined by 2 attached Environment Templates (EnvironmentTemplate[0], \
+             EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template \
+             Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: \
+             Q. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that \
+             Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is \
+             rejected (§3.2.1)."
         )
     };
     create_err(

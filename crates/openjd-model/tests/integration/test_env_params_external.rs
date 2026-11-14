@@ -1244,38 +1244,33 @@ steps:
 }
 
 #[test]
-fn an_attached_default_cannot_read_job_name() {
-    // Plan A21, for an Environment Template edited after decoding:
-    // attachments' defaults resolve without `Job.Name` too.
+fn an_attached_default_reads_job_name() {
+    // §4.5 item 1, §7.3.2: an attachment's `default` may read `Job.Name`,
+    // which is the resolved name, also with a Job Template that does not
+    // list `ENV_PARAMS`.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
 environment:
   name: E
-  envParameterDefinitions: [{name: T, type: STRING, default: t}]
-  variables: {V: v}
+  envParameterDefinitions: [{name: T, type: STRING, default: "job-{{Job.Name}}"}]
+  variables: {V: "{{Env.Param.T}}"}
 "#;
     let jt = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
-name: J
+name: "J{{Param.N}}"
+parameterDefinitions: [{name: N, type: INT, default: 7}]
 steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#;
-    let mut s = submission(jt, &[env], &[]);
-    s.envs[0]
-        .environment
-        .env_parameter_definitions
-        .as_mut()
-        .unwrap()[0]
-        .default = Some(
-        openjd_model::template::EnvironmentParameterValue::from_json(serde_json::json!(
-            "{{ Job.Name }}"
-        ))
-        .unwrap(),
+    let (job, warnings) = submission(jt, &[env], &[]).combined();
+    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["EnvironmentTemplate[0]/E: T=string:job-J7"]
     );
-    s.apply_err(&["EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tfor Step 'S', which does not supply this parameter: could not be resolved as a value of type STRING: Undefined variable: 'Job.Name'."]);
 }
 
 #[test]
@@ -1304,7 +1299,7 @@ steps:
         .unwrap_err();
     let msg = |doc: &str| {
         format!(
-            "{doc} -> environment -> envParameterDefinitions:\n\tEnvironment 'X' is defined by 2 attached Environment Templates (a.yaml, b.yaml), so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1)."
+            "{doc} -> environment -> envParameterDefinitions:\n\tEnvironment 'X' is defined by 2 attached Environment Templates (a.yaml, b.yaml), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is rejected (§3.2.1)."
         )
     };
     assert_errors(
@@ -1348,6 +1343,52 @@ fn serde_form_of_documents() {
     assert_eq!(
         serde_json::to_string(&Document::environment_template(0, None)).unwrap(),
         r#"{"kind":"EnvironmentTemplate","index":0}"#
+    );
+}
+
+/// §4.5 items 1 and 3: an attached Environment's relative PATH and
+/// LIST[PATH] `default`s, literal or format strings, and a Step's relative
+/// literal LIST[PATH] value, are used as given: never joined with the
+/// current working directory or any other directory.
+#[test]
+fn an_attached_relative_default_or_value_is_never_joined() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: P, type: PATH, default: rel/p}
+  - {name: L, type: "LIST[PATH]", default: [rel/a, b]}
+  - {name: F, type: PATH, default: "{{ 'rel' }}/f"}
+  - {name: G, type: "LIST[PATH]", default: "{{ ['rel/g', 'h'] }}"}
+  - {name: M, type: "LIST[PATH]", default: []}
+  variables: {V: v}
+"#;
+    let jt = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+steps:
+- name: Defaults
+  script: {actions: {onRun: {command: x}}}
+- name: Supplies
+  dependencies: [{environment: E, parameters: {M: [rel/m, ./n]}}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+    let (job, _) = submission(jt, &[env], &[]).combined();
+    let defaults = r#"F=path:rel/f, G=list[path]:["rel/g","h"], L=list[path]:["rel/a","b"]"#;
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [format!(
+            "EnvironmentTemplate[0]/E: {defaults}, M=list[path]:[], P=path:rel/p"
+        )]
+    );
+    assert_eq!(
+        rendered_values(&job.steps[1]),
+        [format!(
+            r#"EnvironmentTemplate[0]/E: {defaults}, M=list[path]:["rel/m","./n"], P=path:rel/p"#
+        )]
     );
 }
 

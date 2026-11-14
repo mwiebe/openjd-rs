@@ -353,7 +353,8 @@ symbols are added either way (see the first item).
 - **A format-string `default`** (§4.5 item 1) is checked by `validate_env_param_defaults`
   against the template-scope table of the *same document's* top-level
   `parameterDefinitions`: `RawParam.*` for every Job Parameter and `Param.*` for the
-  non-PATH ones, with no `Job.Name`, `Step.Name`, `Session.*`, or `Env.*`. For a Job
+  non-PATH ones, and `Job.Name` as `unresolved[string]` (§7.3.2), with no `Job.EnvNames`,
+  `Step.Name`, `Session.*`, or `Env.*`. For a Job
   Environment that is the Job Template's parameters; for an Environment Template, its own.
 - **A format-string `environment:` entry value** (§3.2) is checked by
   `validate_env_entry_values` against the Step's template-scope table

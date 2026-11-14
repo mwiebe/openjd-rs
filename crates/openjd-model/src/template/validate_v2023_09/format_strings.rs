@@ -101,8 +101,9 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// `env_names_active` (`ENV_PARAMS`, which requires `EXPR`) `Job.EnvNames`,
 /// whose value
 /// is known only when the Job is created (Template Schemas §7.3.1, §7.4).
-/// Neither is in the scope of the Job Template's `name` or of an
-/// Environment parameter `default`, whose tables do not call this.
+/// Neither is in the scope of the Job Template's `name`, whose table does
+/// not call this, and an Environment parameter `default` has `Job.Name`
+/// only (see [`build_env_param_default_symtab`]).
 fn add_job_symbols(symtab: &mut SymbolTable, env_names_active: bool) {
     symtab
         .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
@@ -115,6 +116,19 @@ fn add_job_symbols(symtab: &mut SymbolTable, env_names_active: bool) {
             )
             .expect("symtab");
     }
+}
+
+/// The scope of an Environment parameter `default` (`ENV_PARAMS`, which
+/// requires `EXPR`; Template Schemas §4.5 item 1, §7.3.2): the template
+/// scope of the document's own Job Parameters, `RawParam.*` and the
+/// non-PATH `Param.*`, and `Job.Name`, which is known only when the Job is
+/// created. `Job.EnvNames` is not in it.
+fn build_env_param_default_symtab(params: Option<&[JobParameterDefinition]>) -> SymbolTable {
+    let mut symtab = build_template_scope_symtab(params);
+    symtab
+        .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
+        .expect("symtab");
+    symtab
 }
 
 /// Build the session-scope symtab (for environment scripts/variables).
@@ -625,10 +639,12 @@ fn validate_env_enable_if(
 /// Pass-8 checks of the format-string `default`s of an Environment's
 /// `envParameterDefinitions` (`ENV_PARAMS`, §4.5 item 1, §7.3.2). A `default` may
 /// reference `RawParam.*` and the non-PATH `Param.*` of the same
-/// document's top-level `parameterDefinitions`, and nothing else, so it is
+/// document's top-level `parameterDefinitions`, and `Job.Name`, and nothing
+/// else, so it is
 /// checked against `default_symtab`, the template-scope table of the
-/// document's own parameters without `Job.Name`, which the caller builds
-/// once per document.
+/// document's own parameters with `Job.Name`
+/// ([`build_env_param_default_symtab`]), which the caller builds once per
+/// document.
 fn validate_env_param_defaults(
     env: &Environment,
     default_symtab: &SymbolTable,
@@ -2690,8 +2706,8 @@ pub fn validate_format_strings(
             add_job_symbols(&mut env_template_symtab, env_names_active);
         }
         // The scope of an Environment parameter `default`: the Job
-        // Template's own parameters, template scope, no `Job.Name`.
-        let default_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        // Template's own parameters, template scope, and `Job.Name`.
+        let default_symtab = build_env_param_default_symtab(jt.parameter_definitions.as_deref());
         for (i, env) in envs.iter().enumerate() {
             // §7.3.2: a Job Environment's `enableIf` has exactly the
             // `hostRequirements` scope.
@@ -3278,7 +3294,7 @@ pub fn validate_format_strings_environment_template(
     if ctx.profile.has_extension(ModelExtension::EnvParams) {
         validate_env_param_defaults(
             env,
-            &build_template_scope_symtab(et.parameter_definitions.as_deref()),
+            &build_env_param_default_symtab(et.parameter_definitions.as_deref()),
             &template_ev,
             &env_path,
             errors,

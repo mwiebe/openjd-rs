@@ -322,11 +322,10 @@ fn within_a_step_errors_follow_the_environment_order_not_the_order_found() {
          JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value \
          1 is less than minimum 5",
     );
-    // A Step's entries' errors follow the entries' order, though disabled
-    // entries are resolved first.
+    // A Step's entries' errors follow the entries' order.
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Missing}}, {{environment: \
-         Amb, enableIf: false}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+         Amb}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let amb = env("name: Amb");
     create_err(
@@ -1090,17 +1089,17 @@ fn order_step_2_by_entry_index_in_an_edited_template() {
 }
 
 #[test]
-fn order_step_3_a_disabled_entry_before_a_later_enabled_one() {
-    // Entry 1 is disabled and names the ambiguous X; entry 2, enabled, names
-    // Missing. Disabled entries are resolved first; entry 1's error is first
-    // either way, entry 2's after it.
+fn order_step_3_a_disabled_ambiguous_entry_adds_no_error_before_a_later_enabled_one() {
+    // Entry 1 is disabled and names the ambiguous X, which is not an error
+    // (§3.2.1 item 3): it declines both. Entry 2, enabled, names Missing,
+    // the only error.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n- name: S\n  \
          dependencies: [{{environment: E}}, {{environment: X, enableIf: false}}, {{environment: \
          Missing}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let x = env("name: X");
-    assert_eq!(err_text(&jt, &[&x, &x], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tnames Environment 'X', which 2 attached Environment Templates define (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas §3.2.1 item 3).\nJobTemplate -> steps[0] -> dependencies[2] -> environment:\n\tnames Environment 'Missing', which is not a jobEnvironments entry of the Job Template, and none of the attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]) defines it. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).");
+    assert_eq!(err_text(&jt, &[&x, &x], &[]), "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[0] -> dependencies[2] -> environment:\n\tnames Environment 'Missing', which is not a jobEnvironments entry of the Job Template, and none of the attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]) defines it. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).");
 }
 
 #[test]
@@ -1407,7 +1406,7 @@ fn the_unreachable_attachments_errors_follow_the_attachment_order() {
     );
     let e0 = env("name: E, envParameterDefinitions: [{name: X, type: INT}]");
     let e1 = env("name: E, envParameterDefinitions: [{name: Y, type: INT}]");
-    assert_eq!(err_text(&jt, &[&e0, &e1], &[]), "Model validation error: 4 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).");
+    assert_eq!(err_text(&jt, &[&e0, &e1], &[]), "Model validation error: 4 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, and a Step does not decline it, so it applies to that Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7), and the submission is rejected (§3.2.1).");
 }
 
 // ── Round 4 ──────────────────────────────────────────────────────────
@@ -1443,10 +1442,11 @@ fn a_later_steps_step_2_to_4_error_stops_that_step_not_the_first() {
         &format!("  dependencies: [{{environment: A, enableIf: \"Param.B\"}}, {R_BAD}]\n"),
     );
     assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 2 validation errors for JobTemplate\nsteps[1] -> dependencies[0] -> enableIf:\n\tis false, so Step 'S1' would decline Environment 'A', whose activation is ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2).\nsteps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 1 is less than minimum 5");
-    // Step 3: S1's disabled entry names the ambiguous X.
+    // Step 3: S1's enabled entry names the ambiguous X (a disabled one
+    // would decline both, §3.2.1 item 3).
     let jt = s0_s1(
         &s0,
-        &format!("  dependencies: [{{environment: X, enableIf: \"Param.B\"}}, {R_BAD}]\n"),
+        &format!("  dependencies: [{{environment: X}}, {R_BAD}]\n"),
     );
     let x = env("name: X");
     assert_eq!(err_text(&jt, &[&x, &x], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[1] -> dependencies[0] -> environment:\n\tnames Environment 'X', which 2 attached Environment Templates define (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas §3.2.1 item 3).\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 1 is less than minimum 5");

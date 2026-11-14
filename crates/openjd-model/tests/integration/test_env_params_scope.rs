@@ -217,7 +217,10 @@ steps:
 // ── Scope of a `default` (§4.5 item 1, §7.3.2) ─────────────────────
 
 #[test]
-fn default_scope_is_the_documents_raw_and_non_path_params() {
+fn default_scope_is_the_documents_raw_and_non_path_params_and_job_name() {
+    // §4.5 item 1, §7.3.2: `RawParam.*`, non-PATH `Param.*`, and
+    // `Job.Name`; `Job.EnvNames` is not in it (see
+    // test_env_params_selection).
     job_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -232,6 +235,7 @@ jobEnvironments:
   - {name: A, type: INT, default: "{{Param.Seats}}"}
   - {name: B, type: PATH, default: "{{RawParam.Dir}}"}
   - {name: C, type: STRING, default: "seats={{RawParam.Seats}}"}
+  - {name: D, type: STRING, default: "job={{Job.Name}}"}
   variables: {V: x}
 steps:
 - name: S
@@ -258,7 +262,6 @@ steps:
 "#,
         &[
             "jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tFailed to parse interpolation expression at [0, 13]. Undefined variable: 'Param.Dir'. Did you mean: RawParam.Dir",
-            "jobEnvironments[0] -> envParameterDefinitions[1] -> default:\n\tFailed to parse interpolation expression at [0, 12]. Undefined variable: 'Job.Name'.",
             "jobEnvironments[0] -> envParameterDefinitions[2] -> default:\n\tFailed to parse interpolation expression at [0, 15]. Undefined variable: 'Env.Param.B'.",
             "jobEnvironments[0] -> envParameterDefinitions[3] -> default:\n\tFailed to parse interpolation expression at [0, 28]. Undefined variable: 'Session.WorkingDirectory'.",
         ],
@@ -947,6 +950,7 @@ steps:
 
 #[test]
 fn environment_template_default_scope_excludes_session_and_env() {
+    // `Job.Name` is in the scope (C), as for a Job Environment.
     env_err(
         r#"
 specificationVersion: environment-2023-09
@@ -964,7 +968,6 @@ environment:
         &[
             "environment -> envParameterDefinitions[0] -> default:\n\tFailed to parse interpolation expression at [0, 28]. Undefined variable: 'Session.WorkingDirectory'.",
             "environment -> envParameterDefinitions[1] -> default:\n\tFailed to parse interpolation expression at [0, 15]. Undefined variable: 'Env.Param.A'.",
-            "environment -> envParameterDefinitions[2] -> default:\n\tFailed to parse interpolation expression at [0, 12]. Undefined variable: 'Job.Name'.",
         ],
     );
 }

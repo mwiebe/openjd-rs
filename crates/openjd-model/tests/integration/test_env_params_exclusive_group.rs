@@ -1214,7 +1214,7 @@ fn an_ambiguous_attachment_does_not_lift_constraint_7_from_its_group() {
 fn every_ambiguous_copy_is_an_unreachable_error_whatever_its_group() {
     // Every Step's entry for Amb is ambiguous. Both copies apply to S
     // whatever their group (§3.2 constraint 7), so check reports both,
-    // ungrouped or in one group, and with an expression entry naming it.
+    // ungrouped or in one group.
     let jt = format!(
         "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
          {{actions: {{onRun: {{command: x}}}}}}\n"
@@ -1223,7 +1223,6 @@ fn every_ambiguous_copy_is_an_unreachable_error_whatever_its_group() {
                      Environment 'Amb', which 2 attached Environment Templates define \
                      (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
                      exactly one (Template Schemas §3.2.1 item 3).";
-    let every = "Its activation is BY_DEFAULT, so every Session enters it";
     let ungrouped = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
     let grouped =
         env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
@@ -1233,22 +1232,23 @@ fn every_ambiguous_copy_is_an_unreachable_error_whatever_its_group() {
     );
     // At job creation the ambiguous entry stops S, the only Step, after
     // §7.4.1 step 4, so only the ambiguity is reported there.
-    for (jt, amb, how) in [
-        (&jt, &ungrouped, every),
-        (&jt, &grouped, WHATEVER),
-        (&expr, &ungrouped, every),
-    ] {
+    for amb in [&ungrouped, &grouped] {
         check_err_and_create_err(
-            jt,
+            &jt,
             &[amb, amb],
             &[
                 ambiguous,
-                &unreachable_amb(0, (0, 1), how),
-                &unreachable_amb(1, (0, 1), how),
+                &unreachable_amb(0, (0, 1), UNDECLINED),
+                &unreachable_amb(1, (0, 1), UNDECLINED),
             ],
             &[ambiguous],
         );
     }
+    // An entry whose `enableIf` is not known: disabled, it would decline
+    // both copies (§3.2.1 item 3), so check reports nothing (§7.6 rule 5).
+    // Job creation finds it enabled.
+    check_ok(&expr, &[&ungrouped, &ungrouped]);
+    create_err(&expr, &[&ungrouped, &ungrouped], "Submission", &[ambiguous]);
 }
 
 /// A Job Template whose grouped Job Environment J declares a PATH `D`,
@@ -1324,11 +1324,11 @@ fn check_applies_the_value_checks_to_a_grouped_job_environment() {
 /// attachment `doc`, of two at `docs`, entered as `how` says.
 fn unreachable_amb(doc: usize, docs: (usize, usize), how: &str) -> String {
     format!(
-        "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
-         'Amb' is defined by 2 attached Environment Templates (EnvironmentTemplate[{}], \
-         EnvironmentTemplate[{}]), so no 'environment:' dependency can reach it (Template \
-         Schemas §3.2.1 item 3), and it has parameters without a default that no Step can \
-         supply: P. {how}, and the submission is rejected (§3.2.1).",
+        "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment 'Amb' \
+         is defined by 2 attached Environment Templates (EnvironmentTemplate[{}], \
+         EnvironmentTemplate[{}]), so no enabled 'environment:' dependency can reach it (Template \
+         Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: \
+         P. {how}, and the submission is rejected (§3.2.1).",
         docs.0, docs.1
     )
 }
@@ -1348,6 +1348,13 @@ fn ambiguous_amb(step: usize, dep: usize, docs: (usize, usize)) -> String {
 /// applies to the Steps (§3.2 constraint 7).
 const WHATEVER: &str = "Its activation is BY_DEFAULT, so it applies to every Step whatever its \
                         enableIf and exclusiveGroup (§3.2 constraint 7)";
+
+/// How the unreachable error says an ambiguous `BY_DEFAULT` attachment
+/// applies to a Step, since a disabled entry could decline it (§3.2.1 item
+/// 3).
+const UNDECLINED: &str = "Its activation is BY_DEFAULT, and a Step does not decline it, so it \
+                          applies to that Step whatever its enableIf and exclusiveGroup (§3.2 \
+                          constraint 7)";
 
 #[test]
 fn an_ambiguous_copy_that_applies_to_a_step_not_stopped_is_an_unreachable_error() {
@@ -1369,8 +1376,8 @@ fn an_ambiguous_copy_that_applies_to_a_step_not_stopped_is_an_unreachable_error(
         &[&a, &amb, &amb],
         &[
             &ambiguous_amb(1, 0, (1, 2)),
-            &unreachable_amb(1, (1, 2), WHATEVER),
-            &unreachable_amb(2, (1, 2), WHATEVER),
+            &unreachable_amb(1, (1, 2), UNDECLINED),
+            &unreachable_amb(2, (1, 2), UNDECLINED),
         ],
     );
     // S1 declines X and names Amb; S2 names Amb. Both Steps are stopped at
@@ -1388,8 +1395,8 @@ fn an_ambiguous_copy_that_applies_to_a_step_not_stopped_is_an_unreachable_error(
         &[
             &ambiguous_amb(0, 1, (1, 2)),
             &ambiguous_amb(1, 0, (1, 2)),
-            &unreachable_amb(1, (1, 2), WHATEVER),
-            &unreachable_amb(2, (1, 2), WHATEVER),
+            &unreachable_amb(1, (1, 2), UNDECLINED),
+            &unreachable_amb(2, (1, 2), UNDECLINED),
         ],
         &[&ambiguous_amb(0, 1, (1, 2)), &ambiguous_amb(1, 0, (1, 2))],
     );
@@ -1420,8 +1427,8 @@ fn an_ambiguous_attachment_with_an_enable_if_expression() {
             &[&amb, &amb],
             &[
                 &ambiguous_amb(0, 0, (0, 1)),
-                &unreachable_amb(0, (0, 1), WHATEVER),
-                &unreachable_amb(1, (0, 1), WHATEVER),
+                &unreachable_amb(0, (0, 1), UNDECLINED),
+                &unreachable_amb(1, (0, 1), UNDECLINED),
             ],
             &[&ambiguous_amb(0, 0, (0, 1))],
         );

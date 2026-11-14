@@ -658,7 +658,7 @@ steps:
 "#,
         &[
             "name:\n\tFailed to parse interpolation expression at [1, 24]. Undefined variable: 'Job.EnvNames'.",
-            "jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tFailed to parse interpolation expression at [0, 18]. Undefined variable: 'Job.EnvNames'.",
+            "jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tFailed to parse interpolation expression at [0, 18]. Undefined variable: 'Job.EnvNames'. Did you mean: Job.Name",
         ],
     );
 }

@@ -684,7 +684,8 @@ struct Source {
 ///
 /// `environments` describes `job.job_environments`, index for index.
 /// `entered[s][e]` says whether Step `s`'s Sessions enter Environment `e`.
-/// `default_symtab` holds the Job Parameters (merged), without `Job.*`;
+/// `default_symtab` holds the Job Parameters (merged), and may hold
+/// `Job.Name`;
 /// `job_name` and `env_names` are `Job.Name` and `Job.EnvNames`.
 ///
 /// Each Environment with `hostRequirements` is resolved once for each

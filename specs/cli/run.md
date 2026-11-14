@@ -332,7 +332,8 @@ every host (Expression Language §1.2.1), and a PATH value of any form is used a
 leaves `Env.RawParam.<name>` as given. Its submission stage:
 
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
-  the attached Environments by name. A missing `required` Environment, an ambiguous name, an
+  the attached Environments by name. A missing `required` Environment, an ambiguous name in an
+  enabled entry, an
   undeclared key, a bad value, or a parameter without a `default` that a Step does not
   supply fails the run with one validation error before any Session starts, in Template
   Schemas §7.4.1 order (a Step's value errors are reported once its §7.4.1 step 1–4 errors are fixed; see

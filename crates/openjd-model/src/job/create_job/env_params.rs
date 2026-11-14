@@ -980,8 +980,8 @@ pub(crate) struct JobEnvironments<'a> {
     /// Each name's index in `environments` (the first, for a duplicated
     /// name).
     by_name: HashMap<&'a str, usize>,
-    /// The table `default`s resolve in: the merged Job Parameters, without
-    /// `Job.Name` (§4.5 item 1, §7.3.2; plan A21).
+    /// The table `default`s resolve in: the merged Job Parameters and
+    /// `Job.Name`, without `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).
     pub(crate) default_symtab: SymbolTable,
     /// The table each Job Environment's own `enableIf` (§7.3.2) resolves in,
     /// before its `Env.*` symbols are added: the Job Parameters, `Job.Name`,

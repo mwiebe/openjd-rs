@@ -573,6 +573,36 @@ steps:
     );
 }
 
+/// §4.5 items 1 and 3: a Job Environment's relative format-string PATH
+/// `default`, a single expression or text around one, is used as given,
+/// never joined with the current working directory.
+#[test]
+fn a_job_environment_relative_format_string_default_is_never_joined() {
+    let job = create_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{name: Sub, type: STRING, default: s}]
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: Single, type: PATH, default: "{{ 'rel' }}"}
+  - {name: Text, type: PATH, default: "rel/{{Param.Sub}}"}
+  - {name: Dot, type: PATH, default: "./{{Param.Sub}}"}
+  variables: {V: v}
+steps:
+- name: S
+  script: {actions: {onRun: {command: x}}}
+"#,
+        &[],
+    );
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: Dot=path:./s, Single=path:rel, Text=path:rel/s"]
+    );
+}
+
 /// §4.5 item 3: a LIST[PATH] value may mix forms.
 #[test]
 fn a_list_path_value_may_mix_path_forms() {
@@ -1377,40 +1407,35 @@ steps:
 }
 
 #[test]
-fn a_default_cannot_read_job_name_at_job_creation() {
-    // Plan A21: template validation rejects `Job.Name` in a default, and
-    // job creation resolves defaults without it too, for a template edited
-    // after decoding.
-    let mut jt = job_ok(
+fn a_default_reads_the_resolved_job_name() {
+    // §4.5 item 1, §7.3.2: a `default` may read `Job.Name`, which job
+    // creation resolves before the defaults.
+    let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
-name: J
+name: "Shot {{Param.Shot}}"
+parameterDefinitions: [{name: Shot, type: STRING, default: "010"}]
 jobEnvironments:
 - name: E
-  envParameterDefinitions: [{name: T, type: STRING, default: t}]
-  variables: {V: v}
+  envParameterDefinitions: [{name: T, type: STRING, default: "{{ Job.Name.upper() }}"}]
+  variables: {V: "{{Env.Param.T}}"}
 steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
+- name: R
+  dependencies: [{environment: E, parameters: {T: "{{Job.Name}}-r"}}]
+  script: {actions: {onRun: {command: x}}}
 "#,
+        &[("Shot", "020")],
     );
-    let params = job_params(&jt, &[]);
-    jt.job_environments.as_mut().unwrap()[0]
-        .env_parameter_definitions
-        .as_mut()
-        .unwrap()[0]
-        .default = Some(
-        openjd_model::template::EnvironmentParameterValue::from_json(serde_json::json!(
-            "{{ Job.Name }}"
-        ))
-        .unwrap(),
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: T=string:SHOT 020"]
     );
-    let err = create_job(&jt, &params, &template_ctx(&jt)).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &["jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tfor Step 'S', which does not supply this parameter: could not be resolved as a value of type STRING: Undefined variable: 'Job.Name'."],
+    assert_eq!(
+        rendered_values(&job.steps[1]),
+        ["JobTemplate/E: T=string:Shot 020-r"]
     );
 }
 

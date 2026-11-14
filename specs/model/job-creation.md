@@ -531,8 +531,8 @@ stage](#the-submission-stage):
   `steps[i] -> let[j]`, which leaves the Step uninstantiable (see [Error order](#error-order)).
   (Before spec `af53020` this prototype evaluated the bindings an entry value read a second
   time, in a caller-given submission path format.) A
-  `default`'s scope is the merged Job Parameters alone, without `Job.Name` or `Job.EnvNames`
-  (§4.5 item 1, §7.3.1; plan A21). A single `{{ }}` expression evaluates with the
+  `default`'s scope is the merged Job Parameters and the resolved `Job.Name`, without
+  `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21, revised for FCP review round 2). A single `{{ }}` expression evaluates with the
   parameter's expression type as its target type, and the result is coerced to the
   Job Parameter type (a `path` result becomes its string). INT, FLOAT, BOOL, RANGE_EXPR and the
   list types convert as the target type says. For PATH and LIST[PATH] a `string` (or
@@ -951,8 +951,11 @@ that has entries lists both.
    its values are not checked.
    An `ALWAYS` attachment whose `enableIf` is `false` for the Step is an error instead (see
    [Environment enableIf](#environment-enableif-env_params)).
-   (A Step whose entry names an ambiguous attachment is stopped, so the one mistake is not
-   also reported as "must supply" or "does not supply" errors.) The entry's format strings resolve against its frozen `symtab`. A key the
+   (A Step whose enabled entry names an ambiguous attachment is stopped, so the one mistake
+   is not also reported as "must supply" or "does not supply" errors. A disabled entry with
+   an ambiguous name is not an error: it has a disabled entry's effect on each match,
+   declining each `BY_DEFAULT` one and rejecting the Job for each `ALWAYS` one, §3.2.1 item
+   3.) The entry's format strings resolve against its frozen `symtab`. A key the
    attachment does not declare is an error (constraint 5), including any key of a
    `required: true` entry for an attachment that declares no parameters, such as one written
    before ENV_PARAMS (a `required: false` entry's are ignored, step 2); and a parameter
@@ -1244,7 +1247,7 @@ of the Environment that took it, the one a later member's `superseded_by` names:
 
 - the attachments, in attachment order: one is superseded when its group is taken, without its
   `enableIf` being evaluated; otherwise its `enableIf` is decided, and one it does not disable
-  takes its group. A Step whose entry names an ambiguous attachment is stopped after step 4,
+  takes its group. A Step whose enabled entry names an ambiguous attachment is stopped after step 4,
   so it decides no group; a Step that does not name it decides the attachment as any other;
 - then the Job Environments, in written order: one whose group an attachment or an earlier Job
   Environment took is superseded, without its `enableIf` being evaluated, and its status for
@@ -1444,10 +1447,15 @@ reports only once the Step's step 1–4 errors are fixed):
    applies and its `enableIf` is as above; not entered when it does not apply or its
    `enableIf` is known to be `false`; undetermined otherwise, including an attachment an entry
    whose `enableIf` is not known may name) goes through `apply_exclusive_groups` (§4, after
-   item 10), and only a known-entered result is checked. An attachment no entry can reach
-   (named like a Job Environment, or ambiguous) applies by its `activation` alone, whatever
-   entries name it, and its values are not checked (job creation stops a Step whose entry
-   names an ambiguous attachment, so it reports less for that Step). The Job Template's own
+   item 10), and only a known-entered result is checked. An attachment no enabled entry can
+   reach (named like a Job Environment, or ambiguous) applies by its `activation` and the
+   disabled entries that decline it, and its values are not checked (job creation stops a
+   Step whose enabled entry names an ambiguous attachment, so it reports less for that Step).
+   An entry whose `enableIf` is not known and that names an ambiguous attachment is not
+   reported: the §3.2.1 item 3 error holds only if it is enabled (§7.6 rule 5). For such an
+   entry a `BY_DEFAULT` attachment's state is undetermined, and its attachment-level error
+   for parameters without a `default` is reported only where some other Step certainly
+   applies it. The Job Template's own
    Environments come after the attachments, so they supersede none. Constraint 5 is checked
    for every attachment. The same value checks are made for each Job Environment with an
    `exclusiveGroup` that the Step is known to enter after the attachments (its state from its
@@ -1493,7 +1501,7 @@ reports only once the Step's step 1–4 errors are fixed):
    parameters without a `default`) is still combined, while job creation skips it until its values are fixed, so `check` can
    report one more conflict than `openjd run` for such a submission, or name that Environment
    where `openjd run` names another source with the same bound. An attachment that
-   declares parameters and that an ambiguous entry of the Step names is left out, since job
+   declares parameters and that an enabled, or not known, ambiguous entry of the Step names is left out, since job
    creation computes no values for it and so skips its requirements. An `ALWAYS` attachment that
    an entry whose `enableIf` is not known names is kept, since the Step's Sessions enter it
    either way; a `BY_DEFAULT` one is left out, since the entry may decline it. A conflict that involves

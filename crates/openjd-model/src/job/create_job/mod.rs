@@ -406,10 +406,10 @@ fn create_job_from_template<'a>(
     }
 
     let mut symtab = build_symbol_table(job_parameter_values)?;
-    // ENV_PARAMS `default`s resolve in the Job Parameters alone, without
-    // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2), so keep the table before
-    // they are added.
-    let default_symtab = symtab.clone();
+    // ENV_PARAMS `default`s resolve in the Job Parameters and `Job.Name`,
+    // without `Job.EnvNames` (§4.5 item 1, §7.3.2), so keep the table before
+    // the `Job.*` symbols are added, and add `Job.Name` once it is resolved.
+    let mut default_symtab = symtab.clone();
 
     let has_expr = ctx
         .profile
@@ -471,6 +471,8 @@ fn create_job_from_template<'a>(
         ));
     }
 
+    // Only a document that lists ENV_PARAMS, and so EXPR, has `default`s.
+    default_symtab.set("Job.Name", openjd_expr::ExprValue::String(job_name.clone()))?;
     if has_expr {
         symtab.set("Job.Name", openjd_expr::ExprValue::String(job_name.clone()))?;
         // §7.3.1, §7.4.1: concrete before any TEMPLATE-scope expression,

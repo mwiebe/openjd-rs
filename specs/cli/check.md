@@ -133,8 +133,10 @@ stage that needs no Job Parameter values:
   expression whose value template validation knows, such as `"true"`, Template Schemas §7.6
   rule 5) resolved by name: a missing `required` Environment and an ambiguous name are errors,
   and a `required: false` entry that resolves to nothing is a warning. An entry known to be
-  disabled is as if absent, and one whose `enableIf` is not known is checked only by `openjd
-  run`, as is every attachment it may name, for its Step;
+  disabled supplies nothing; it declines each `BY_DEFAULT` attachment it names, is an error
+  for each `ALWAYS` one, and is not an error when several attachments share its name
+  (Template Schemas §3.2.1 item 3). One whose `enableIf` is not known is checked only by
+  `openjd run`, as is every attachment it may name, for its Step;
 - a `required: false` entry that resolves to an attached Environment that declares no
   parameters, and that supplies some, is a warning: its parameters are ignored (Template
   Schemas §3.2.1 item 1), and it still requests an `ON_REQUEST` Environment;
