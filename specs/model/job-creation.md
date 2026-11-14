@@ -915,12 +915,13 @@ that has entries lists both.
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
    supplies nothing, so constraints 5 and 6 are not checked for it, and one that matches no
    attachment has no effect and no warning, whatever `required` says (item 2 does not apply).
-   Two or more matches are the item 3 error, as for an enabled entry; the spec's §3.2.1 lists
-   item 3 among the rules a disabled entry follows. One match with `activation: ON_REQUEST`
+   Two or more matches are not an error for a disabled entry: the entry refers to each of
+   them, with the effect below on each (§3.2.1 item 3). A match with `activation: ON_REQUEST`
    has no effect; with `BY_DEFAULT` the Step declines the attachment (step 3); with `ALWAYS`
    it is the error at `JobTemplate -> steps[i] -> dependencies[j] -> enableIf` that job
    creation reports for a Job Environment (see [Environment parameter
-   values](#environment-parameter-values-env_params)), a §7.4.1 step 4 error. One match whose
+   values](#environment-parameter-values-env_params)), a §7.4.1 step 4 error, once for each
+   such match. A match whose
    Environment Template does not list ENV_PARAMS has no effect and is not an error: such an
    attachment behaves as `activation: ALWAYS` with no `enableIf` (§4 item 4,
    `DeclaringEnvironment::pre_extension`), so every Step's Sessions enter it and its status is
