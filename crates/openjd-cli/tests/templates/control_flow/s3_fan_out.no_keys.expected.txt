@@ -1,0 +1,46 @@
+$ openjd run {T}/s3_fan_out.yaml -p Bucket=media -p Prefix=shots/ -p OutputPrefix=transcoded
+$ s3 fixtures/s3_no_keys
+exit code: 0
+--- stdout
+Session start
+Running job 'Transcode s3://media/shots/'
+Step 'Transcode' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.Discover.Output.Keys
+  Host requirements: known
+Step 'Manifest' is pending inputs:
+  Enabled: yes
+  Tasks: 1 (known; Step pending inputs for Steps.Transcode.Output.OutputBytes, Steps.Transcode.TaskParam.Key)
+  Host requirements: known
+Running step 'Discover'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Keys=@keys.json
+Process exited with code: 0
+Output Keys = []
+Step 'Transcode': Tasks known (0 tasks)
+Step 'Transcode' is ready
+Running step 'Transcode'
+Step 'Transcode' has 0 tasks
+Step 'Manifest' is ready
+Running step 'Manifest'
+==============================================
+--------- Running Task
+==============================================
+Output:
+boto3 stub: put s3://media/transcoded/manifest.json: {"inputs": [], "outputBytes": [], "totalBytes": 0}
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Transcode s3://media/shots/
+Duration: {DURATION}
+Chunks run: 2
+--- stderr

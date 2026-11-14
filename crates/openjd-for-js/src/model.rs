@@ -297,6 +297,9 @@ impl JsCallerLimits {
             max_env_count: self.max_env_count,
             max_step_environment_entries: self.max_step_environment_entries,
             max_task_count: self.max_task_count,
+            // The per-Step limit belongs to CONTROL_FLOW step input binding,
+            // which the JS bindings do not expose yet.
+            max_step_task_count: None,
             max_step_script_size: self.max_step_script_size,
             max_environment_size: self.max_environment_size,
             max_template_size: self.max_template_size,
@@ -304,6 +307,12 @@ impl JsCallerLimits {
             max_resolved_data_len: self.max_resolved_data_len,
             max_eval_memory_bytes: self.max_eval_memory_bytes,
             max_eval_operations: self.max_eval_operations,
+            // Output values are a run-time limit; the JS bindings do no
+            // execution.
+            max_task_output_bytes: None,
+            // Loop values are checked as a loop runs (CONTROL_FLOW), which
+            // the JS bindings do not expose.
+            max_loop_value_bytes: None,
         }
     }
 
@@ -793,6 +802,15 @@ pub fn create_job_with_map(
     // Environment is an error unless it has `required: false`.
     let job = openjd_model::create_job(&template.inner, &param_values, &ctx)
         .map_err(|e| e.to_string())?;
+    // The bindings expose Steps, not loops (`stepCount`, `stepNames`, and
+    // the Step accessors know only `job.steps`), so a Job with a loop is
+    // refused until they do.
+    if let Some(l) = job.loops.first() {
+        return Err(format!(
+            "createJob does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop '{}'.",
+            l.name
+        ));
+    }
     Ok(JsJob { inner: job })
 }
 

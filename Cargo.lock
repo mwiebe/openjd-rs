@@ -2214,6 +2214,7 @@ version = "0.6.0"
 dependencies = [
  "chrono",
  "clap",
+ "indexmap",
  "log",
  "openjd-expr",
  "openjd-model",
@@ -2277,6 +2278,7 @@ dependencies = [
  "bitflags 2.13.2",
  "futures-util",
  "getrandom 0.4.3",
+ "indexmap",
  "log",
  "nix",
  "openjd-expr",

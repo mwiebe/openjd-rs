@@ -645,6 +645,7 @@ impl<'a> Attachments<'a> {
         required: bool,
         env_path: Vec<PathElement>,
         errors: &mut ValidationErrors,
+        ambiguity: &mut ValidationErrors,
         warnings: &mut Vec<SubmissionWarning>,
     ) -> EntryMatch<'_> {
         match self.candidates(environment) {
@@ -684,7 +685,7 @@ impl<'a> Attachments<'a> {
             }
             [doc] => EntryMatch::One(*doc),
             many => {
-                errors.add(
+                ambiguity.add(
                     &env_path,
                     format!(
                         "names Environment '{environment}', which {} attached Environment \
@@ -911,13 +912,218 @@ pub(crate) fn apply_environment_templates(
 ) -> Result<CreatedJob, ModelError> {
     let super::Body {
         mut job,
-        mut selections,
+        selections,
         job_envs,
         check_errors,
         staged: body_staged,
         limits,
+        symtab: _,
     } = body;
-    let job_envs = &job_envs;
+    let mut steps = std::mem::take(&mut job.steps);
+    let paths: Vec<Vec<PathElement>> = (0..steps.len())
+        .map(|i| path_index(&path_field(&[], "steps"), i))
+        .collect();
+    let selected = select_environments(
+        job,
+        &mut steps,
+        &paths,
+        selections,
+        &job_envs,
+        body_staged,
+        job_template,
+        env_names,
+        attached,
+        job_parameter_values,
+        ctx,
+    )?;
+    selected.finish(
+        steps,
+        &paths,
+        check_errors,
+        limits,
+        job_template,
+        attached,
+        ctx,
+    )
+}
+
+/// What [`select_environments`] decided for every subject (a Step that
+/// makes an Environment selection), before the per-Step checks that
+/// [`Selected::finish`] makes.
+pub(super) struct Selected<'a> {
+    pub(super) job: job::Job,
+    pub(super) selections: Vec<super::env_params::StepSelection<'a>>,
+    /// The attachments, then the Job Template's own, in the Job's
+    /// Environment order.
+    pub(super) environments: Vec<job::Environment>,
+    pub(super) environment_documents: Vec<job::Document>,
+    /// The attachments' validation contexts, index for index.
+    pub(super) contexts: Vec<ValidationContext>,
+    pub(super) entered_per_step: Vec<Vec<bool>>,
+    pub(super) stopped: Vec<bool>,
+    pub(super) staged: StagedErrors,
+    pub(super) body_staged: StagedErrors,
+    pub(super) warnings: Vec<SubmissionWarning>,
+    pub(super) disabled_environments: Vec<StepDisabledEnvironments>,
+    pub(super) environment_statuses: Vec<StepEnvironmentStatuses>,
+    pub(super) job_path: Vec<PathElement>,
+    pub(super) default_symtab: openjd_expr::SymbolTable,
+    pub(super) env_names: ExprValue,
+    pub(super) budgets: super::EvalBudgets,
+    pub(super) attached_count: usize,
+}
+
+impl<'a> Selected<'a> {
+    /// Each Environment of the Job, as the host-requirement combination
+    /// needs it, index for index with `environments`.
+    pub(super) fn sources<'s>(
+        &'s self,
+        job_template: &'s JobTemplate,
+        attached: &'s [AttachedEnvironmentTemplate<'s>],
+        ctx: &'s ValidationContext,
+    ) -> Vec<super::host_requirements::EnvironmentSource<'s>> {
+        let docs = Documents { attached };
+        self.environment_documents
+            .iter()
+            .enumerate()
+            .map(|(e, document)| {
+                if e < attached.len() {
+                    super::host_requirements::EnvironmentSource {
+                        environment: attached[e].template.environment(),
+                        document,
+                        path: path_field(&docs.path(Some(e)), "environment"),
+                        ctx: &self.contexts[e],
+                    }
+                } else {
+                    let j = e - attached.len();
+                    super::host_requirements::EnvironmentSource {
+                        environment: &job_template.job_environments.as_deref().unwrap_or(&[])[j],
+                        document,
+                        path: path_index(&path_field(&self.job_path, "jobEnvironments"), j),
+                        ctx,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// The wrap-hook layers each subject's Sessions enter from the Job's
+    /// Environments (the attachments and the Job Template's own), labelled
+    /// as the single-layer message names them.
+    pub(super) fn wrap_layers(&self, steps: &[job::Step]) -> Vec<Vec<String>> {
+        steps
+            .iter()
+            .map(|step| {
+                self.environments
+                    .iter()
+                    .zip(&self.environment_documents)
+                    .filter(|(env, doc)| {
+                        environment_wraps(env) && step.enters_environment(doc, &env.name)
+                    })
+                    .map(|(env, doc)| wrap_layer_label(&env.name, doc))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The single-layer rule and the combined host requirements of every
+    /// Step, then every error in §7.4.1 order, then the caller limits: the
+    /// rest of [`apply_environment_templates`].
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        self,
+        mut steps: Vec<job::Step>,
+        paths: &[Vec<PathElement>],
+        check_errors: ValidationErrors,
+        limits: Result<(), ModelError>,
+        job_template: &JobTemplate,
+        attached: &[AttachedEnvironmentTemplate<'_>],
+        ctx: &ValidationContext,
+    ) -> Result<CreatedJob, ModelError> {
+        let sources = self.sources(job_template, attached, ctx);
+        let mut staged = StagedErrors::default();
+        let mut discarded_host_requirements: Vec<Vec<DiscardedHostRequirement>> = self
+            .selections
+            .iter()
+            .map(|selection| selection.discarded_host_requirements.clone())
+            .collect();
+        check_wrap_layers(
+            &steps,
+            paths,
+            &self.environments,
+            &self.environment_documents,
+            &self.job_path,
+            &self.stopped,
+            &mut staged,
+        );
+        // ── §3.3.3: each Step's combined host requirements ──
+        // Last in §7.4.1: they are resolved with the Step's effective values, and
+        // only for the Environments the Step's Sessions enter. The Step's own
+        // discarded requirements come first.
+        super::host_requirements::combine_step_host_requirements(
+            &mut steps,
+            paths,
+            &self.job.name,
+            &sources,
+            &self.entered_per_step,
+            &self.job_path,
+            &self.default_symtab,
+            &self.env_names,
+            self.budgets,
+            &mut discarded_host_requirements,
+            &mut staged,
+            None,
+        );
+        drop(sources);
+        let Selected {
+            mut job,
+            environments,
+            environment_documents,
+            attached_count,
+            staged: selected_staged,
+            body_staged,
+            warnings,
+            disabled_environments,
+            environment_statuses,
+            ..
+        } = self;
+        let mut all = selected_staged;
+        all.absorb(staged, &[]);
+        super::finish_errors(check_errors, body_staged, all, attached_count > 0)?;
+        limits?;
+
+        job.steps = steps;
+        job.job_environments = (!environments.is_empty()).then_some(environments);
+        Ok(CreatedJob {
+            job,
+            environment_documents,
+            warnings,
+            disabled_environments,
+            environment_statuses,
+            discarded_host_requirements,
+        })
+    }
+}
+
+/// Decide every subject's Environments: the work of
+/// [`apply_environment_templates`] up to its single-layer rule and host
+/// requirements. `steps` are the subjects, index for index with
+/// `selections` and `paths` (each relative to the Job Template); `job`
+/// holds the rest of the Job, whose `steps` this does not read.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn select_environments<'a>(
+    mut job: job::Job,
+    steps: &mut [job::Step],
+    paths: &[Vec<PathElement>],
+    mut selections: Vec<super::env_params::StepSelection<'a>>,
+    job_envs: &super::env_params::JobEnvironments<'a>,
+    body_staged: StagedErrors,
+    job_template: &'a JobTemplate,
+    env_names: &[String],
+    attached: &'a [AttachedEnvironmentTemplate<'a>],
+    job_parameter_values: &JobParameterValues,
+    ctx: &'a ValidationContext,
+) -> Result<Selected<'a>, ModelError> {
     // Paths start with their document only when Environment Templates are
     // attached (see `finish_errors`).
     let job_path = if attached.is_empty() {
@@ -929,12 +1135,15 @@ pub(crate) fn apply_environment_templates(
     let own_at = |k: usize| attached.len() + k;
     // Each Step's index, by name, to file an error naming several Steps
     // under the first.
-    let step_index: HashMap<&str, usize> = job_template
-        .steps
+    let step_index: HashMap<String, usize> = steps
         .iter()
         .enumerate()
-        .map(|(i, st)| (st.name.as_str(), i))
+        .map(|(i, st)| (st.name.clone(), i))
         .collect();
+    // A subject's path, starting with its document when Environment
+    // Templates are attached.
+    let subject_path =
+        |i: usize| -> Vec<PathElement> { job_path.iter().chain(&paths[i]).cloned().collect() };
     let job_env_names: HashSet<&str> = job
         .job_environments
         .iter()
@@ -982,10 +1191,7 @@ pub(crate) fn apply_environment_templates(
     // attachment (§3.2.1 item 2).
     let mut not_found: Vec<Vec<OptionalEntryNotFound>> = Vec::with_capacity(selections.len());
     for (i, selection) in selections.iter().enumerate() {
-        let deps_path = path_field(
-            &path_index(&path_field(&job_path, "steps"), i),
-            "dependencies",
-        );
+        let deps_path = path_field(&subject_path(i), "dependencies");
         let mut step_resolved = Vec::new();
         let mut step_declined = HashSet::new();
         let mut step_not_found = Vec::new();
@@ -1014,7 +1220,7 @@ pub(crate) fn apply_environment_templates(
                     EnvironmentActivation::Always => {
                         staged.at(Stage::Step4, i, entry.dependency_index).add(
                             &path_field(&entry_path, "enableIf"),
-                            always_entry_disabled_message(&job_template.steps[i].name, &de.label),
+                            always_entry_disabled_message(&steps[i].name, &de.label),
                         )
                     }
                 }
@@ -1022,13 +1228,20 @@ pub(crate) fn apply_environment_templates(
         }
         for entry in &selection.frozen {
             let entry_path = path_index(&deps_path, entry.dependency_index);
-            match set.match_entry(
+            let mut ambiguity = ValidationErrors::default();
+            let matched = set.match_entry(
                 &entry.environment,
                 entry.required,
                 path_field(&entry_path, "environment"),
                 staged.at(Stage::Step3, i, entry.dependency_index),
+                &mut ambiguity,
                 &mut warnings,
-            ) {
+            );
+            staged
+                .at_job_level(Stage::Step3, i, entry.dependency_index)
+                .errors
+                .extend(ambiguity.errors);
+            match matched {
                 // With `required: true` it is an error (reported).
                 EntryMatch::Absent => {
                     if !entry.required {
@@ -1084,31 +1297,31 @@ pub(crate) fn apply_environment_templates(
     // considered each and whether its Sessions enter it (`None` for an
     // `ON_REQUEST` one it does not request).
     let mut attached_statuses: Vec<Vec<Option<EnvironmentStatus>>> =
-        Vec::with_capacity(job.steps.len());
+        Vec::with_capacity(steps.len());
     // Per attachment: whether it applies to some Step that is not stopped
     // (§3.2 constraint 7).
     let mut applies_to_some_step = vec![false; set.declaring.len()];
     // Per Step: its values for the Job Environments the group rule decided
     // here, in written order.
     let mut deferred_values: Vec<Vec<job::EnvironmentParameterValues>> =
-        Vec::with_capacity(job.steps.len());
+        Vec::with_capacity(steps.len());
     // Per Step: the indices in `jobEnvironments` of the ones decided here
     // that are superseded or that their own `enableIf` disables, each with
     // which of the two.
     let mut left_out_job_environments: Vec<Vec<(usize, EnvironmentStatus)>> =
-        Vec::with_capacity(job.steps.len());
+        Vec::with_capacity(steps.len());
     // Per Step, by position in the Job's Environment order (the
     // attachments, then `jobEnvironments`): for a superseded one, the
     // position of the member of its group the Step's Sessions enter.
     let combined_count = own_at(job_envs.all.len());
-    let mut superseded_by: Vec<Vec<Option<usize>>> = Vec::with_capacity(job.steps.len());
-    let mut step_environment_parameters = Vec::with_capacity(job.steps.len());
+    let mut superseded_by: Vec<Vec<Option<usize>>> = Vec::with_capacity(steps.len());
+    let mut step_environment_parameters = Vec::with_capacity(steps.len());
     // §7.4.1: a Step with an error from steps 1–4 has no fixed set of
     // Environments, so steps 5–8 are not taken for it.
-    let stopped: Vec<bool> = (0..job.steps.len())
+    let stopped: Vec<bool> = (0..steps.len())
         .map(|i| body_staged.stopped(i) || staged.stopped(i))
         .collect();
-    for (i, step) in job.steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate() {
         if stopped[i] {
             attached_statuses.push(vec![None; set.declaring.len()]);
             superseded_by.push(vec![None; combined_count]);
@@ -1120,7 +1333,7 @@ pub(crate) fn apply_environment_templates(
             }
             continue;
         }
-        let step_path = path_index(&path_field(&job_path, "steps"), i);
+        let step_path = subject_path(i);
         let mut statuses = Vec::with_capacity(set.declaring.len());
         let mut values = Vec::new();
         let mut missing = Vec::new();
@@ -1378,7 +1591,7 @@ pub(crate) fn apply_environment_templates(
         .collect();
     let mut per_step = step_environment_parameters.into_iter();
     let mut deferred_per_step = deferred_values.into_iter();
-    let mut entered_per_step = Vec::with_capacity(job.steps.len());
+    let mut entered_per_step = Vec::with_capacity(steps.len());
     // Each Step's status for every Environment of the Job, by index into
     // `environments`: the attached ones, then the Job Template's.
     let statuses_per_step: Vec<Vec<Option<EnvironmentStatus>>> = attached_statuses
@@ -1389,7 +1602,7 @@ pub(crate) fn apply_environment_templates(
             statuses
         })
         .collect();
-    for ((step, statuses), stopped) in job.steps.iter_mut().zip(&statuses_per_step).zip(&stopped) {
+    for ((step, statuses), stopped) in steps.iter_mut().zip(&statuses_per_step).zip(&stopped) {
         // The attachments' values, then the Job Environments', which were
         // committed in written order. Job creation proper sets no values.
         debug_assert!(step.environment_parameters.is_none());
@@ -1404,8 +1617,8 @@ pub(crate) fn apply_environment_templates(
             .collect();
         entered_per_step.push(entered);
     }
-    let mut disabled_environments = Vec::with_capacity(job.steps.len());
-    let mut environment_statuses = Vec::with_capacity(job.steps.len());
+    let mut disabled_environments = Vec::with_capacity(steps.len());
+    let mut environment_statuses = Vec::with_capacity(steps.len());
     // The scope an Environment of the Job has, from its document.
     let scope_of = |document: &job::Document| {
         if document.is_job_template() {
@@ -1414,8 +1627,7 @@ pub(crate) fn apply_environment_templates(
             EnvironmentScope::Attached
         }
     };
-    for (((((step, selection), entered), statuses), not_found), superseded_by) in job
-        .steps
+    for (((((step, selection), entered), statuses), not_found), superseded_by) in steps
         .iter_mut()
         .zip(&selections)
         .zip(&entered_per_step)
@@ -1506,44 +1718,26 @@ pub(crate) fn apply_environment_templates(
             not_found,
         });
     }
-    check_wrap_layers(
-        &job,
-        &environments,
-        &environment_documents,
-        &job_path,
-        &stopped,
-        &mut staged,
-    );
-    // ── §3.3.3: each Step's combined host requirements ──
-    // Last in §7.4.1: they are resolved with the Step's effective values, and
-    // only for the Environments the Step's Sessions enter. The Step's own
-    // discarded requirements come first.
-    let mut discarded_host_requirements: Vec<Vec<DiscardedHostRequirement>> = selections
-        .iter()
-        .map(|selection| selection.discarded_host_requirements.clone())
-        .collect();
-    super::host_requirements::combine_step_host_requirements(
-        &mut job,
-        &sources,
-        &entered_per_step,
-        &job_path,
-        &default_symtab,
-        &env_names_value(env_names),
-        super::EvalBudgets::from_ctx(ctx),
-        &mut discarded_host_requirements,
-        &mut staged,
-    );
-    super::finish_errors(check_errors, body_staged, staged, !attached.is_empty())?;
-    limits?;
-
-    job.job_environments = (!environments.is_empty()).then_some(environments);
-    Ok(CreatedJob {
+    let contexts = set.contexts.clone();
+    drop(sources);
+    Ok(Selected {
         job,
+        selections,
+        environments,
         environment_documents,
+        contexts,
+        entered_per_step,
+        stopped,
+        staged,
+        body_staged,
         warnings,
         disabled_environments,
         environment_statuses,
-        discarded_host_requirements,
+        job_path,
+        env_names: env_names_value(env_names),
+        default_symtab,
+        budgets: super::EvalBudgets::from_ctx(ctx),
+        attached_count: attached.len(),
     })
 }
 
@@ -1566,45 +1760,64 @@ pub(crate) fn env_names_value(names: &[String]) -> ExprValue {
 /// 5); this check also covers an `enableIf` that is not known there and
 /// the attached Environments (plan R8).
 fn check_wrap_layers(
-    job: &job::Job,
+    steps: &[job::Step],
+    paths: &[Vec<PathElement>],
     environments: &[job::Environment],
     documents: &[job::Document],
     job_path: &[PathElement],
     stopped: &[bool],
     staged: &mut StagedErrors,
 ) {
-    let wraps = |env: &job::Environment| {
-        env.script
-            .as_ref()
-            .is_some_and(|s| s.actions.has_any_wrap_hook())
-    };
-    for (i, step) in job.steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate() {
         if stopped[i] {
             continue;
         }
-        let mut layers: Vec<String> = environments
+        let layers: Vec<String> = environments
             .iter()
             .zip(documents)
-            .filter(|(env, doc)| wraps(env) && step.enters_environment(doc, &env.name))
-            .map(|(env, doc)| match doc {
-                job::Document::JobTemplate => format!("'{}'", env.name),
-                other => format!("'{}' ({other})", env.name),
-            })
+            .filter(|(env, doc)| environment_wraps(env) && step.enters_environment(doc, &env.name))
+            .map(|(env, doc)| wrap_layer_label(&env.name, doc))
             .collect();
-        layers.extend(
-            step.step_environments
-                .iter()
-                .flatten()
-                .filter(|env| wraps(env))
-                .map(|env| format!("'{}' (stepEnvironments)", env.name)),
-        );
-        if layers.len() > 1 {
+        if let Some(message) = step_wrap_layers_error(layers, step) {
             staged.at(Stage::Step7, i, ANY).add(
-                &path_index(&path_field(job_path, "steps"), i),
-                wrap_layers_message(&layers),
+                &job_path
+                    .iter()
+                    .chain(&paths[i])
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                message,
             );
         }
     }
+}
+
+/// Whether `env` defines a wrap hook (RFC 0008).
+fn environment_wraps(env: &job::Environment) -> bool {
+    env.script
+        .as_ref()
+        .is_some_and(|s| s.actions.has_any_wrap_hook())
+}
+
+/// How the single-layer message names a Job Environment or an attached one.
+fn wrap_layer_label(name: &str, doc: &job::Document) -> String {
+    match doc {
+        job::Document::JobTemplate => format!("'{name}'"),
+        other => format!("'{name}' ({other})"),
+    }
+}
+
+/// The single-layer rule's message for `step`, whose Sessions enter the
+/// wrapping Job and attached Environments `layers` and its own Step
+/// Environments: `None` when there is at most one layer.
+pub(super) fn step_wrap_layers_error(mut layers: Vec<String>, step: &job::Step) -> Option<String> {
+    layers.extend(
+        step.step_environments
+            .iter()
+            .flatten()
+            .filter(|env| environment_wraps(env))
+            .map(|env| format!("'{}' (stepEnvironments)", env.name)),
+    );
+    (layers.len() > 1).then(|| wrap_layers_message(&layers))
 }
 
 /// The single-layer rule's message for a Step whose Sessions would enter
@@ -1655,7 +1868,14 @@ fn check_attached_wrap_layers(
         .filter(|d| wraps(attached[*d].template.environment()))
         .collect();
     let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
-    for (i, step) in job_template.steps.iter().enumerate() {
+    for (i, st) in job_template.step_templates().enumerate() {
+        // CONTROL_FLOW: a check over a Step's whole set of Environments is
+        // made here only for a Step known to be enabled (RFC 0011
+        // `<Environment>` items 3 and 6).
+        if !known.step_known_enabled(i) {
+            continue;
+        }
+        let step = st.step;
         let mut layers: Vec<String> = wrapping_attached
             .iter()
             .filter(|d| entered[i][**d])
@@ -1687,7 +1907,11 @@ fn check_attached_wrap_layers(
         );
         if layers.len() > 1 {
             errors.add(
-                &path_index(&path_field(job_path, "steps"), i),
+                &job_path
+                    .iter()
+                    .cloned()
+                    .chain(st.path())
+                    .collect::<Vec<_>>(),
                 wrap_layers_message(&layers),
             );
         }
@@ -1721,11 +1945,11 @@ fn certainly_entered_per_step(
         .collect();
     let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
     job_template
-        .steps
-        .iter()
+        .step_templates()
         .zip(known_entries)
         .enumerate()
-        .map(|(i, (step, entries))| {
+        .map(|(i, (st, entries))| {
+            let step = st.step;
             let states = attached
                 .iter()
                 .zip(entries)
@@ -1919,11 +2143,21 @@ pub fn check_environment_templates(
     // (§3.2 item 3.2).
     let mut declined: Vec<HashSet<usize>> = Vec::new();
     let mut undetermined: Vec<HashSet<usize>> = Vec::new();
-    for (i, step) in job_template.steps.iter().enumerate() {
-        let deps_path = path_field(
-            &path_index(&path_field(&job_path, "steps"), i),
-            "dependencies",
-        );
+    // CONTROL_FLOW (RFC 0011 `<Environment>` item 3): the checks whose
+    // outcome depends on whether a Step runs are made here only for a Step
+    // known to be enabled, and otherwise in its Environment selection. An
+    // entry name that two attachments define is reported whatever the
+    // Step's `enableIf`.
+    let step_paths: Vec<Vec<PathElement>> = job_template
+        .step_templates()
+        .map(|st| job_path.iter().cloned().chain(st.path()).collect())
+        .collect();
+    let step_runs: Vec<bool> = (0..step_paths.len())
+        .map(|i| known.step_known_enabled(i))
+        .collect();
+    for (i, st) in job_template.step_templates().enumerate() {
+        let step = st.step;
+        let deps_path = path_field(&step_paths[i], "dependencies");
         let mut step_resolved = Vec::new();
         let mut step_unapplied = HashSet::new();
         let mut step_ambiguous = HashSet::new();
@@ -1962,6 +2196,7 @@ pub fn check_environment_templates(
                             // No effect on a pre-extension one, which
                             // behaves as `ALWAYS` (§4 item 4).
                             EnvironmentActivation::Always if de.pre_extension => {}
+                            EnvironmentActivation::Always if !step_runs[i] => {}
                             EnvironmentActivation::Always => errors.add(
                                 &path_field(&entry_path, "enableIf"),
                                 always_entry_disabled_message(&step.name, &de.label),
@@ -1989,13 +2224,21 @@ pub fn check_environment_templates(
                     continue;
                 }
             }
-            match set.match_entry(
+            let mut not_found = ValidationErrors::default();
+            let mut ambiguity = ValidationErrors::default();
+            let matched = set.match_entry(
                 name,
                 dep.is_required(),
                 path_field(&entry_path, "environment"),
-                &mut errors,
+                &mut not_found,
+                &mut ambiguity,
                 &mut warnings,
-            ) {
+            );
+            errors.errors.extend(ambiguity.errors);
+            if step_runs[i] {
+                errors.errors.extend(not_found.errors);
+            }
+            match matched {
                 EntryMatch::Absent => {}
                 EntryMatch::One(doc) => {
                     let params = dep.parameters.as_ref().map_or(&empty, |p| &p.0);
@@ -2067,8 +2310,9 @@ pub fn check_environment_templates(
     // Per attachment: whether it applies to some Step, for the unreachable
     // attachments' error (§3.2 constraint 7).
     let mut applies_to_some_step = vec![false; set.declaring.len()];
-    for (i, step) in job_template.steps.iter().enumerate() {
-        let step_path = path_index(&path_field(&job_path, "steps"), i);
+    for (i, st) in job_template.step_templates().enumerate() {
+        let step = st.step;
+        let step_path = step_paths[i].clone();
         let mut missing = Vec::new();
         let step_env_names: HashSet<&str> = step
             .step_environments
@@ -2184,7 +2428,7 @@ pub fn check_environment_templates(
             .zip(checks)
             .enumerate()
         {
-            if !checked {
+            if !checked || !step_runs[i] {
                 continue;
             }
             let values_checked = states[doc] == Known::Entered;
@@ -2210,7 +2454,7 @@ pub fn check_environment_templates(
         // constraint 7 was checked at template validation.
         let deps_path = path_field(&step_path, "dependencies");
         for (k, de) in &grouped_job_envs {
-            if states[set.declaring.len() + k] != Known::Entered {
+            if states[set.declaring.len() + k] != Known::Entered || !step_runs[i] {
                 continue;
             }
             let (entry, dep) = entries[*k];
@@ -2243,7 +2487,7 @@ pub fn check_environment_templates(
         |doc| applies_to_some_step[doc],
     );
     // What each Step's entry for each attachment is known to be.
-    let known_entries: Vec<Vec<KnownEntry>> = (0..job_template.steps.len())
+    let known_entries: Vec<Vec<KnownEntry>> = (0..step_paths.len())
         .map(|i| {
             (0..attached.len())
                 .map(|d| {
@@ -2346,6 +2590,7 @@ pub fn check_environment_templates(
         job_template,
         &sources,
         &entered,
+        &step_runs,
         &job_path,
         &step_ctx,
         super::EvalBudgets::from_ctx(ctx),

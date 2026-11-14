@@ -411,8 +411,13 @@ fn an_enable_if_that_resolves_to_another_type_is_an_error() {
     // Template validation rejects it for a decoded template; job creation
     // still checks it, since the template's fields are public.
     let mut jt = job_ok(&ENABLE_IF.replace("SCOPE", "ALWAYS"));
-    jt.steps[0].dependencies.as_mut().unwrap()[0].enable_if =
-        Some(openjd_model::template::ExprField::Expression("1".into()));
+    jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap()[0]
+        .enable_if = Some(openjd_model::template::ExprField::Expression("1".into()));
     let err = create_job(&jt, &job_params(&jt, &[]), &template_ctx(&jt))
         .unwrap_err()
         .to_string();

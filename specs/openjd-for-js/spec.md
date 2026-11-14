@@ -165,10 +165,10 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `maxStepCount` | `number` | Max number of steps in a job template. |
+| `maxStepCount` | `number` | Max number of steps in a job template; each top-level Step, loop, and loop body Step (`CONTROL_FLOW`, RFC 0013) counts once. |
 | `maxEnvCount` | `number` | Max number of environments (job + all step environments combined). |
 | `maxStepEnvironmentEntries` | `number` | Max number of `environment:` entries (`ENV_PARAMS`) in one Step's `dependencies`, counted as written: disabled and `required: false` entries count, `dependsOn` and `step` entries do not. Checked at template validation only, so `createJob` ignores it. |
-| `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve). |
+| `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve; with `CONTROL_FLOW`, across the Steps whose Tasks are known at job creation). The Rust per-Step limit `max_step_task_count` is not exposed. |
 | `maxStepScriptSize` | `number` | Max JSON-encoded size of a step script, in bytes. |
 | `maxEnvironmentSize` | `number` | Max JSON-encoded size of an environment, in bytes. |
 | `maxTemplateSize` | `number` | Max total template document size, in bytes. Checked before parsing begins. |
@@ -176,6 +176,11 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 | `maxResolvedDataLen` | `number` | Opt-in cap on each resolved embedded-file `data` value (§6.1.2 sets no spec limit). |
 | `maxEvalMemoryBytes` | `number` | Evaluation memory budget per format-string expression, in bytes. Omit for the spec-recommended 100 MB default. |
 | `maxEvalOperations` | `number` | Evaluation operation budget per format-string expression. Omit for the spec-recommended 10 M default. |
+
+The Rust fields `max_task_output_bytes` (the per-Task `CONTROL_FLOW` output size limit a
+runtime applies) and `max_loop_value_bytes` (the RFC 0013 loop value limit, checked as a
+loop is bound and runs) are not exposed: the bindings parse and create Jobs but run no Tasks
+and refuse loops, so both are always `None`.
 
 `CallerLimits` is exposed as a plain object rather than an exported class: callers construct object literals and reuse them across calls with no `.free()` ceremony. Resolves review finding F4.
 
@@ -189,7 +194,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. `pathOptions` applies to Job Parameters only: `ENV_PARAMS` Environment parameter values evaluate with POSIX semantics (Expression Language §1.2.1), and a PATH value of any form is used as given (Template Schemas §4.5 item 3). `createJob` takes no Environment Templates: it calls the Rust `create_job`, which resolves the Job against none, so an enabled `environment:` dependency naming no Job Environment is an error unless it has `required: false`, in which case it is dropped. |
+| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. `pathOptions` applies to Job Parameters only: `ENV_PARAMS` Environment parameter values evaluate with POSIX semantics (Expression Language §1.2.1), and a PATH value of any form is used as given (Template Schemas §4.5 item 3). `createJob` takes no Environment Templates: it calls the Rust `create_job`, which resolves the Job against none, so an enabled `environment:` dependency naming no Job Environment is an error unless it has `required: false`, in which case it is dropped. With `CONTROL_FLOW`, a Step may come back pending inputs (its `binding` names what it waits for, and its parameter space, host requirements, and resolved symbol table are absent) or skipped; the bindings do not expose `advanceStepBinding` to finish one. The Job's `toJSON()` includes its job outputs (`outputs`), each with `evaluated` when `createJob` evaluated it; the bindings do not expose `evaluateJobOutput` for the rest. A job output that fails at creation makes `createJob` throw. A Job with a loop (`CONTROL_FLOW`, RFC 0013) makes it throw `createJob does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop '<name>'.`, because the bindings expose only Steps; `JobTemplate` validation accepts loops. |
 | `preprocessJobParameters` | `(template: JobTemplate, rawValues: Record<string, string>, pathOptions: PathParameterOptions) → Map<string, ExprValue>` | Coerce raw string parameter values to typed ExprValues per the parameter definitions. |
 | `mergeJobParameterDefinitions` | `(templates: (JobTemplate \| EnvironmentTemplate)[]) → JobParameterDefinition[]` | Merge parameter definitions from multiple templates per the spec's merging rules. |
 | `evaluateLetBindings` | `(bindings: string[], symbols: SymbolTable) → SymbolTable` | Evaluate `let` bindings and add results to the symbol table. |
@@ -257,6 +262,7 @@ Returned by `createJob`. All format strings are resolved.
 | `steps` | `Step[]` |
 | `jobEnvironments` | `Environment[]` |
 | `parameters` | `Map<string, ExprValue>` |
+| `outputs` | `object[] \| undefined` — `CONTROL_FLOW` job outputs, in `toJSON()` (`name`, `type`, `unit`, `constraints`, `objectType`, `description`, `value`, and `evaluated`: absent while pending, `{state: "VALUE", value: ...}`, or `{state: "NULL"}` for no value) |
 
 `Job.toJSON()` serializes the Rust `job::Job` with serde. With `ENV_PARAMS`, each serialized
 Step that has effective Environment parameter values carries `environmentParameters`: a list of

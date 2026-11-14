@@ -24,6 +24,7 @@
 //! - **EXPR prerequisite.** A template that lists `WRAP_ACTIONS` in
 //!   `extensions:` must also list `EXPR`.
 
+use super::helpers::check_expr_prerequisite;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::actions::EnvironmentActions;
 use std::collections::HashSet;
@@ -88,19 +89,6 @@ fn check_env(
     script.actions.has_any_wrap_hook()
 }
 
-/// Enforce the EXPR prerequisite: when `WRAP_ACTIONS` is listed in a
-/// template's `extensions:`, `EXPR` must also be listed (RFC 0008).
-pub(super) fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationErrors) {
-    let has_wrap = ctx.profile.has_extension(ModelExtension::WrapActions);
-    let has_expr = ctx.profile.has_extension(ModelExtension::Expr);
-    if has_wrap && !has_expr {
-        errors.add(
-            &path_field(&[], "extensions"),
-            "WRAP_ACTIONS requires EXPR; both must be listed in the template's `extensions` (RFC 0008).",
-        );
-    }
-}
-
 /// Validate RFC 0008 constraints for a job template.
 ///
 /// This runs regardless of whether `WRAP_ACTIONS` is enabled:
@@ -115,7 +103,7 @@ pub fn validate_wrap_actions_job_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
-    check_expr_prerequisite(ctx, errors);
+    check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", errors);
 
     // Single-wrap-layer enforcement (RFC 0008).
     //
@@ -184,25 +172,42 @@ pub fn validate_wrap_actions_job_template(
     // entry declines a BY_DEFAULT one, and an expression entry may
     // (ENV_PARAMS, Template Schemas §3.2 item 3.2).
     let step_entered: Vec<Vec<bool>> = jt
-        .steps
-        .iter()
+        .step_templates()
         .enumerate()
-        .map(|(i, step)| {
+        .map(|(i, st)| {
             job_wrap_envs
                 .iter()
                 .map(|(k, env)| {
                     env.certainly_entered(
                         known.job_environment(*k),
-                        known.entry_in_step(i, step, &env.name),
+                        known.entry_in_step(i, st.step, &env.name),
                     )
                 })
                 .collect()
         })
         .collect();
-    // The ones every Step certainly enters.
-    let every_step_count = (0..job_wrap_envs.len())
-        .filter(|k| step_entered.iter().all(|entered| entered[*k]))
-        .count();
+    // The single-layer rule is a check over a Step's whole set of
+    // Environments, so with CONTROL_FLOW it is made here only for the Steps
+    // known to be enabled (RFC 0011 `<Environment>` items 3 and 6), and
+    // otherwise when the Step is bound.
+    let checked: Vec<bool> = (0..step_entered.len())
+        .map(|i| known.step_known_enabled(i))
+        .collect();
+    // The ones every checked Step certainly enters; none when no Step is
+    // checked.
+    let every_step_count = if checked.iter().any(|c| *c) {
+        (0..job_wrap_envs.len())
+            .filter(|k| {
+                step_entered
+                    .iter()
+                    .zip(&checked)
+                    .filter(|(_, c)| **c)
+                    .all(|(entered, _)| entered[*k])
+            })
+            .count()
+    } else {
+        0
+    };
 
     // Job-envs-only violation: multiple ALWAYS or BY_DEFAULT wrap envs in
     // jobEnvironments that every Step certainly enters are reachable from
@@ -220,8 +225,12 @@ pub fn validate_wrap_actions_job_template(
     //    ones it certainly enters — that sum is
     //    exactly the set of wrap envs certainly reachable in that step's
     //    session.
-    for (i, step) in jt.steps.iter().enumerate() {
-        let base = path_index(&path_field(&[], "steps"), i);
+    for (i, st) in jt.step_templates().enumerate() {
+        let step = st.step;
+        let base = st.path();
+        // A Step that is not checked still has each of its Environments
+        // checked on its own, but adds no layer count.
+        let active_for_step = active && checked[i];
         let job_env_wrap_count = step_entered[i].iter().filter(|e| **e).count();
         let requested: HashSet<&str> = step
             .dependencies
@@ -239,7 +248,7 @@ pub fn validate_wrap_actions_job_template(
             // BY_DEFAULT layers alone are reported at the Step when
             // another Step declines one of them, so the jobEnvironments
             // report above does not cover it.
-            if active && job_env_wrap_count + requested.len() > 1 {
+            if active_for_step && job_env_wrap_count + requested.len() > 1 {
                 if !requested.is_empty() {
                     errors.add(&path_field(&base, "dependencies"), SINGLE_WRAP_LAYER_MSG);
                 } else if every_step_count <= 1 {
@@ -265,7 +274,7 @@ pub fn validate_wrap_actions_job_template(
         // requested ON_REQUEST envs add layers on top of the job envs,
         // as for a step without stepEnvironments, and at the
         // stepEnvironments otherwise.
-        if active && job_env_wrap_count + requested.len() + step_env_wrap_count > 1 {
+        if active_for_step && job_env_wrap_count + requested.len() + step_env_wrap_count > 1 {
             let at = if step_env_wrap_count == 0 && !requested.is_empty() {
                 path_field(&base, "dependencies")
             } else {
@@ -291,7 +300,7 @@ pub fn validate_wrap_actions_environment_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
-    check_expr_prerequisite(ctx, errors);
+    check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", errors);
     let env_path = path_field(&[], "environment");
     check_env(&et.environment, &env_path, active, errors);
 }

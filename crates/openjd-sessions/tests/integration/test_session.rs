@@ -128,6 +128,8 @@ async fn test_relative_session_root_is_absolutized() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).expect("relative root should be accepted");
@@ -158,6 +160,8 @@ async fn test_root_dir_permissions_posix() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -197,6 +201,8 @@ fn config_in_root(root: &std::path::Path, session_id: &str) -> SessionConfig {
         debug_collect_stdout: true,
         echo_openjd_directives: true,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+        control_flow: false,
+        output_callback: None,
     }
 }
 
@@ -336,6 +342,8 @@ async fn test_sticky_bit_policy_strict_rejects_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let result = Session::with_config(config);
@@ -370,6 +378,8 @@ async fn test_sticky_bit_policy_strict_allows_safe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let session = Session::with_config(config).unwrap();
@@ -403,6 +413,8 @@ async fn test_sticky_bit_policy_warn_allows_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Warn,
     };
     let session = Session::with_config(config).unwrap();
@@ -446,6 +458,8 @@ async fn test_sticky_bit_policy_disabled_skips_check() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -494,6 +508,7 @@ async fn test_run_task() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -508,7 +523,9 @@ async fn test_run_task_with_env_vars() {
     let mut vars = HashMap::new();
     vars.insert("TASK_VAR".into(), fs("task_value"));
     let env = env_with_vars("env1", vars);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -517,6 +534,7 @@ async fn test_run_task_with_env_vars() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -534,6 +552,7 @@ async fn test_run_task_fail_run() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -553,6 +572,7 @@ async fn test_no_task_run_after_fail() {
         None,
         None,
         None,
+        &Default::default(),
     )
     .await
     .unwrap();
@@ -585,7 +605,14 @@ async fn test_run_task_with_variables() {
         embedded_files: None,
     };
     let r = s
-        .run_task("test_step", &script, Some(&task_params), None, None)
+        .run_task(
+            "test_step",
+            &script,
+            Some(&task_params),
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert!(r.stdout.contains("hello"));
@@ -598,7 +625,10 @@ async fn test_enter_environment_basic() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "sh", vec!["-c", "echo entered"]);
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert!(!id.is_empty());
 }
 
@@ -625,7 +655,10 @@ async fn test_enter_environment_with_env_vars() {
         variables: Some(vars),
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert!(!id.is_empty());
 }
 
@@ -639,8 +672,13 @@ async fn test_enter_two_environments() {
         vec!["-c", "echo 'openjd_env: FROM_ENV1=val1'"],
     );
     let env2 = env_with_enter("env2", "sh", vec!["-c", "echo FROM_ENV1=$FROM_ENV1"]);
-    s.enter_environment(&env1, None, None, None).await.unwrap();
-    let id2 = s.enter_environment(&env2, None, None, None).await.unwrap();
+    s.enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let id2 = s
+        .enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert!(!id2.is_empty());
 }
 
@@ -649,7 +687,10 @@ async fn test_enter_environment_fail_run() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "sh", vec!["-c", "exit 1"]);
-    assert!(s.enter_environment(&env, None, None, None).await.is_err());
+    assert!(s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -659,7 +700,9 @@ async fn test_enter_environment_command_not_found() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "nonexistent-command-xyz", vec![]);
-    let result = s.enter_environment(&env, None, None, None).await;
+    let result = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_err());
     assert_eq!(s.state(), SessionState::ReadyEnding);
     let status = s
@@ -674,7 +717,9 @@ async fn test_run_task_command_not_found() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let script = step("nonexistent-command-xyz", vec![]);
-    let result = s.run_task("test_step", &script, None, None, None).await;
+    let result = s
+        .run_task("test_step", &script, None, None, None, &Default::default())
+        .await;
     assert!(result.is_err());
     assert_eq!(s.state(), SessionState::ReadyEnding);
     let status = s
@@ -704,7 +749,10 @@ async fn test_enter_no_action() {
         variables: None,
         resolved_symtab: None,
     };
-    assert!(s.enter_environment(&env, None, None, None).await.is_ok());
+    assert!(s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -733,6 +781,8 @@ async fn test_enter_environment_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(session_config).unwrap();
@@ -755,7 +805,10 @@ async fn test_enter_environment_with_resolved_variables() {
         variables: Some(vars),
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert!(!id.is_empty());
 }
 
@@ -773,7 +826,7 @@ async fn test_enter_environment_env_var_value_over_2048_chars_rejected() {
     vars.insert("BIG".into(), fs("{{ 'A' * 2049 }}"));
     let env = env_with_vars("env1", vars);
     let err = s
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap_err();
     assert_eq!(
@@ -789,7 +842,10 @@ async fn test_enter_environment_env_var_value_at_2048_chars_accepted() {
     let mut vars = HashMap::new();
     vars.insert("BIG".into(), fs("{{ 'A' * 2048 }}"));
     let env = env_with_vars("env1", vars);
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert!(!id.is_empty());
 }
 
@@ -816,8 +872,14 @@ async fn test_exit_environment_basic() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    let out = s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let out = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert!(out.contains("exited"));
 }
 
@@ -845,8 +907,14 @@ async fn test_exit_environment_with_env_vars() {
         resolved_symtab: None,
     };
     // Enter first to set vars
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    let out = s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let out = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert!(out.contains("EXIT_VAR=exit_value"));
 }
 
@@ -857,8 +925,13 @@ async fn test_exit_environment_removes_variables() {
     let mut vars = HashMap::new();
     vars.insert("REMOVED_VAR".into(), fs("value"));
     let env = env_with_vars("env1", vars);
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -867,6 +940,7 @@ async fn test_exit_environment_removes_variables() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -894,8 +968,14 @@ async fn test_exit_environment_fail_run() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    assert!(s.exit_environment(&id, None, true, None).await.is_err());
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    assert!(s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -903,8 +983,13 @@ async fn test_run_task_after_env_exit() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "sh", vec!["-c", "echo 'openjd_env: PERSIST=yes'"]);
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
 
     // After exit, env vars set via openjd_env are removed along with the environment.
     // Only process_env vars persist across environment exits.
@@ -915,6 +1000,7 @@ async fn test_run_task_after_env_exit() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -930,7 +1016,9 @@ async fn test_direct_definition() {
     let mut vars = HashMap::new();
     vars.insert("DIRECT".into(), fs("direct_val"));
     let env = env_with_vars("env1", vars);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -939,6 +1027,7 @@ async fn test_direct_definition() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -952,12 +1041,16 @@ async fn test_redefinition_nested() {
     let mut vars1 = HashMap::new();
     vars1.insert("VAR".into(), fs("outer"));
     let env1 = env_with_vars("env1", vars1);
-    s.enter_environment(&env1, None, None, None).await.unwrap();
+    s.enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let mut vars2 = HashMap::new();
     vars2.insert("VAR".into(), fs("inner"));
     let env2 = env_with_vars("env2", vars2);
-    s.enter_environment(&env2, None, None, None).await.unwrap();
+    s.enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -966,6 +1059,7 @@ async fn test_redefinition_nested() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -981,7 +1075,9 @@ async fn test_def_via_stdout() {
         "sh",
         vec!["-c", "echo 'openjd_env: STDOUT_VAR=stdout_val'"],
     );
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -990,6 +1086,7 @@ async fn test_def_via_stdout() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1022,7 +1119,9 @@ async fn test_def_via_stdout_overrides_direct() {
         variables: Some(vars),
         resolved_symtab: None,
     };
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1031,6 +1130,7 @@ async fn test_def_via_stdout_overrides_direct() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1042,14 +1142,18 @@ async fn test_undef_via_stdout() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env1 = env_with_enter("env1", "sh", vec!["-c", "echo 'openjd_env: TO_UNDEF=val'"]);
-    s.enter_environment(&env1, None, None, None).await.unwrap();
+    s.enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let env2 = env_with_enter(
         "env2",
         "sh",
         vec!["-c", "echo 'openjd_unset_env: TO_UNDEF'"],
     );
-    s.enter_environment(&env2, None, None, None).await.unwrap();
+    s.enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1058,6 +1162,7 @@ async fn test_undef_via_stdout() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1080,7 +1185,9 @@ async fn test_def_via_redacted_env_stdout() {
         "sh",
         vec!["-c", "echo 'openjd_redacted_env: SECRET_KEY=secret_val'"],
     );
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1089,6 +1196,7 @@ async fn test_def_via_redacted_env_stdout() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1121,7 +1229,9 @@ async fn test_def_via_multi_line_stdout() {
         "sh",
         vec!["-c", r#"printf '%s\n' 'openjd_env: "FOO=12\n34"'"#],
     );
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1130,6 +1240,7 @@ async fn test_def_via_multi_line_stdout() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1142,7 +1253,9 @@ async fn test_def_via_stdout_set_empty() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "sh", vec!["-c", "echo 'openjd_env: FOO='"]);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1151,6 +1264,7 @@ async fn test_def_via_stdout_set_empty() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1163,7 +1277,9 @@ async fn test_def_via_stdout_set_empty_json() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env = env_with_enter("env1", "sh", vec!["-c", r#"echo 'openjd_env: "FOO="'"#]);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1172,6 +1288,7 @@ async fn test_def_via_stdout_set_empty_json() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1188,7 +1305,9 @@ async fn test_def_via_redacted_env_json_stdout() {
         "sh",
         vec!["-c", "echo 'openjd_redacted_env: API_KEY=abc123def456'"],
     );
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Without extension, the env var should NOT be set
     let r = s
@@ -1198,6 +1317,7 @@ async fn test_def_via_redacted_env_json_stdout() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1225,7 +1345,9 @@ async fn test_def_via_redacted_env_with_extension() {
         "sh",
         vec!["-c", "echo 'openjd_redacted_env: PASSWORD=secret123'"],
     );
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1234,6 +1356,7 @@ async fn test_def_via_redacted_env_with_extension() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1270,7 +1393,9 @@ async fn test_def_via_redacted_env_with_variables() {
         variables: Some(vars),
         resolved_symtab: None,
     };
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Without extension, the redacted env should NOT override the direct variable
     let r = s
@@ -1280,6 +1405,7 @@ async fn test_def_via_redacted_env_with_variables() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1305,7 +1431,9 @@ async fn test_multiple_different_redacted_env_vars() {
     let env = env_with_enter("env1", "sh", vec!["-c",
         "echo 'openjd_redacted_env: PASSWORD=secret123'; echo 'openjd_redacted_env: PASSWORD2=mysecret123'"
     ]);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let r = s
         .run_task(
@@ -1317,6 +1445,7 @@ async fn test_multiple_different_redacted_env_vars() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1348,6 +1477,8 @@ async fn test_run_subprocess_basic() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1384,6 +1515,8 @@ async fn test_run_subprocess_ignores_entered_environments() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1392,7 +1525,9 @@ async fn test_run_subprocess_ignores_entered_environments() {
     let mut vars = HashMap::new();
     vars.insert("FOO".into(), fs("bar"));
     let env = env_with_vars("env1", vars);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // run_subprocess with use_session_env_vars=false should NOT see FOO
     let r = s
@@ -1426,6 +1561,8 @@ async fn test_run_subprocess_with_os_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1465,6 +1602,8 @@ async fn test_run_subprocess_includes_constructor_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1499,6 +1638,8 @@ async fn test_run_subprocess_empty_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1525,6 +1666,8 @@ async fn test_run_subprocess_whitespace_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1542,20 +1685,32 @@ async fn test_exit_environment_lifo_order() {
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let env1 = env_with_vars("env1", HashMap::new());
     let env2 = env_with_vars("env2", HashMap::new());
-    let id1 = s.enter_environment(&env1, None, None, None).await.unwrap();
-    let id2 = s.enter_environment(&env2, None, None, None).await.unwrap();
+    let id1 = s
+        .enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let id2 = s
+        .enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Must exit env2 first (LIFO)
     let err = s
-        .exit_environment(&id1, None, true, None)
+        .exit_environment(&id1, None, true, None, &Default::default())
         .await
         .unwrap_err();
     assert!(matches!(
         err,
         openjd_sessions::SessionError::LifoViolation { .. }
     ));
-    assert!(s.exit_environment(&id2, None, true, None).await.is_ok());
-    assert!(s.exit_environment(&id1, None, true, None).await.is_ok());
+    assert!(s
+        .exit_environment(&id2, None, true, None, &Default::default())
+        .await
+        .is_ok());
+    assert!(s
+        .exit_environment(&id1, None, true, None, &Default::default())
+        .await
+        .is_ok());
 }
 
 // === TestSessionExitEnvironment — exit unknown identifier ===
@@ -1565,7 +1720,13 @@ async fn test_exit_unknown_environment() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     assert!(s
-        .exit_environment(&"nonexistent".to_string(), None, true, None)
+        .exit_environment(
+            &"nonexistent".to_string(),
+            None,
+            true,
+            None,
+            &Default::default()
+        )
         .await
         .is_err());
 }
@@ -1579,15 +1740,23 @@ async fn test_redefinition_exit() {
     let mut vars1 = HashMap::new();
     vars1.insert("VAR".into(), fs("outer"));
     let env1 = env_with_vars("env1", vars1);
-    let _id1 = s.enter_environment(&env1, None, None, None).await.unwrap();
+    let _id1 = s
+        .enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let mut vars2 = HashMap::new();
     vars2.insert("VAR".into(), fs("inner"));
     let env2 = env_with_vars("env2", vars2);
-    let id2 = s.enter_environment(&env2, None, None, None).await.unwrap();
+    let id2 = s
+        .enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Exit inner env — outer value should be restored
-    s.exit_environment(&id2, None, true, None).await.unwrap();
+    s.exit_environment(&id2, None, true, None, &Default::default())
+        .await
+        .unwrap();
     let r = s
         .run_task(
             "test_step",
@@ -1595,6 +1764,7 @@ async fn test_redefinition_exit() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1630,6 +1800,7 @@ async fn warmup_shell() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await;
 }
@@ -1663,6 +1834,8 @@ fn realtime_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -1680,7 +1853,7 @@ async fn test_callback_receives_progress_before_completion() {
     // negligible relative to the total runtime.
     let script = step("sh", vec!["-c", "echo 'openjd_progress: 50.0'; sleep 2"]);
     let t0 = std::time::Instant::now();
-    s.run_task("test_step", &script, None, None, None)
+    s.run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let total = t0.elapsed();
@@ -1711,7 +1884,7 @@ async fn test_callback_receives_status_before_completion() {
         vec!["-c", "echo 'openjd_status: Rendering frame 1'; sleep 2"],
     );
     let t0 = std::time::Instant::now();
-    s.run_task("test_step", &script, None, None, None)
+    s.run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let total = t0.elapsed();
@@ -1743,7 +1916,9 @@ async fn test_env_enter_callback_receives_progress_before_completion() {
         vec!["-c", "echo 'openjd_progress: 50.0'; sleep 2"],
     );
     let t0 = std::time::Instant::now();
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let total = t0.elapsed();
 
     let ts = ts.lock().unwrap();
@@ -1773,6 +1948,7 @@ async fn test_run_task_with_per_action_os_env_vars() {
             None,
             None,
             Some(&extra),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1787,7 +1963,7 @@ async fn test_enter_environment_with_per_action_os_env_vars() {
     let env = env_with_enter("env1", "sh", vec!["-c", "echo ACTION_VAR=$ACTION_VAR"]);
     let extra = HashMap::from([("ACTION_VAR".to_string(), "from_action".to_string())]);
     let (_, stdout) = s
-        .enter_environment_with_output(&env, None, None, Some(&extra))
+        .enter_environment_with_output(&env, None, None, Some(&extra), &Default::default())
         .await
         .unwrap();
     assert!(stdout.contains("ACTION_VAR=from_action"));
@@ -1814,10 +1990,13 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let extra = HashMap::from([("EXIT_VAR".to_string(), "from_exit".to_string())]);
     let stdout = s
-        .exit_environment(&id, None, true, Some(&extra))
+        .exit_environment(&id, None, true, Some(&extra), &Default::default())
         .await
         .unwrap();
     assert!(stdout.contains("EXIT_VAR=from_exit"));
@@ -1831,7 +2010,9 @@ async fn test_per_action_os_env_vars_override_session_env() {
     let mut vars = HashMap::new();
     vars.insert("MY_VAR".into(), fs("session_value"));
     let env = env_with_vars("env1", vars);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Per-action os_env_vars should be overridden by environment-defined vars
     // (matching Python's layering: process_env < per-action < environment-defined)
@@ -1843,6 +2024,7 @@ async fn test_per_action_os_env_vars_override_session_env() {
             None,
             None,
             Some(&extra),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1862,6 +2044,7 @@ async fn test_per_action_os_env_vars_do_not_persist() {
             None,
             None,
             Some(&extra),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1875,6 +2058,7 @@ async fn test_per_action_os_env_vars_do_not_persist() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -1909,6 +2093,8 @@ async fn test_cancel_action_mark_failed() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1918,7 +2104,7 @@ async fn test_cancel_action_mark_failed() {
     // causing cancel with mark_action_failed=true.
     let script = step("sh", vec!["-c", "echo 'openjd_env:bad=value'; sleep 10"]);
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1939,7 +2125,7 @@ async fn test_malformed_env_cancels_and_marks_failed() {
 
     let script = step("sh", vec!["-c", "echo 'openjd_env:FOO=bar'; sleep 10"]);
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Failed);
@@ -1958,7 +2144,7 @@ async fn test_malformed_unset_env_cancels_and_marks_failed() {
 
     let script = step("sh", vec!["-c", "echo 'openjd_unset_env:FOO'; sleep 10"]);
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Failed);
@@ -1972,7 +2158,7 @@ async fn test_invalid_env_var_name_cancels_and_marks_failed() {
 
     let script = step("sh", vec!["-c", "echo 'openjd_env: 1BAD=value'; sleep 10"]);
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Failed);
@@ -2017,7 +2203,7 @@ async fn invalid_state_error_carries_enum_values() {
     s.cleanup();
     let env = env_with_enter("env1", "echo", vec!["hi"]);
     let err = s
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap_err();
     match err {
@@ -2037,7 +2223,7 @@ async fn invalid_state_error_multiple_expected_states() {
     s.cleanup();
     let id = "env1".to_string();
     let err = s
-        .exit_environment(&id, None, false, None)
+        .exit_environment(&id, None, false, None, &Default::default())
         .await
         .unwrap_err();
     match err {
@@ -2064,7 +2250,7 @@ async fn invalid_state_error_display_format() {
     s.cleanup();
     let env = env_with_enter("env1", "echo", vec!["hi"]);
     let err = s
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap_err();
     let msg = err.to_string();
@@ -2101,7 +2287,7 @@ async fn test_run_task_action_timeout_enforced() {
     };
     let start = std::time::Instant::now();
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -2153,7 +2339,9 @@ async fn test_enter_environment_action_timeout_enforced() {
         resolved_symtab: None,
     };
     let start = std::time::Instant::now();
-    let result = s.enter_environment(&env, None, None, None).await;
+    let result = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     let elapsed = start.elapsed();
     // onEnter failure returns an error
     assert!(
@@ -2194,9 +2382,14 @@ async fn test_exit_environment_action_timeout_enforced() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let start = std::time::Instant::now();
-    let result = s.exit_environment(&id, None, true, None).await;
+    let result = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await;
     let elapsed = start.elapsed();
     // onExit failure returns an error
     assert!(
@@ -2221,6 +2414,7 @@ async fn test_run_task_no_timeout_still_works() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -2251,6 +2445,8 @@ fn cb_test_config(tmp: &TempDir, id: &str, log: Arc<Mutex<CbLog>>) -> SessionCon
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -2261,7 +2457,9 @@ async fn test_callback_enter_env_with_script() {
     let log: Arc<Mutex<CbLog>> = Arc::new(Mutex::new(Vec::new()));
     let mut s = Session::with_config(cb_test_config(&tmp, "cb-enter-script", log.clone())).unwrap();
     let env = env_with_enter("e", "sh", vec!["-c", "echo hello"]);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let log = log.lock().unwrap();
     assert!(
         !log.is_empty(),
@@ -2281,7 +2479,9 @@ async fn test_callback_enter_env_no_script_with_vars() {
     let mut vars = HashMap::new();
     vars.insert("FOO".into(), FormatString::new("bar").unwrap());
     let env = env_with_vars("e", vars);
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let log = log.lock().unwrap();
     assert!(
         !log.is_empty(),
@@ -2302,7 +2502,9 @@ async fn test_callback_enter_env_no_script_no_vars() {
         variables: None,
         resolved_symtab: None,
     };
-    s.enter_environment(&env, None, None, None).await.unwrap();
+    s.enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let log = log.lock().unwrap();
     assert!(
         !log.is_empty(),
@@ -2333,11 +2535,11 @@ async fn test_callback_exit_env_with_script() {
         variables: None,
         resolved_symtab: None,
     };
-    s.enter_environment(&env, None, Some("eid"), None)
+    s.enter_environment(&env, None, Some("eid"), None, &Default::default())
         .await
         .unwrap();
     log.lock().unwrap().clear(); // clear enter callbacks
-    s.exit_environment(&"eid".to_string(), None, true, None)
+    s.exit_environment(&"eid".to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     let log = log.lock().unwrap();
@@ -2361,11 +2563,11 @@ async fn test_callback_exit_env_no_script() {
         variables: None,
         resolved_symtab: None,
     };
-    s.enter_environment(&env, None, Some("eid"), None)
+    s.enter_environment(&env, None, Some("eid"), None, &Default::default())
         .await
         .unwrap();
     log.lock().unwrap().clear();
-    s.exit_environment(&"eid".to_string(), None, true, None)
+    s.exit_environment(&"eid".to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     let log = log.lock().unwrap();
@@ -2387,6 +2589,7 @@ async fn test_callback_run_task_success() {
         None,
         None,
         None,
+        &Default::default(),
     )
     .await
     .unwrap();
@@ -2407,6 +2610,7 @@ async fn test_callback_run_task_failure() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -2429,6 +2633,7 @@ async fn test_callback_run_task_command_not_found() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await;
     assert!(r.is_err());
@@ -2446,7 +2651,9 @@ async fn test_callback_enter_env_command_not_found() {
     let log: Arc<Mutex<CbLog>> = Arc::new(Mutex::new(Vec::new()));
     let mut s = Session::with_config(cb_test_config(&tmp, "cb-env-notfound", log.clone())).unwrap();
     let env = env_with_enter("e", "nonexistent-cmd-xyz", vec![]);
-    let r = s.enter_environment(&env, None, None, None).await;
+    let r = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(r.is_err());
     let log = log.lock().unwrap();
     assert!(
@@ -2496,7 +2703,7 @@ async fn test_callback_progress_not_leaked_between_actions() {
 
     // First action sets progress to 50%
     let env = env_with_enter("e", "sh", vec!["-c", "echo 'openjd_progress: 50.0'"]);
-    s.enter_environment(&env, None, Some("eid"), None)
+    s.enter_environment(&env, None, Some("eid"), None, &Default::default())
         .await
         .unwrap();
 
@@ -2507,7 +2714,7 @@ async fn test_callback_progress_not_leaked_between_actions() {
     log.lock().unwrap().clear();
 
     // Second action: exit with no script — should NOT have 50% progress
-    s.exit_environment(&"eid".to_string(), None, true, None)
+    s.exit_environment(&"eid".to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     let log = log.lock().unwrap();
@@ -2532,7 +2739,14 @@ async fn test_run_task_rejects_ended_state() {
     assert_eq!(s.state(), SessionState::Ended);
 
     let result = s
-        .run_task("test_step", &step("echo", vec!["hello"]), None, None, None)
+        .run_task(
+            "test_step",
+            &step("echo", vec!["hello"]),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await;
     let err = result.unwrap_err().to_string();
     assert!(
@@ -2548,7 +2762,10 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
 
     // Enter two environments
     let env1 = env_with_enter("env1", "sh", vec!["-c", "echo enter1"]);
-    let id1 = s.enter_environment(&env1, None, None, None).await.unwrap();
+    let id1 = s
+        .enter_environment(&env1, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     let env2 = Environment {
         name: "env2".into(),
@@ -2567,10 +2784,15 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
         variables: None,
         resolved_symtab: None,
     };
-    let id2 = s.enter_environment(&env2, None, None, None).await.unwrap();
+    let id2 = s
+        .enter_environment(&env2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Exit env2 — the onExit script fails
-    let result = s.exit_environment(&id2, None, true, None).await;
+    let result = s
+        .exit_environment(&id2, None, true, None, &Default::default())
+        .await;
     assert!(
         result.is_err(),
         "exit_environment should fail when onExit script fails"
@@ -2578,7 +2800,9 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
     // Exit env1 — this should succeed because env2 was popped despite its failure
-    let result = s.exit_environment(&id1, None, true, None).await;
+    let result = s
+        .exit_environment(&id1, None, true, None, &Default::default())
+        .await;
     assert!(
         result.is_ok(),
         "Should be able to exit env1 after env2 failed: {:?}",
@@ -2731,7 +2955,10 @@ async fn echo_arg(s: &mut Session, arg: &str) -> String {
         },
         embedded_files: None,
     };
-    let result = s.run_task("step", &script, None, None, None).await.unwrap();
+    let result = s
+        .run_task("step", &script, None, None, None, &Default::default())
+        .await
+        .unwrap();
     result.stdout.trim().to_string()
 }
 
@@ -2885,8 +3112,8 @@ fn test_list_path_parameter_maps_the_same_with_a_base_symbol_table() {
                 .to_display_string()
         })
     };
-    let without_base = values(s.build_symbol_table(None, None).unwrap());
-    let with_base = values(s.build_symbol_table(None, Some(&base)).unwrap());
+    let without_base = values(s.build_symbol_table(None, None, &[]).unwrap());
+    let with_base = values(s.build_symbol_table(None, Some(&base), &[]).unwrap());
     // A list displays as JSON, which quotes and escapes like `{:?}` here.
     assert_eq!(
         without_base,
@@ -2991,7 +3218,7 @@ async fn test_path_parameter_over_the_length_limit_is_an_error() {
     // A path of exactly the limit is mapped (`/mnt/` -> `/local` plus the
     // host separator), as apply_path_mapping does.
     let st = session("at-limit", path(&at_limit))
-        .build_symbol_table(None, None)
+        .build_symbol_table(None, None, &[])
         .unwrap();
     assert_eq!(
         st.get_value("Param.P").unwrap().to_display_string().len(),
@@ -3008,7 +3235,7 @@ async fn test_path_parameter_over_the_length_limit_is_an_error() {
         ("list-of-paths-base", list_of_paths(&long), Some(&base)),
     ] {
         let err = session(name, param)
-            .build_symbol_table(None, base)
+            .build_symbol_table(None, base, &[])
             .unwrap_err();
         assert_eq!(err.to_string(), expected("Param.P"), "{name}");
     }
@@ -3021,7 +3248,7 @@ async fn test_path_parameter_over_the_length_limit_is_an_error() {
         },
     );
     let err = session("task", path("/mnt/x"))
-        .build_symbol_table(Some(&task), None)
+        .build_symbol_table(Some(&task), None, &[])
         .unwrap_err();
     assert_eq!(err.to_string(), expected("Task.Param.T"));
 
@@ -3031,7 +3258,7 @@ async fn test_path_parameter_over_the_length_limit_is_an_error() {
     config.job_parameter_values = [("P".to_string(), path(&long))].into_iter().collect();
     let err = Session::with_config(config)
         .unwrap()
-        .build_symbol_table(None, None)
+        .build_symbol_table(None, None, &[])
         .unwrap_err();
     assert_eq!(err.to_string(), expected("Param.P"));
 }
@@ -3082,6 +3309,8 @@ async fn test_parent_cancel_token_cancels_running_action() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3099,6 +3328,7 @@ async fn test_parent_cancel_token_cancels_running_action() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await;
 
@@ -3144,6 +3374,8 @@ async fn test_cancel_action_with_mark_failed() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3169,6 +3401,7 @@ async fn test_cancel_action_with_mark_failed() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await;
 
@@ -3272,8 +3505,14 @@ async fn test_redacted_env_sets_var_with_extension() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    let out = s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let out = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     // SECRET should be set because REDACTED_ENV_VARS extension is enabled
     assert!(
         out.contains("SECRET=********"),
@@ -3312,8 +3551,14 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    let out = s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let out = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert!(
         out.contains("SECRET=unset"),
         "SECRET should not be set without REDACTED_ENV_VARS extension, got: {out}"
@@ -3346,8 +3591,14 @@ async fn test_redactions_disabled_with_no_profile() {
         variables: None,
         resolved_symtab: None,
     };
-    let id = s.enter_environment(&env, None, None, None).await.unwrap();
-    let out = s.exit_environment(&id, None, true, None).await.unwrap();
+    let id = s
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let out = s
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert!(
         out.contains("SECRET=unset"),
         "SECRET should not be set with no profile, got: {out}"
@@ -3522,7 +3773,14 @@ mod cancel_escalation {
         });
 
         let r = s
-            .run_task("t", &step("sh", vec!["-c", "sleep 30"]), None, None, None)
+            .run_task(
+                "t",
+                &step("sh", vec!["-c", "sleep 30"]),
+                None,
+                None,
+                None,
+                &Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(r.state, ActionState::Canceled);
@@ -3563,7 +3821,14 @@ mod cancel_escalation {
         });
 
         let r = s
-            .run_task("t", &step("sh", vec!["-c", "sleep 30"]), None, None, None)
+            .run_task(
+                "t",
+                &step("sh", vec!["-c", "sleep 30"]),
+                None,
+                None,
+                None,
+                &Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(r.state, ActionState::Canceled);
@@ -3614,7 +3879,10 @@ mod cancel_escalation {
             handle.cancel(time_limit, false);
         });
 
-        let r = s.run_task("t", script, None, None, None).await.unwrap();
+        let r = s
+            .run_task("t", script, None, None, None, &Default::default())
+            .await
+            .unwrap();
         assert_eq!(r.state, ActionState::Canceled);
         read_cancel_messages(&writer_path)
     }
@@ -3640,6 +3908,17 @@ mod cancel_escalation {
     async fn handle_cancel_smaller_time_limit_wins_over_terminate_delay() {
         let script = step_with_ntt_cancel("sh", vec!["-c", "sleep 30"], 3);
         let msgs = run_and_handle_cancel(&script, Some(Duration::from_secs(1))).await;
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["cancel"].as_str().unwrap(), "NOTIFY_THEN_TERMINATE");
+        assert_eq!(msgs[0]["notifyPeriodInSeconds"].as_u64().unwrap(), 1);
+    }
+
+    /// The wire counts whole seconds: a non-zero limit under a second is
+    /// sent as one second, not as zero.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_cancel_sub_second_time_limit_is_one_second() {
+        let script = step_with_ntt_cancel("sh", vec!["-c", "sleep 30"], 30);
+        let msgs = run_and_handle_cancel(&script, Some(Duration::from_millis(500))).await;
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["cancel"].as_str().unwrap(), "NOTIFY_THEN_TERMINATE");
         assert_eq!(msgs[0]["notifyPeriodInSeconds"].as_u64().unwrap(), 1);
@@ -3711,6 +3990,8 @@ async fn test_parent_token_cancel_with_external_kill_reports_canceled() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3728,6 +4009,7 @@ async fn test_parent_token_cancel_with_external_kill_reports_canceled() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await;
 
@@ -3770,6 +4052,8 @@ async fn test_callback_reports_intermediate_progress() {
         cancel_token: None,
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3786,6 +4070,7 @@ async fn test_callback_reports_intermediate_progress() {
             None,
             None,
             None,
+        &Default::default(),
         )
         .await
         .unwrap();
@@ -3854,6 +4139,8 @@ fn echo_directives_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: echo,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -3877,7 +4164,7 @@ async fn test_echo_openjd_directives_true_passes_directive_lines_to_log() {
         ],
     );
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -3919,7 +4206,7 @@ async fn test_echo_openjd_directives_false_suppresses_directive_lines_from_log()
         ],
     );
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -3970,6 +4257,8 @@ async fn test_echo_openjd_directives_true_redacts_redacted_env_in_log() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3987,7 +4276,7 @@ async fn test_echo_openjd_directives_true_redacts_redacted_env_in_log() {
         ],
     );
     let r = s
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -4048,7 +4337,14 @@ async fn test_cancel_handle_cancels_running_action() {
     });
 
     let r = s
-        .run_task("t", &step("sh", vec!["-c", "sleep 30"]), None, None, None)
+        .run_task(
+            "t",
+            &step("sh", vec!["-c", "sleep 30"]),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Canceled);
@@ -4072,7 +4368,14 @@ async fn test_cancel_handle_mark_action_failed() {
     });
 
     let r = s
-        .run_task("t", &step("sh", vec!["-c", "sleep 30"]), None, None, None)
+        .run_task(
+            "t",
+            &step("sh", vec!["-c", "sleep 30"]),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -4110,8 +4413,14 @@ async fn test_cancel_handle_reusable_across_actions() {
         variables: None,
         resolved_symtab: None,
     };
-    let id1 = s.enter_environment(&e1, None, None, None).await.unwrap();
-    let id2 = s.enter_environment(&e2, None, None, None).await.unwrap();
+    let id1 = s
+        .enter_environment(&e1, None, None, None, &Default::default())
+        .await
+        .unwrap();
+    let id2 = s
+        .enter_environment(&e2, None, None, None, &Default::default())
+        .await
+        .unwrap();
 
     // Action 1: cancel a running task via the handle.
     let h = s.cancel_handle();
@@ -4120,14 +4429,23 @@ async fn test_cancel_handle_reusable_across_actions() {
         h.cancel(None, false);
     });
     let r = s
-        .run_task("t", &step("sh", vec!["-c", "sleep 30"]), None, None, None)
+        .run_task(
+            "t",
+            &step("sh", vec!["-c", "sleep 30"]),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Canceled);
 
     // Action 2 (E2 exit, quick): must run normally after the cancel — the
     // cancel must not have poisoned subsequent actions.
-    s.exit_environment(&id2, None, true, None).await.unwrap();
+    s.exit_environment(&id2, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         s.action_status().unwrap().state,
         ActionState::Success,
@@ -4139,7 +4457,9 @@ async fn test_cancel_handle_reusable_across_actions() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         handle.cancel(None, false);
     });
-    let _ = s.exit_environment(&id1, None, true, None).await;
+    let _ = s
+        .exit_environment(&id1, None, true, None, &Default::default())
+        .await;
     assert_eq!(
         s.action_status().unwrap().state,
         ActionState::Canceled,
@@ -4176,6 +4496,8 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -4198,7 +4520,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         variables: None,
         resolved_symtab: None,
     };
-    s.enter_environment(&wrap_env, None, None, None)
+    s.enter_environment(&wrap_env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -4227,7 +4549,9 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         resolved_symtab: None,
     };
 
-    let result = s.enter_environment(&inner, None, None, None).await;
+    let result = s
+        .enter_environment(&inner, None, None, None, &Default::default())
+        .await;
     assert!(result.is_err(), "setup failure must surface as an error");
 
     // The session must NOT be wedged in Running, and the failure must be
@@ -4257,7 +4581,9 @@ async fn test_runner_resolution_error_records_fail_message() {
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
 
     let script = step("sh", vec!["-c", "echo {{ No.Such.Symbol }}"]);
-    let result = s.run_task("t", &script, None, None, None).await;
+    let result = s
+        .run_task("t", &script, None, None, None, &Default::default())
+        .await;
     assert!(
         result.is_err(),
         "resolution failure must surface as an error"

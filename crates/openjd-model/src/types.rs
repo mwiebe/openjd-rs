@@ -65,7 +65,7 @@ impl fmt::Display for EndOfLine {
 }
 
 /// §2.2 PATH parameter objectType.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[allow(
     missing_docs,
@@ -107,6 +107,40 @@ impl fmt::Display for DataFlow {
             Self::Out => write!(f, "OUT"),
             Self::Inout => write!(f, "INOUT"),
         }
+    }
+}
+
+/// RFC 0012 `<OutputCollectMode>`: how the directives a Task prints for one
+/// output variable become that Task's value (`CONTROL_FLOW`).
+///
+/// The template default is [`Once`](Self::Once).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OutputCollectMode {
+    /// Exactly one directive.
+    #[default]
+    Once,
+    /// One or more directives; the last one is the value.
+    Last,
+    /// Zero or more directives, each supplying one element of a `LIST[T]`
+    /// value, in the order printed.
+    Append,
+}
+
+impl OutputCollectMode {
+    /// Returns the canonical spec string (`ONCE`, `LAST`, or `APPEND`).
+    pub fn as_spec_str(&self) -> &'static str {
+        match self {
+            Self::Once => "ONCE",
+            Self::Last => "LAST",
+            Self::Append => "APPEND",
+        }
+    }
+}
+
+impl fmt::Display for OutputCollectMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_spec_str())
     }
 }
 
@@ -212,7 +246,7 @@ impl std::str::FromStr for TemplateSpecificationVersion {
 /// Marked `#[non_exhaustive]` so that future revisions and extensions can
 /// add parameter types (as RFC 0007 already did for `Bool`, `RangeExpr`,
 /// and the `List[…]` family) without a SemVer break.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[allow(
     missing_docs,
@@ -493,6 +527,10 @@ pub enum ModelExtension {
     /// that lists it must also list [`Expr`](Self::Expr) (Template Schemas
     /// §1.1 item 3). See the Environment Parameters RFC (RFC 0010, draft).
     EnvParams,
+    /// `CONTROL_FLOW` — enables `outputVariables` and `enableIf` on
+    /// `<StepTemplate>` and `enableIf` on `<Environment>`. Requires
+    /// `EXPR`. See RFC 0011 and RFC 0012.
+    ControlFlow,
 }
 
 impl ModelExtension {
@@ -506,6 +544,7 @@ impl ModelExtension {
         Self::Expr,
         Self::WrapActions,
         Self::EnvParams,
+        Self::ControlFlow,
     ];
 
     #[allow(
@@ -520,6 +559,7 @@ impl ModelExtension {
             Self::Expr => "EXPR",
             Self::WrapActions => "WRAP_ACTIONS",
             Self::EnvParams => "ENV_PARAMS",
+            Self::ControlFlow => "CONTROL_FLOW",
         }
     }
 }
@@ -534,6 +574,7 @@ impl std::str::FromStr for ModelExtension {
             "EXPR" => Ok(Self::Expr),
             "WRAP_ACTIONS" => Ok(Self::WrapActions),
             "ENV_PARAMS" => Ok(Self::EnvParams),
+            "CONTROL_FLOW" => Ok(Self::ControlFlow),
             _ => Err(format!("Unknown extension: {s}")),
         }
     }
@@ -557,7 +598,8 @@ impl serde::Serialize for ModelExtension {
 /// Caller limits can only add restrictions, never relax spec-defined ones.
 #[derive(Debug, Clone, Default)]
 pub struct CallerLimits {
-    /// Maximum number of steps in a job template.
+    /// Maximum number of steps in a job template. Each top-level Step, each
+    /// loop, and each loop body Step (`CONTROL_FLOW`, RFC 0013) counts once.
     pub max_step_count: Option<usize>,
     /// Maximum number of environments (job + all step environments combined)
     /// in a job template.
@@ -583,7 +625,20 @@ pub struct CallerLimits {
     pub max_step_environment_entries: Option<usize>,
     /// Maximum total task count across all steps in a job template.
     /// Checked after parameter space ranges are resolved in `create_job`.
+    ///
+    /// With `CONTROL_FLOW` (RFC 0011 §Limits item 1), it is checked as each
+    /// Step's Tasks become known: in `create_job` for the Steps whose Tasks
+    /// are known then, and in
+    /// [`advance_step_binding`](crate::create_job::advance_step_binding)
+    /// against the Tasks of the other Steps whose Tasks are known
+    /// (`committed_task_count`). The Step whose Tasks would take the total
+    /// over the limit fails.
     pub max_task_count: Option<u64>,
+    /// Maximum task count of one Step (RFC 0011 §Limits item 1), checked
+    /// when the Step's Tasks become known: at job creation, or with
+    /// `CONTROL_FLOW` at step input binding. `None` (default) imposes no
+    /// per-Step limit.
+    pub max_step_task_count: Option<u64>,
     /// Maximum JSON-encoded size of a step script, in bytes.
     pub max_step_script_size: Option<usize>,
     /// Maximum JSON-encoded size of an environment, in bytes.
@@ -627,6 +682,22 @@ pub struct CallerLimits {
     /// ([`openjd_expr::DEFAULT_OPERATION_LIMIT`], 10 million). Applied at
     /// the same stages as [`max_eval_memory_bytes`](Self::max_eval_memory_bytes).
     pub max_eval_operations: Option<usize>,
+    /// Maximum bytes of output values each Task holds (RFC 0012 §Limits
+    /// item 2, `CONTROL_FLOW`). Enforced only at run time, by the session
+    /// runtime when the caller mirrors it into `SessionLimits`. `None`
+    /// (default) uses the RFC's minimum,
+    /// [`MIN_OUTPUT_BYTES_LIMIT`](crate::outputs::MIN_OUTPUT_BYTES_LIMIT)
+    /// (1 MiB); the runtime raises a smaller value to it, because it must
+    /// accept at least that much.
+    pub max_task_output_bytes: Option<usize>,
+    /// Maximum total bytes of one loop's loop variable and loop output values
+    /// at any moment, measured as their JSON serialization (RFC 0013
+    /// §Limits item 4, `CONTROL_FLOW`). Checked after a loop's `initial`
+    /// values (at loop binding, or at job creation), and at each iteration
+    /// boundary after the loop outputs and after `next`; exceeding it fails
+    /// the loop, or job creation. `None` (default) imposes no limit. A
+    /// scheduler must accept at least 1 MiB.
+    pub max_loop_value_bytes: Option<usize>,
 }
 
 /// Model-side profile: the specification revision plus the set of

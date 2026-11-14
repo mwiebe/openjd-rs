@@ -34,6 +34,20 @@ validation, and job creation for OpenJD templates. Part of the
   Parameter values), by the openjd-sessions runtime, and by the CLI, including
   Environment `hostRequirements` combined into each Step's. It is in
   `ModelExtension::ALL`.
+  The draft `CONTROL_FLOW` extension (a prototype of draft RFCs 0011–0013),
+  which requires `ENV_PARAMS` and `EXPR` in the same template, is supported
+  too: schema, structural validation, the `Steps.*` scope in template
+  validation, the `outputs` module that parses `openjd_output_var`
+  directives and collects a Task's output values, progressive step input
+  binding: `advance_step_binding`, `StepInputs`, and `attach_step_inputs`,
+  with each Step's Environment selection applied once its `enableIf` is
+  `true`, job outputs: `jobOutputDefinitions`, `job_output_inputs`, and
+  `evaluate_job_output`, `ChunkTaskIndex`, which places a chunked Step's
+  per-Task outputs in iteration order, and multi-Step loops: the `StepLoop`
+  entry and its template validation, and `job::Loop` with
+  `advance_loop_binding`, `start_iteration`, `advance_body_step_binding`,
+  `evaluate_iteration_boundary`, and `end_without_iterations`, which run a
+  loop one iteration at a time. It is in `ModelExtension::ALL`.
 
 The crate passes 100% of the upstream [OpenJD conformance test suite] —
 over 700 template validation and environment-template tests on Linux,

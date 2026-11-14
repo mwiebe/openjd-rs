@@ -15,8 +15,10 @@ pub(crate) mod expr_field;
 mod expr_parameters;
 mod host_requirements;
 mod job_template;
+mod output_variables;
 mod parameters;
 mod step;
+mod step_loop;
 mod task_parameters;
 pub(crate) mod validate_v2023_09;
 pub(crate) mod validation;
@@ -46,6 +48,15 @@ pub use expr_parameters::{
     ListFloatItemConstraints, ListIntItemConstraints, ListListIntItemConstraints,
     ListStringItemConstraints,
 };
+// output_variables (CONTROL_FLOW, RFC 0011, RFC 0012, and RFC 0013)
+pub use output_variables::{
+    JobOutputDefinition, LoopOutputVariableDefinition, LoopVariableDefinition,
+    OutputVariableDefinition,
+};
+// expr_field (expression fields, RFC 0010's Template Schemas §7.6)
+pub use expr_field::ExprField;
+// step_loop (CONTROL_FLOW, RFC 0013)
+pub use step_loop::{LoopDefinition, StepEntry, StepLoop, StepTemplateRef};
 // step
 pub use step::{
     DependencyTarget, SimpleAction, SimpleActionKind, StepDependency, StepKey, StepScript,
@@ -56,7 +67,6 @@ pub use env_parameters::{
     EnvironmentParameterDefinition, EnvironmentParameterValue, EnvironmentParameterValueMap,
 };
 // expr_field (Template Schemas §7.6)
-pub use expr_field::ExprField;
 // environment
 pub(crate) use environment::{apply_exclusive_groups, Known, KnownEntry};
 pub use environment::{EmbeddedFile, Environment, EnvironmentActivation, EnvironmentScript};

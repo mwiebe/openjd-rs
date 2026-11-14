@@ -36,6 +36,7 @@ openjd-rs/
 │   │       ├── format_string.rs
 │   │       ├── validate.rs
 │   │       ├── template/        # Template model types (revision-independent)
+│   │       ├── outputs/         # CONTROL_FLOW output directive parser + collector
 │   │       └── job/             # Instantiated job types (result of create_job)
 │   ├── openjd-sessions/        # Session runtime
 │   │   └── src/
@@ -48,7 +49,7 @@ openjd-rs/
 │           ├── main.rs
 │           ├── check.rs
 │           ├── summary.rs
-│           ├── run.rs
+│           ├── run/             # run command, incl. the CONTROL_FLOW scheduler simulator
 │           └── help.rs
 └── specs/                      # Design specs
     ├── architecture.md
@@ -88,16 +89,49 @@ Core template library. Depends on openjd-expr. Provides:
 - Schema validation (structural + cross-field constraints)
 - Format string parsing and resolution
 - All v2023-09 model types
+- `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and collector
+- `CONTROL_FLOW` progressive step input binding: `create_job` decides each Step's
+  `enableIf` and evaluates each of its materialization groups (Task enumeration, host
+  selection, remaining) whose `Steps.*` inputs are concrete, in dependency order, leaving
+  the rest of the Step `PENDING_INPUTS`; `advance_step_binding` evaluates each further group
+  as upstream values arrive (assembled with `StepInputs::add_producer`) and fails the Step at
+  the first error; `attach_step_inputs` supplies a bound Step's host-scope `Steps.*` values
+  before its Tasks run
+- `CONTROL_FLOW` job outputs: `create_job` evaluates each `jobOutputDefinitions` entry whose
+  `Steps.*` inputs are concrete at creation (failing Job creation on an error), and a caller
+  evaluates the rest with `evaluate_job_output` as the Steps they read finish
+- `CONTROL_FLOW` loops (RFC 0013), with two evaluation stages of their own: `create_job`
+  and `advance_loop_binding` bind a loop (its `enableIf`, `maxIterations`, `initial`
+  values, and first `while`); at **iteration start**, `start_iteration` creates an instance
+  of every body Step with the iteration's `Loop.*` values, bound by the Step binding core,
+  and `advance_body_step_binding` advances them; at the **iteration boundary**,
+  `evaluate_iteration_boundary` evaluates the loop outputs, `until`, `next`, `while`, and
+  the bound, and decides whether the loop continues. Every loop failure the model returns
+  is final; the caller keeps each loop's progress
 
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:
 - Session lifecycle management
 - Action execution (subprocess management)
+- `CONTROL_FLOW` output values: recognizing `openjd_output_var` directives in an action's
+  output, reading `@` files (as the job user, through the cross-user helper, when the
+  Session runs as another user), collecting each Task's values with the model's
+  `OutputCollector`, and returning them in `ActionResult::outputs`; and forward-mapping a
+  consumer's path-typed `Steps.*` inputs and a loop body Step instance's path-typed
+  `RawLoop.*` values (RFC 0013)
 - Re-exports path mapping from openjd-expr
 
 ### openjd-cli
 Binary crate. Depends on all three libraries.
 Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally).
+For a `CONTROL_FLOW` Job, `run` simulates a scheduler: it advances pending Steps with
+`advance_step_binding` as their producers finish, attaches `Steps.*` inputs, records each
+Task's outputs, and evaluates job outputs as their inputs become concrete; `summary` reports
+what is known of each pending Step and job output (see `cli/run.md`, `cli/summary.md`).
+`run` runs a loop's iterations one after another with `start_iteration`,
+`advance_body_step_binding`, and `evaluate_iteration_boundary`, naming each body Step
+instance `<Loop>[<N>].<Step>`; `summary` shows a loop's condition, bound, and body
+(RFC 0013).
 
 ## Key Design Decisions
 

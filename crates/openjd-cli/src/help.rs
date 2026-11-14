@@ -36,10 +36,14 @@ pub fn try_context_aware_help(args: &[String]) -> bool {
     let path = Path::new(path_str);
 
     // Find --extensions value if present
-    let extensions = args
-        .windows(2)
-        .find(|w| w[0] == "--extensions")
-        .map(|w| w[1].as_str());
+    // Accept both `--extensions X` and `--extensions=X`, as clap does.
+    let extensions = args.iter().enumerate().find_map(|(i, a)| {
+        if a == "--extensions" {
+            args.get(i + 1).map(String::as_str)
+        } else {
+            a.strip_prefix("--extensions=")
+        }
+    });
 
     match generate_template_help(path, extensions) {
         Ok(help) => {
@@ -64,15 +68,10 @@ fn generate_template_help(
         &crate::common::caller_limits(),
     )?;
 
-    let default_exts: Vec<&str> = openjd_model::ModelExtension::ALL
-        .iter()
-        .map(|e| e.as_str())
-        .collect();
-    let supported_exts: Vec<&str> = match extensions_arg {
-        Some(s) if !s.is_empty() => s.split(',').map(|e| e.trim()).collect(),
-        Some(_) => vec![],
-        None => default_exts,
-    };
+    // The same resolution as `check`, `run`, and `summary`: every
+    // `ModelExtension::ALL` name by default.
+    let extensions = crate::common::parse_extensions(&extensions_arg.map(str::to_string))?;
+    let supported_exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
 
     let template = parse::decode_job_template(
         template_value,
@@ -114,12 +113,50 @@ pub fn format_help(template: &JobTemplate, path: &Path) -> String {
         out.push('\n');
     }
 
+    // CONTROL_FLOW job outputs: what the Job reports back.
+    let outputs = template.job_output_definitions_list();
+    if !outputs.is_empty() {
+        out.push_str("Job Outputs:\n");
+        for output in outputs {
+            out.push_str(&format!("  {} ({}", output.name(), output.job_param_type()));
+            if let Some(unit) = output.unit() {
+                out.push_str(&format!(", {unit}"));
+            }
+            out.push_str(")\n");
+            if let Some(description) = output.description() {
+                out.push_str(&format!("    {description}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
+    // CONTROL_FLOW loops (RFC 0013): what --step can name.
+    let loops: Vec<_> = template.loops().collect();
+    if !loops.is_empty() {
+        out.push_str(
+            "Loops (--step <Loop> runs the whole loop; its body Steps run only within it):\n",
+        );
+        for l in loops {
+            let body: Vec<&str> = l.body().iter().map(|s| s.name.as_str()).collect();
+            out.push_str(&format!("  {}: body Steps {}\n", l.name, body.join(", ")));
+        }
+        out.push('\n');
+    }
+
     // Standard options
     out.push_str("Standard Options:\n");
     out.push_str(
         "  -p, --job-param <KEY=VALUE>  Job parameters (Key=Value, file://path, or inline JSON)\n",
     );
     out.push_str("  --environment <PATH>       Environment template files\n");
+    if template
+        .profile()
+        .has_extension(openjd_model::types::ModelExtension::ControlFlow)
+    {
+        out.push_str(
+            "  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step or loop reads\n",
+        );
+    }
     out.push_str("  --verbose                  Enable verbose logging\n");
     out.push_str(
         "  -h, --help                 Print help (leave out template to list all options)\n",

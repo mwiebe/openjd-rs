@@ -6,10 +6,13 @@
 //!
 //! Mirrors Python `_create_job.py` and `_merge_job_parameter.py`.
 
+mod binding;
 mod env_params;
 mod external;
 mod host_requirements;
 mod instantiate;
+mod job_outputs;
+mod loops;
 pub mod parameters;
 mod ranges;
 mod staged;
@@ -24,6 +27,13 @@ use crate::template::validate_v2023_09::EffectiveLimits;
 use crate::template::JobTemplate;
 use crate::types::{JobParameterValues, ValidationContext};
 
+pub(crate) use binding::host_scope_symbols;
+pub use binding::{advance_step_binding, attach_step_inputs};
+pub use job_outputs::{evaluate_job_output, job_output_inputs};
+pub use loops::{
+    advance_body_step_binding, advance_loop_binding, end_without_iterations,
+    evaluate_iteration_boundary, start_iteration,
+};
 // Re-exports — preserve the existing public API
 pub use external::{
     check_environment_templates, AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement,
@@ -129,7 +139,8 @@ pub fn create_job(
 /// document, each evaluated under its own profile.
 ///
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
-/// across all steps is checked after parameter spaces are resolved.
+/// across all steps is checked after parameter spaces are resolved. When
+/// `max_step_task_count` is set, each Step's task count is checked.
 ///
 /// Job creation takes the steps of Template Schemas §7.4.1 over the Job
 /// Template and the attached Environment Templates together, in one pass,
@@ -245,6 +256,44 @@ pub fn create_job(
 /// attachments were applied only when it had none; the attachments' errors
 /// are in §7.4.1 order rather than the order they were found; and a caller
 /// limit is reported only when the attachments add no error.
+///
+/// With `CONTROL_FLOW` (RFC 0011 §When groups are evaluated), each Step's
+/// `outputVariables` are copied onto [`job::Step::output_variables`], and
+/// each Step is bound as far as the values concrete at job creation allow:
+/// its `enableIf` is decided if its inputs are concrete (a `false` Step is
+/// [`StepBinding::Skipped`](job::StepBinding::Skipped)), then its
+/// Environment selection (RFC 0011 `<Environment>` item 3: the work of
+/// §7.4.1 above for that Step) is made, and then every other
+/// materialization group whose inputs are concrete is evaluated. A Step all
+/// of whose groups evaluate is [`StepBinding::Bound`](job::StepBinding::Bound);
+/// any other is [`StepBinding::PendingInputs`](job::StepBinding::PendingInputs),
+/// for [`advance_step_binding`] to finish. A skipped Step has no Environment
+/// selection, and one whose `enableIf` is decided later makes it then, so
+/// the §7.4.1 errors of steps 2 and 4 to 8 for such a Step are not reported
+/// here. Steps are bound in dependency order, because a Step skipped here
+/// makes its `null` symbols concrete and a Step whose Tasks are known makes
+/// its `TaskParam` symbols concrete. `max_task_count` counts the Steps whose
+/// Tasks are known at creation.
+///
+/// Each `jobOutputDefinitions` entry becomes a [`job::JobOutput`] in
+/// [`job::Job::outputs`]. One whose `value` reads no `Steps.*` symbol that is
+/// not concrete at creation (it reads only job parameters, the `null`s of a
+/// Step skipped here, or `TaskParam` of a Step whose Tasks are known here,
+/// though it may still be pending) is evaluated after the Steps, and its
+/// [`evaluated`](job::JobOutput::evaluated) set; the rest are left for
+/// [`evaluate_job_output`]. A job output that fails to evaluate, convert, or
+/// meet its constraints fails job creation, every such failure reported
+/// together.
+///
+/// Each loop (`CONTROL_FLOW`, RFC 0013) becomes a [`job::Loop`] in
+/// [`job::Job::loops`], bound as a Step is (RFC 0013 §Loop binding): its
+/// `enableIf` is decided if its inputs are concrete, then its `maxIterations`
+/// is evaluated, then its start group (each `initial`, the size limit, and
+/// the first `while`) if its inputs are concrete. A failure in any of them
+/// aborts job creation. Nothing of a loop's body Steps is evaluated, and the
+/// `minLength` of its `APPEND` outputs is never checked here. Steps and loops
+/// are bound in dependency order, so a loop skipped here makes its `null`s
+/// concrete for the Steps and job outputs that read it.
 pub fn create_job_with_environment_templates(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
@@ -271,6 +320,19 @@ pub fn create_job_with_environment_templates(
         &env_names,
         attached.len(),
     )?;
+    if job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::ControlFlow)
+    {
+        return control_flow_job(
+            job_template,
+            body,
+            &env_names,
+            attached,
+            job_parameter_values,
+            ctx,
+        );
+    }
     external::apply_environment_templates(
         job_template,
         body,
@@ -279,6 +341,229 @@ pub fn create_job_with_environment_templates(
         job_parameter_values,
         ctx,
     )
+}
+
+/// The rest of [`create_job_with_environment_templates`] for a Job Template
+/// that lists `CONTROL_FLOW` (RFC 0011 `<Environment>` items 3 to 6): make
+/// every Step's Environment selection with the attachments, then bind the
+/// Steps and loops, applying each Step's selection once its `enableIf` is
+/// `true`. A Step whose `enableIf` is decided `true` here has its
+/// selection's errors reported with job creation's others; a Step that is
+/// skipped here never makes it; and any other Step, and every loop body
+/// Step, keeps its selection, errors included, for step input binding.
+fn control_flow_job(
+    job_template: &JobTemplate,
+    body: Body<'_>,
+    env_names: &[String],
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+) -> Result<CreatedJob, ModelError> {
+    let Body {
+        mut job,
+        selections,
+        job_envs,
+        mut check_errors,
+        staged,
+        limits: _,
+        symtab,
+    } = body;
+    let has_expr = ctx
+        .profile
+        .has_extension(crate::types::ModelExtension::Expr);
+    let limits = EffectiveLimits::from_context(ctx);
+    let budgets = EvalBudgets::from_ctx(ctx);
+    let mut subjects = std::mem::take(&mut job.steps);
+    let paths: Vec<Vec<crate::error::PathElement>> =
+        job_template.step_templates().map(|st| st.path()).collect();
+    let mut selected = external::select_environments(
+        job,
+        &mut subjects,
+        &paths,
+        selections,
+        &job_envs,
+        staged,
+        job_template,
+        env_names,
+        attached,
+        job_parameter_values,
+        ctx,
+    )?;
+    // The entered Environments' requirements, resolved for each Step and
+    // combined with each other (RFC 0011 `<Environment>` item 5); the
+    // Steps' own are combined with them in host selection.
+    let mut kept = Vec::new();
+    let mut discarded: Vec<Vec<DiscardedHostRequirement>> = selected
+        .selections
+        .iter()
+        .map(|s| s.discarded_host_requirements.clone())
+        .collect();
+    {
+        let sources = selected.sources(job_template, attached, ctx);
+        let mut host_staged = staged::StagedErrors::default();
+        host_requirements::combine_step_host_requirements(
+            &mut subjects,
+            &paths,
+            &selected.job.name,
+            &sources,
+            &selected.entered_per_step,
+            &selected.job_path,
+            &selected.default_symtab,
+            &selected.env_names,
+            budgets,
+            &mut discarded,
+            &mut host_staged,
+            Some(&mut kept),
+        );
+        drop(sources);
+        selected.staged.absorb(host_staged, &[]);
+    }
+    let wrap_layers = selected.wrap_layers(&subjects);
+    let model = if attached.is_empty() {
+        "JobTemplate"
+    } else {
+        "Submission"
+    };
+    let mut environment_selections: Vec<job::EnvironmentSelection> = subjects
+        .iter()
+        .zip(kept.into_iter().chain(std::iter::repeat_with(Vec::new)))
+        .zip(wrap_layers)
+        .map(|((step, host), wrap)| job::EnvironmentSelection {
+            environments: step.environments.clone(),
+            environment_parameters: step.environment_parameters.clone(),
+            host_requirements: host,
+            wrap_layers: wrap,
+            errors: Vec::new(),
+            model: model.to_string(),
+        })
+        .collect();
+
+    let mut built = instantiate_steps_with_binding(
+        job_template,
+        &symtab,
+        has_expr,
+        &limits,
+        ctx,
+        budgets,
+        &environment_selections,
+        &mut check_errors,
+    )?;
+    // For each subject, the entry of its Step when it is a top-level Step.
+    let top_level: Vec<Option<usize>> = job_template
+        .step_templates()
+        .map(|st| st.body_index.is_none().then_some(st.entry_index))
+        .collect();
+    // Which subjects' selections were applied here: the top-level Steps
+    // whose `enableIf` was decided `true`, including one whose group failed
+    // later (its error is collected). Every other subject's errors are its
+    // own, for step input binding, and a skipped Step's are dropped.
+    let mut applied_at_creation = vec![false; top_level.len()];
+    for (i, top) in top_level.iter().enumerate() {
+        let applied = top.is_some_and(|e| match &built[e] {
+            Some(binding::Built::Step(step)) => match &step.binding {
+                job::StepBinding::Bound => true,
+                job::StepBinding::PendingInputs(p) => p.enablement.is_known(),
+                job::StepBinding::Skipped => false,
+            },
+            _ => true,
+        });
+        if applied {
+            applied_at_creation[i] = true;
+            continue;
+        }
+        let errors: Vec<job::SelectionError> = selected
+            .staged
+            .take_step(i)
+            .into_iter()
+            .chain(selected.body_staged.take_step(i))
+            .map(|e| job::SelectionError {
+                path: e.path,
+                message: e.message,
+            })
+            .collect();
+        environment_selections[i].errors = errors;
+        if let Some(Some(binding::Built::Step(step))) = top.map(|e| &mut built[e]) {
+            if let job::StepBinding::PendingInputs(p) = &mut step.binding {
+                // A selection with nothing to apply was not stored, but one
+                // with errors is.
+                if !environment_selections[i].is_empty() {
+                    p.environment_selection = Some(environment_selections[i].clone());
+                }
+            }
+        }
+    }
+    let external::Selected {
+        mut job,
+        environments,
+        environment_documents,
+        staged,
+        body_staged,
+        warnings,
+        disabled_environments,
+        environment_statuses,
+        attached_count,
+        ..
+    } = selected;
+    finish_errors(check_errors, body_staged, staged, attached_count > 0)?;
+    let mut steps = Vec::new();
+    let mut loops = Vec::new();
+    for entry in built {
+        match entry {
+            Some(binding::Built::Step(step)) => steps.push(step),
+            Some(binding::Built::Loop(job_loop)) => loops.push(job_loop),
+            None => {
+                return Err(ModelError::DecodeValidation(
+                    "internal error: a step was skipped without a recorded error".to_string(),
+                ))
+            }
+        }
+    }
+    // Each loop's body Steps' selections, for their instances.
+    for job_loop in &mut loops {
+        let entry = job_loop.entry_index;
+        let selections: Vec<job::EnvironmentSelection> = job_template
+            .step_templates()
+            .zip(&environment_selections)
+            .filter(|(st, _)| st.entry_index == entry && st.body_index.is_some())
+            .map(|(_, sel)| sel.clone())
+            .collect();
+        // None when no body Step has one to apply.
+        if selections.iter().any(|s| !s.is_empty()) {
+            job_loop.body_environment_selections = selections;
+        }
+    }
+
+    // CONTROL_FLOW (RFC 0011 §Job outputs item 1): every job output whose
+    // inputs are concrete now is evaluated, and a failure fails Job
+    // creation, as an invalid job parameter value does.
+    let outputs =
+        job_outputs::evaluate_at_creation(job_template, &symtab, &steps, &loops, budgets)?;
+
+    check_caller_limits(&steps, Some(&environments), false, ctx)?;
+    // The per-Step lists of `CreatedJob` are for the top-level Steps, and
+    // are empty for a Step whose Environment selection is not made here: a
+    // skipped Step never makes one, and a pending one makes it at step
+    // input binding.
+    fn pick<T: Default>(v: Vec<T>, top_level: &[Option<usize>], applied: &[bool]) -> Vec<T> {
+        v.into_iter()
+            .zip(top_level)
+            .zip(applied)
+            .filter(|((_, top), _)| top.is_some())
+            .map(|((x, _), applied)| if *applied { x } else { T::default() })
+            .collect()
+    }
+    job.steps = steps;
+    job.loops = loops;
+    job.outputs = outputs;
+    job.job_environments = (!environments.is_empty()).then_some(environments);
+    Ok(CreatedJob {
+        job,
+        environment_documents,
+        warnings,
+        disabled_environments: pick(disabled_environments, &top_level, &applied_at_creation),
+        environment_statuses: pick(environment_statuses, &top_level, &applied_at_creation),
+        discarded_host_requirements: pick(discarded, &top_level, &applied_at_creation),
+    })
 }
 
 /// What job creation from the Job Template alone gives the submission
@@ -300,6 +585,9 @@ pub(super) struct Body<'a> {
     /// The caller limits' result, which the submission stage reports only
     /// when it and job creation proper found no error.
     pub(super) limits: Result<(), ModelError>,
+    /// The job symbol table: `Param.*`, `RawParam.*`, and with `EXPR`
+    /// `Job.Name` and `Job.EnvNames`.
+    pub(super) symtab: openjd_expr::symbol_table::SymbolTable,
 }
 
 /// Report every error of one job creation in §7.4.1 order: the
@@ -511,6 +799,12 @@ fn create_job_from_template<'a>(
     // requirements, parameter space) are not checks: they abort
     // immediately, reported alone.
     let mut check_errors = crate::error::ValidationErrors::default();
+    // Keyed on the template's own extensions, not the context's: a context
+    // may enable more extensions than the template lists, and a template
+    // that does not list CONTROL_FLOW keeps today's behavior (RFC 0011
+    // Technical Requirement 1), including its order of evaluation and its
+    // range rules.
+    let control_flow = template_profile.has_extension(crate::types::ModelExtension::ControlFlow);
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
             let env_path = [
@@ -520,6 +814,7 @@ fn create_job_from_template<'a>(
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
+                None,
                 has_expr,
                 ctx,
                 &env_path,
@@ -552,42 +847,72 @@ fn create_job_from_template<'a>(
     );
     let mut staged = staged::StagedErrors::default();
 
-    let mut steps = Vec::with_capacity(job_template.steps.len());
-    for (step_index, st) in job_template.steps.iter().enumerate() {
-        steps.push(instantiate::instantiate_step(
-            st,
-            &symtab,
-            has_expr,
-            template_expr,
-            &limits,
-            ctx,
-            step_index,
-            budgets,
-            &job_envs,
-            job_template
-                .profile()
-                .has_extension(crate::types::ModelExtension::EnvParams),
-            &mut check_errors,
-            &mut staged,
-        )?);
-    }
-    // `instantiate_step` only declines to build a step after recording
-    // the failure in `check_errors`. Such a Step cannot be instantiated, so
-    // the submission stage does not run, and the errors so far are
-    // reported, in the shape the inputs give (see `finish_errors`).
-    let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
-        finish_errors(
-            check_errors,
-            staged,
-            staged::StagedErrors::default(),
-            attached_count > 0,
-        )?;
-        return Err(ModelError::DecodeValidation(
-            "internal error: a step was skipped without a recorded error".to_string(),
-        ));
+    let lists_env_params = job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::EnvParams);
+    let (steps, selections) = if control_flow {
+        // CONTROL_FLOW: every Step, top-level or in a loop's body, makes
+        // an Environment selection, worked out here with what job creation
+        // knows (RFC 0011 `<Environment>` items 2 and 3); the Steps are
+        // bound later, by `control_flow_job`, which applies each one's
+        // selection once its `enableIf` is `true`.
+        let mut shells = Vec::new();
+        let mut selections = Vec::new();
+        for (i, st) in job_template.step_templates().enumerate() {
+            shells.push(instantiate::step_shell(st.step)?);
+            let entry_symtab = binding::creation_scope_symtab(st.step, &symtab, has_expr, ctx)?;
+            selections.push(
+                env_params::resolve_step_entries(
+                    st.step,
+                    i,
+                    &st.path(),
+                    &entry_symtab,
+                    &job_envs,
+                    env_policy,
+                    false,
+                    &mut staged,
+                )
+                .selection,
+            );
+        }
+        (shells, selections)
+    } else {
+        let mut steps = Vec::with_capacity(job_template.steps.len());
+        // Without CONTROL_FLOW a template has no loops (validation), so these
+        // are all the entries.
+        for (step_index, st) in job_template.top_level_steps().enumerate() {
+            steps.push(instantiate::instantiate_step(
+                st,
+                &symtab,
+                has_expr,
+                template_expr,
+                &limits,
+                ctx,
+                step_index,
+                budgets,
+                &job_envs,
+                lists_env_params,
+                &mut check_errors,
+                &mut staged,
+            )?);
+        }
+        // `instantiate_step` only declines to build a step after recording
+        // the failure in `check_errors`. Such a Step cannot be instantiated, so
+        // the submission stage does not run, and the errors so far are
+        // reported, in the shape the inputs give (see `finish_errors`).
+        let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
+            finish_errors(
+                check_errors,
+                staged,
+                staged::StagedErrors::default(),
+                attached_count > 0,
+            )?;
+            return Err(ModelError::DecodeValidation(
+                "internal error: a step was skipped without a recorded error".to_string(),
+            ));
+        };
+        built.into_iter().unzip()
     };
-    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) =
-        built.into_iter().unzip();
     let job_environments: Option<Vec<job::Environment>> =
         job_template.job_environments.as_ref().map(|envs| {
             envs.iter()
@@ -596,8 +921,13 @@ fn create_job_from_template<'a>(
         });
     // The caller limits abort job creation alone, and only when no other
     // error was found. The submission stage finds more errors, so it checks
-    // the limits after them.
-    let limits = check_caller_limits(&steps, job_environments.as_deref(), ctx);
+    // the limits after them. With CONTROL_FLOW they are checked once the
+    // Steps are bound.
+    let limits = if control_flow {
+        Ok(())
+    } else {
+        check_caller_limits(&steps, job_environments.as_deref(), true, ctx)
+    };
 
     // job_template.extensions is `Option<Vec<ExtensionName>>` where every
     // entry has already passed decode-time recognition: any string that
@@ -619,27 +949,35 @@ fn create_job_from_template<'a>(
             extensions,
             parameters,
             steps,
+            loops: Vec::new(),
             job_environments,
+            outputs: None,
         },
         selections,
         job_envs,
         check_errors,
         staged,
         limits,
+        symtab,
     })
 }
 
-/// The caller limits (`ctx.caller_limits`): the total task count across
-/// all steps, each step script's size, and each Environment's size
+/// The caller limits (`ctx.caller_limits`): each Step's task count and the
+/// total across all steps (when `check_task_count`; with `CONTROL_FLOW`
+/// they are checked as each Step's Tasks become known), each step script's
+/// size, and each Environment's size
 /// (JSON-encoded bytes), every Step's Step Environments before the Job
 /// Environments. The first one exceeded is the error; a value equal to its
 /// limit is within it.
 fn check_caller_limits(
     steps: &[job::Step],
     job_environments: Option<&[job::Environment]>,
+    check_task_count: bool,
     ctx: &ValidationContext,
 ) -> Result<(), ModelError> {
-    if let Some(max_task_count) = ctx.caller_limits.max_task_count {
+    let limits_set = ctx.caller_limits.max_task_count.is_some()
+        || ctx.caller_limits.max_step_task_count.is_some();
+    if check_task_count && limits_set {
         // u128: each step's count is a u64, so the sum cannot overflow, and
         // the total is compared and reported exactly.
         let mut total: u128 = 0;
@@ -654,9 +992,14 @@ fn check_caller_limits(
                 })
                 .transpose()?
                 .unwrap_or(1); // Steps without a parameter space have 1 task
+            binding::check_step_task_count(ctx, &step.name, step_tasks)?;
             total += u128::from(step_tasks);
         }
-        if total > u128::from(max_task_count) {
+        if let Some(max_task_count) = ctx
+            .caller_limits
+            .max_task_count
+            .filter(|max| total > u128::from(*max))
+        {
             return Err(ModelError::ModelValidation(
                 crate::error::ValidationErrors::single(format!(
                     "Total task count ({total}) exceeds caller limit of {max_task_count}."
@@ -697,4 +1040,104 @@ fn check_caller_limits(
         }
     }
     Ok(())
+}
+
+/// `create_job`'s Steps and loops under `CONTROL_FLOW` (RFC 0011 §When groups
+/// are evaluated, RFC 0013 §Loop binding): every Step and loop is bound as far
+/// as the values concrete at job creation allow, in dependency order so that
+/// a producer skipped or with known Tasks makes its symbols concrete for the
+/// entries that read them. Returns each entry of the template's `steps`, in
+/// template order: `None` for a Step whose group failed with an error
+/// collected into `check_errors`.
+///
+/// `selections` holds each Step's Environment selection, index for index
+/// with [`JobTemplate::step_templates`]; a top-level Step applies its own
+/// once its `enableIf` is `true` (RFC 0011 `<Environment>` item 3). Their
+/// errors are not in them here: job creation reports those of the Steps
+/// that apply them.
+///
+/// A Step group failure that is a step `let` error or a remaining-group check
+/// error is collected into `check_errors` with the other Steps' errors, in
+/// template order; any other Step group failure, and every loop group
+/// failure, aborts at once. The Task-count limits are checked as each Step's
+/// Tasks become known.
+#[allow(clippy::too_many_arguments)]
+fn instantiate_steps_with_binding(
+    job_template: &JobTemplate,
+    symtab: &openjd_expr::symbol_table::SymbolTable,
+    has_expr: bool,
+    limits: &EffectiveLimits,
+    ctx: &ValidationContext,
+    budgets: EvalBudgets,
+    selections: &[job::EnvironmentSelection],
+    check_errors: &mut crate::error::ValidationErrors,
+) -> Result<Vec<Option<binding::Built>>, ModelError> {
+    use crate::template::StepEntry;
+    let n = job_template.steps.len();
+    // Validation rejects a cycle; template order is a safe fallback.
+    let order = crate::template::validate_v2023_09::step_dependency_order(&job_template.steps)
+        .unwrap_or_else(|| (0..n).collect());
+    // The index in `selections` of each top-level Step's entry.
+    let mut flat_of_entry = vec![None; n];
+    for (flat, st) in job_template.step_templates().enumerate() {
+        if st.body_index.is_none() {
+            flat_of_entry[st.entry_index] = Some(flat);
+        }
+    }
+    let cx = binding::BindContext {
+        jt: job_template,
+        ctx,
+        symtab,
+        has_expr,
+        limits,
+        budgets,
+    };
+    let mut built: Vec<Option<binding::Built>> = vec![None; n];
+    let mut step_errors: Vec<crate::error::ValidationErrors> =
+        (0..n).map(|_| Default::default()).collect();
+    // u128, so the Job total is compared and reported exactly.
+    let mut committed: u128 = 0;
+    for i in order {
+        match &job_template.steps[i] {
+            StepEntry::Step(st) => {
+                let mut site = binding::StepSite::top(job_template, i)?;
+                site.selection = flat_of_entry[i].and_then(|f| selections.get(f));
+                let inputs = binding::step_creation_inputs(job_template, st, &built)?;
+                match binding::bind_step(&cx, &site, None, &inputs, committed) {
+                    Ok(step) => {
+                        if let Some(tasks) = step.tasks_known() {
+                            committed += u128::from(tasks);
+                        }
+                        built[i] = Some(binding::Built::Step(step));
+                    }
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Collected(errors),
+                        ..
+                    }) => step_errors[i] = errors,
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Abort(e),
+                        ..
+                    }) => return Err(e),
+                }
+            }
+            StepEntry::Loop(l) => {
+                let inputs = loops::loop_creation_inputs(job_template, l, &built)?;
+                match loops::bind_loop(&cx, i, l, None, &inputs) {
+                    Ok(job_loop) => built[i] = Some(binding::Built::Loop(job_loop)),
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Abort(e),
+                        ..
+                    }) => return Err(e),
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Collected(errors),
+                        ..
+                    }) => step_errors[i] = errors,
+                }
+            }
+        }
+    }
+    for errors in step_errors {
+        check_errors.errors.extend(errors.errors);
+    }
+    Ok(built)
 }

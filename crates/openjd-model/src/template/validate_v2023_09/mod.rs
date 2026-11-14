@@ -12,13 +12,17 @@
 //! - Pass 9: TASK_CHUNKING (validate or reject)
 //! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
 //! - Pass 11: ENV_PARAMS (validate or reject, Environment Parameters RFC)
+//! - Pass 12: CONTROL_FLOW (validate or reject, RFC 0011 and RFC 0012)
 
+mod control_flow;
 pub(crate) mod env_params;
 mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
+pub(crate) mod steps_scope;
 mod structure;
+pub(crate) use structure::step_dependency_order;
 mod task_chunking;
 mod wrap_actions;
 
@@ -199,7 +203,8 @@ pub(crate) fn validate_job_template(
     // rejected with this error alone (and WRAP_ACTIONS' own prerequisite
     // error, which is about the same list), before any pass runs.
     if !env_params::check_expr_prerequisite(ctx, "§1.1 item 3", &mut errors) {
-        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        helpers::check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", &mut errors);
+        control_flow::check_prerequisites(ctx, &mut errors);
         return errors.into_result("JobTemplate");
     }
 
@@ -228,6 +233,9 @@ pub(crate) fn validate_job_template(
     // Pass 11: ENV_PARAMS (validate or reject)
     env_params::validate_env_params_job_template(jt, ctx, &known, &mut errors);
 
+    // Pass 12: CONTROL_FLOW (validate or reject, RFC 0011 and RFC 0012)
+    control_flow::validate_control_flow_job_template(jt, &limits, ctx, &mut errors);
+
     errors.into_result("JobTemplate")
 }
 
@@ -244,7 +252,7 @@ pub fn validate_environment_template(
     // prerequisites (Template Schemas §1.2 item 3), so ENV_PARAMS requires
     // EXPR here too; checked first, as for a Job Template.
     if !env_params::check_expr_prerequisite(ctx, "§1.2 item 3", &mut errors) {
-        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        helpers::check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", &mut errors);
         return errors.into_result("EnvironmentTemplate");
     }
 
@@ -307,6 +315,8 @@ pub fn validate_environment_template(
 
     // ENV_PARAMS gating and Environment parameter definitions
     env_params::validate_env_params_environment_template(et, ctx, &mut errors);
+    // CONTROL_FLOW applies to Job Templates only (RFC 0011)
+    control_flow::validate_control_flow_environment_template(ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

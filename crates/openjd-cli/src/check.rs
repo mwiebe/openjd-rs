@@ -172,7 +172,7 @@ fn disabled_environment_lines(
     // (§3.2.1 item 3).
     let declinable = |name: &str| !job_env_names.contains(name);
     let mut lines = Vec::new();
-    for step in &jt.steps {
+    for step in jt.step_templates().map(|st| st.step) {
         let requested: HashSet<&str> = step
             .dependencies
             .iter()

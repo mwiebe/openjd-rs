@@ -1,0 +1,41 @@
+$ openjd run {T}/video_frame_count.yaml --step StylizeFrame --step-inputs '{"Steps.VideoToFrames.Output.FrameCount": 2, "Steps.VideoToFrames.Output.FrameRate": "30/1"}' -p InputVideo={T}/fixtures/three_frames.video -p WorkDir={W}/work -p OutputVideo={W}/out.mp4
+exit code: 0
+--- stdout
+Session start
+Running job 'Stylize three_frames.video'
+Step 'StylizeFrame' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.VideoToFrames.Output.FrameCount
+  Host requirements: known
+Step 'StylizeFrame': Tasks known (2 tasks)
+Step 'StylizeFrame' is ready
+Running step 'StylizeFrame'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 1
+Output:
+stylize stub: in_000001.png -> out_000001.png (no input frame)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+stylize stub: in_000002.png -> out_000002.png (no input frame)
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Stylize three_frames.video
+Step: StylizeFrame
+Duration: {DURATION}
+Chunks run: 2
+--- stderr

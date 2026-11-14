@@ -130,18 +130,44 @@ impl<'de> Deserialize<'de> for ExprField {
     }
 }
 
-/// `deserialize_with` for an optional `enableIf` (§3.2 item 3.2, §4 item 6):
+/// An optional expression field named `field`, for a `deserialize_with`:
 /// a present `null` becomes `Some(ExprField::Null)` rather than `None`, so
 /// that template validation reports it at the field's path (§7.6). Pair it
 /// with `#[serde(default)]`, which gives `None` when the key is absent. A
-/// value of another kind is a decode error that names `enableIf`.
+/// value of another kind is a decode error that names `field`.
+fn deserialize_optional<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    field: &str,
+) -> Result<Option<ExprField>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    ExprField::from_json(value, Some(field))
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
+/// `deserialize_with` for an optional `enableIf` (`ENV_PARAMS` §3.2 item 3.2,
+/// §4 item 6; RFC 0011 `<StepTemplate>`, RFC 0013 `<StepLoop>`). See
+/// [`deserialize_optional`].
 pub(crate) fn deserialize_enable_if<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<ExprField>, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    ExprField::from_json(value, Some("enableIf"))
-        .map(Some)
-        .map_err(serde::de::Error::custom)
+    deserialize_optional(deserializer, "enableIf")
+}
+
+/// `deserialize_with` for a loop's optional `while` (RFC 0013
+/// `<LoopDefinition>`). See [`deserialize_optional`].
+pub(crate) fn deserialize_while<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ExprField>, D::Error> {
+    deserialize_optional(deserializer, "while")
+}
+
+/// `deserialize_with` for a loop's optional `until` (RFC 0013
+/// `<LoopDefinition>`). See [`deserialize_optional`].
+pub(crate) fn deserialize_until<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ExprField>, D::Error> {
+    deserialize_optional(deserializer, "until")
 }
 
 /// What an expression field is evaluated with: the profile it parses
@@ -458,6 +484,39 @@ pub(crate) fn accessed_symbols(
     ev.parse(source).ok().map(|p| p.accessed_symbols().clone())
 }
 
+/// The symbols an expression field reads, found by symbol collection under
+/// `profile`, the profile the field was validated with. Empty for a scalar,
+/// a `null`, or an expression that does not parse (template validation
+/// rejects the last two). This is the `CONTROL_FLOW` form used by step input
+/// binding and loops, which have a profile but not an [`ExprFieldEval`];
+/// [`accessed_symbols`] is the `ENV_PARAMS` form.
+pub(crate) fn accessed_symbols_with_profile(
+    field: &ExprField,
+    profile: &ExprProfile,
+) -> std::collections::HashSet<String> {
+    let ExprField::Expression(source) = field else {
+        return Default::default();
+    };
+    ParsedExpression::with_profile(source, profile)
+        .map(|p| p.accessed_symbols().clone())
+        .unwrap_or_default()
+}
+
+/// `message`, an error that [`validate`] or [`resolve`] returned for `field`,
+/// with the expression on a line of its own when the message does not already
+/// show it, so that it names the expression as well as the field's path
+/// (RFC 0011 §How a Step is bound item 3). A parse or evaluation error carries
+/// the expression and a caret; a type that does not fit, or a `null` result,
+/// does not.
+pub(crate) fn with_source(message: String, field: &ExprField) -> String {
+    match field {
+        ExprField::Expression(source) if !message.contains('\n') && !source.trim().is_empty() => {
+            format!("{message}\n  {}", crate::outputs::shorten(source.trim()))
+        }
+        _ => message,
+    }
+}
+
 /// The value of an expression field before the stage at which it is
 /// evaluated, when it is *known* there (Template Schemas §7.6 rule 5):
 /// `symtab` binds each value not yet known to `unresolved[T]` of its type.
@@ -760,7 +819,10 @@ mod tests {
             // No hint for a parse error of a value without `{{`.
             assert_eq!(
                 validate(&expr("1 +"), &ExprType::BOOL, &st, ev),
-                Err("Invalid expression: Syntax error: invalid syntax\n  1 +\n  ^~~".to_string())
+                Err(
+                    "Invalid expression: Syntax error: Expected an expression\n  1 +\n  ^~~"
+                        .to_string()
+                )
             );
             assert_eq!(
                 validate(&expr("Param.Nope"), &ExprType::BOOL, &st, ev),

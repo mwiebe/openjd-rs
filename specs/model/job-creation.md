@@ -178,7 +178,10 @@ pub fn create_job_with_environment_templates(
 Full template instantiation pipeline. `create_job` is
 `create_job_with_environment_templates` with no attached Environment Templates, returning only
 the Job; both run every stage below, including [the submission
-stage](#the-submission-stage), so the Job `create_job` returns is complete. Environment templates should
+stage](#the-submission-stage), so the Job `create_job` returns is complete. A loop
+(`CONTROL_FLOW`, RFC 0013) becomes a `job::Loop` in `job::Job::loops`, bound with the Steps in
+dependency order, and its body Steps are not evaluated (see [Loops](#loops-control_flow-rfc-0013)
+below); the rest of this section is about the top-level Steps. Environment templates should
 already be merged into `job_parameter_values` via `preprocess_job_parameters` before
 calling this function. `ctx` carries the model profile and the `CallerLimits` that apply to
 this job instance (it has no path policy: every
@@ -279,6 +282,14 @@ budgets template validation and the session runtime apply.
      the count ("... has 51 anyOf values after resolution ..."). An empty list is
      "attribute 'X' of Step 'S' has no anyOf values after resolution. An empty list is
      not allowed (Template Schemas §3.3.2)".
+
+     With `CONTROL_FLOW` two of these rules are relaxed, both decided in
+     `ranges::RangeRules`. A list literal emptied by drops or empty lists is not an
+     error: the result follows the rules for a format-string range and may be empty
+     (RFC 0011 §Empty parameter spaces). The 1024-element limit applies only to a
+     list literal's items as written, which the structure pass checks, and not to
+     resolved values (RFC 0011 §Range length), so neither a flattened list nor a
+     whole-field list expression is capped.
 
      Without EXPR an INT, CHUNK[INT] or FLOAT element is the base 2023-09
      `<TaskParameterStringValue>` and resolves to a string. A base format string
@@ -425,6 +436,21 @@ budgets template validation and the session runtime apply.
 9. Attach resolved symbol table to each step
 10. Run [the submission stage](#the-submission-stage) with the attached Environment Templates
     (possibly none)
+11. With `CONTROL_FLOW` (RFC 0011, RFC 0012): copy each Step's `outputVariables` onto
+   `job::Step::output_variables` as `job::OutputVariable` values, work out each
+   Step's Environment selection (steps 8 and 10, for every Step whatever its
+   `enableIf`), and bind each Step as far as the values concrete at job creation
+   allow, in dependency order. This replaces the per-Step parts of steps 2, 5, 8 and 9
+   above (host requirements, ranges, step `let`, each Step's checks, and its symbol
+   table); the job name and the Job Environments are resolved and checked as before.
+   See [Environment selection](#environment-selection-control_flow) and
+   [Step input binding](#step-input-binding-control_flow) below.
+12. With `CONTROL_FLOW`, after the Steps: store each `jobOutputDefinitions` entry in
+    `job::Job::outputs`, and evaluate each one whose `Steps.*` inputs are concrete given
+    the Steps just built (none; a skipped Step's `null`s; `TaskParam` of a Step whose
+    Tasks are known, bound or not). A job output that fails fails `create_job`, every
+    such failure reported together in template order. The rest stay pending. See
+    [job-outputs.md](job-outputs.md).
 
 #### Environment parameter values (ENV_PARAMS)
 
@@ -729,6 +755,24 @@ time, with everything only a session can know left `Unresolved`:
   at pass 8 with everything unresolved, so a failure here comes from
   the real parameter values and would deterministically recur in every
   session that enters the environment.
+- **`Steps.*`** (`CONTROL_FLOW` only; RFC 0011): both tables of a Step,
+  and those of its Step Environments, also hold the `Steps.*` symbols of
+  the Step's direct dependencies: the concrete value for each symbol its
+  materialization groups read that is concrete, and an `Unresolved` value
+  of its RFC type for every other, seeded by `add_control_flow_scope`
+  exactly as pass 8 seeds them (see `specs/model/validation.md` § The
+  `Steps.*` scope; it keeps a key the table already holds). For a body Step
+  instance (RFC 0013), the tables also hold the iteration's concrete
+  `Loop.*` values, and, in the host-scope tables, an `Unresolved` path for a
+  path-typed `Loop.<V>`, whose concrete form is `RawLoop.<V>`. Without
+  them, every script that reads `Steps.*` would fail here with `Undefined
+  variable`, so a template that passes `openjd check` would fail
+  `create_job`. The template-scope table that the carried-forward
+  `timeout` / `cancelation` fields resolve against gets the same symbols
+  with path types only in their `Raw` forms, as at pass 8. Job
+  Environments get none. The placeholders are added to clones of the
+  Step's symbol table, and no `Steps.*` value goes into `resolved_symtab`:
+  `attach_step_inputs` adds the ones a Step's Tasks read.
 
 **`let` bindings.** Every `let` block job creation evaluates —
 step-level (template scope, `HostContext::None`), step-script and
@@ -798,7 +842,11 @@ its `stepEnvironments` in order (`let`, `variables`, every action's
 parameter constraints are checked before any check failure is
 collected, and the caller task-count / size caps are reported only when
 no error at all was found, after the submission stage, so a cap is never
-reported together with a check failure. Resolving a step's host
+reported together with a check failure. (This paragraph describes a
+template without `CONTROL_FLOW`. With it, the per-Step task-count cap is checked
+in each Step's Task enumeration group and aborts alone, discarding check
+failures collected from Steps bound earlier, and the size caps are checked
+after binding; see [Step input binding](#step-input-binding-control_flow).) Resolving a step's host
 requirements or parameter space for real (a value that cannot coerce,
 a duplicate resolved capability name, an association length mismatch,
 …) aborts immediately, discarding any check failures collected from
@@ -1522,6 +1570,510 @@ rejected at job creation, for a format-string value or non-literal `default` tha
 resolve to a valid value with the submitted Job Parameters, for an entry or an Environment
 whose `enableIf` is an expression (and the Environments it may bring into a Step's set), or
 for a host requirement that is not a literal.
+### Step input binding (`CONTROL_FLOW`)
+
+RFC 0011 §Step input binding. A Step's materialization expressions — its
+format strings resolved before a Session exists, plus `enableIf`, an expression
+field — fall into
+four groups, evaluated separately (`MaterializationGroup`), and in this order
+when more than one can be:
+
+| Group | Fields | Result |
+|---|---|---|
+| Enablement | the Step's `enableIf` | `true` (or absent): go on; `false`: `StepBinding::Skipped` |
+| Task enumeration | each Task parameter's `range` (whole field or list items) and `chunks` fields | the materialized `StepParameterSpace`: the Step's Tasks are known |
+| Host selection | every `hostRequirements` format string | the evaluated `HostRequirements` |
+| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds` and format-string `mode`), and the script's | each Step Environment's `enabled`, and the carried-forward checks of the script and of every enabled Step Environment |
+
+There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
+
+**Group inputs** come from static analysis (`binding::StepGroups`), not from
+evaluating with `Unresolved` values: a group's inputs are the `Steps.*`
+symbols its fields reference, as `Steps.<Step>.<Member>.<Name>` (a read such
+as `Steps.P.Output.X.name` counts as `Steps.P.Output.X`), including in a branch
+that is never taken. A field that reads a step `let` name also reads that
+binding's symbols, transitively, and the group *uses* the binding. The
+remaining group uses every step `let` binding. `enableIf` may not read `let`.
+
+**The core** (`binding::bind_step`) serves both `create_job` and
+`advance_step_binding`. Given the Step, its earlier `PendingBinding` (none at
+creation), and a `StepInputs`:
+
+1. It builds the Step's table: the job table, `Step.Name`, and every concrete
+   `Steps.*` value its groups read.
+2. Enablement first. If its inputs are not all concrete, the Step is
+   `PendingInputs` with every group `Waiting` and nothing else evaluated, so a
+   failing range in a Step whose `enableIf` is undecided is not reported. Each
+   group's `on` still lists its own inputs that are not concrete (not counting
+   the enablement group's), so a report shows what is missing. `enableIf` is
+   an expression field of type `bool` (RFC 0010's Template Schemas §7.6),
+   evaluated by `expr_field::resolve` under the template's profile with no
+   host context (`binding::evaluate_condition`). An evaluation error is
+   reported at `steps[i] -> enableIf` as `could not be evaluated: <error>`
+   with the expression and a caret, and a `null` result, which a `bool?`
+   expression can produce, as `resolved to null, which does not fit type bool
+   (Template Schemas §7.6).` followed by the expression, so the message names
+   the field and the expression (RFC 0011 §How a Step is bound item 3). `false` makes the Step `Skipped`: nothing else of it
+   is evaluated, including its `let` bindings and carried-forward checks, so a
+   skipped Step's `let` may assume that the Step runs, and its Environment
+   selection is not applied. `true` (or no `enableIf`) applies the Step's
+   Environment selection (see [Environment selection](#environment-selection-control_flow)):
+   its errors fail the Step in this group, and otherwise its Environment set and
+   values move into `job::Step::environments` and `environment_parameters`, and
+   its host requirements and wrap layers into the `PendingBinding` for the
+   host selection and remaining groups.
+3. Then each other group that has not evaluated and whose inputs are concrete,
+   in the order above. A group first evaluates the `let` bindings it uses that
+   this call has not evaluated yet, in declaration order. A known group is
+   kept as it is and never evaluated again. The first group that fails stops
+   the Step.
+   * Task enumeration resolves the parameter space with the `CONTROL_FLOW`
+     range rules, validates its combination (associated ranges must have
+     equal lengths, so an empty range associated with a non-empty one is an
+     error and associated empty ranges give an empty space), checks that a
+     `CHUNK[INT]` range in a Step that declares `outputVariables` has distinct
+     values (`must have distinct values in a Step with outputVariables, so that
+     each value names one Task; value 1 appears more than once.`), and checks
+     the Task-count limits (below). Every error is located, as RFC 0011 §How a
+     Step is bound item 3 asks ("the failure message names the field and the
+     expression"). A range string that fails to parse after its expressions
+     are evaluated names both, and each symbol it reads that is `null`:
+     `'1-{{Steps.P.Output.V}}' resolved to '1-' ('Steps.P.Output.V' is null),
+     which is not a range expression: Unexpected end of expression: '1-'`.
+     A list item of the wrong type is reported with the coercion error of its
+     list-item target, its type and caret (see the parameter space ranges
+     above), as without `CONTROL_FLOW`. The paths: a range or `chunks` error at
+     `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
+     `-> chunks`), with the expression and caret where evaluating one failed;
+     a combination error at `steps[i] -> parameterSpace`; a Task-count limit
+     at `steps[i]`. A whole-field range expression that resolves to `null` (a
+     conditional producer's `T?` output, say) is `Task parameter 'X' range
+     must not resolve to null`; without `CONTROL_FLOW` the earlier messages
+     are kept.
+   * Host selection resolves `hostRequirements` with the discard rules of
+     Template Schemas §3.3 (`host_requirements::resolve_host_requirements`), and
+     combines them with the entered Environments' resolved requirements from the
+     Step's Environment selection (§3.3.3); a resolution error is reported at
+     `steps[i] -> hostRequirements`, with its own text naming the field
+     (`hostRequirements amount min: ...`), and a conflict with an Environment's
+     requirements as without `CONTROL_FLOW`.
+   * The remaining group evaluates every `let` binding, then the script's
+     carried-forward checks, then each Step Environment: its `enableIf`, an
+     expression field of type `bool` evaluated as the Step's is (an error is
+     reported at `steps[i] -> stepEnvironments[j] -> enableIf`), and its
+     carried-forward checks if it is enabled. A disabled Step Environment is left
+     out of `job::Step::step_environments`, as without `CONTROL_FLOW`, so it is never
+     entered and its fields are not checked. Last, the group checks the
+     `WRAP_ACTIONS` single-wrap-layer rule over the Step's set (RFC 0011
+     `<Environment>` item 6): the wrap layers of the Job Environments in its
+     Environment selection and those of its enabled Step Environments
+     (`external::step_wrap_layers_error`).
+4. When every group is known, the parameter space and host requirements move
+   into the Step's own fields, `resolved_symtab` is built from the Step's
+   table (every `let` binding evaluated, no `Steps.*` value), and the Step is
+   `Bound`. Otherwise it is `PendingInputs` with the groups' states; a pending
+   Step keeps `parameter_space`, `host_requirements`, and `resolved_symtab`
+   as `None`, so a caller that reads those fields never sees a partial Step.
+
+Step `let` bindings are re-evaluated in each call rather than cached in
+`PendingBinding`; a binding whose inputs are concrete always gives the same
+value, so this is observably RFC 0011's "evaluated once"
+(§Materialization groups).
+
+**At job creation** (`instantiate_steps_with_binding`), Steps are bound in
+dependency order (`validate_v2023_09::step_dependency_order`: Kahn's algorithm
+with ties broken by template index), and stored in template order. Each Step's
+`StepInputs` come from the Steps processed before it, for the producers its groups read: a
+skipped producer contributes `null`s, and a producer whose Tasks are known (bound, or
+pending with `tasks: Known`) its `TaskParam`s when the groups read its `TaskParam` or
+`TaskRawParam`. Nothing else is added, because building a producer's `TaskParam` lists
+walks its whole parameter space. `Output` is never concrete at creation
+except as a skipped producer's `null`. A group failure is reported by the
+error it holds:
+
+* A step `let` error (whichever group's evaluation raised it) and the
+  remaining group's check errors are collected per Step and reported
+  together with the other Steps' and the Job Environments' errors, in
+  template order, as one `ModelValidation` error. So
+  `violations_across_steps_and_environments_are_reported_together` keeps
+  its errors.
+* A Step's `enableIf` error, a range or host requirement error, a repeated `CHUNK[INT]` value, and a Task-count limit
+  abort `create_job` with that error alone (a Step Environment's `enableIf`
+  belongs to the remaining group, so its error is collected), as an invalid parameter does — also for a Step that would
+  stay pending. Because Steps are bound in dependency order, the error
+  reported is the first in that order.
+
+Whether this path is taken, and whether the `CONTROL_FLOW` range rules apply, is decided
+by the template's own `extensions`, not by the context, which may enable more: a template
+that does not list `CONTROL_FLOW` behaves exactly as before (RFC 0011 Technical
+Requirement 1). A template that lists `CONTROL_FLOW` but uses none of its features takes
+this path too, so its *errors* can differ from the same template without the extension:
+a Step stops at its first failing group, so after a step `let` error its script and Step
+Environment checks are not reported, and the abort reported is the first in dependency
+order. The Job fails either way. This is a prototype choice; RFC TR1 does not say whether
+error reporting counts as behavior (compare plan ambiguity A3). Without `CONTROL_FLOW`, `instantiate_step` keeps today's behavior: Steps in
+template order; a failed step `let` still lets that Step's carried-forward
+checks run; host requirements resolve before the parameter space; and the
+job-total Task-count limit is checked once, after every Step.
+
+**Task-count limits** (RFC 0011 §Limits item 1) are checked in the Task
+enumeration group, when a Step's Tasks become known: `max_step_task_count`
+against the Step's Tasks (`Step 'S' has 5 Tasks, which exceeds the caller
+limit of 4 Tasks per Step.`), and `max_task_count` against the Step's Tasks
+plus the committed count of the other Steps whose Tasks are known (`Total
+task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the
+Steps whose Tasks are known before it have 2.`). In `create_job` the
+committed count is the running total over the Steps processed before it
+whose Tasks are known (bound, or pending with `tasks: Known`); for
+`advance_step_binding` the caller passes it. The total is summed in `u128`,
+as without `CONTROL_FLOW`, so it is compared and reported exactly: two Steps of
+18446744073709551614 Tasks each exceed a limit of `u64::MAX` with `Total task
+count (36893488147419103228) ...`. Without `CONTROL_FLOW`,
+`max_step_task_count` is checked for every Step after it is instantiated.
+
+#### Environment selection (`CONTROL_FLOW`)
+
+RFC 0011 `<Environment>` items 2–6. `CONTROL_FLOW` requires `ENV_PARAMS`, so every Step has
+an **Environment selection** (`job::EnvironmentSelection`): the part of RFC 0010's job
+creation for one Step that does not depend on whether the Step runs (Template Schemas
+§7.4.1 steps 2 and 4–8, less the Step Environments' `enableIf`, the checks over the whole
+set, and the Step's own host requirements). It is the Job Environments the Step's Sessions
+enter, with its effective Environment parameter values for them, the entered
+Environments' host requirements resolved with those values
+(`job::EnvironmentHostRequirements`), their wrap-hook layers, and any errors found.
+
+Its inputs are concrete at job creation: an `environment:` entry's values and `enableIf`,
+and the `let` bindings they read, may not read `Steps.*`, `Loop.*`, or `RawLoop.*`
+(template validation pass 8, RFC 0011 `<Environment>` item 2). So `create_job` works out
+the selection of every Step, top-level and loop body, whatever its `enableIf`:
+
+1. For each Step template it builds a shell Step with only its entries, evaluated in a
+   table holding the Step's `let` bindings that read no run-time symbol
+   (`binding::creation_scope_symtab`), with Step Environment `enableIf`s left undecided
+   (`resolve_step_entries` with `decide_step_environments: false`).
+2. `external::select_environments` runs the submission stage's Environment work over the
+   shells: external Environment resolution against the attached Environment Templates,
+   constraint 7, each Job Environment's `enableIf` and `exclusiveGroup` per Step, and the
+   checks of the values. Its errors are filed per Step (`StagedErrors::take_step`); an
+   ambiguous Environment name is a Job-level error and is always reported.
+3. `combine_step_host_requirements` resolves each entered Environment's host requirements
+   for the Step, and keeps them per source rather than combining them with the Step's own.
+
+The Steps are then bound (see [Step input binding](#step-input-binding-control_flow)) with
+their selections. A selection is applied when its Step's `enableIf` is decided `true`, at
+creation or later, and its errors then fail the Step's enablement group. A top-level Step
+whose `enableIf` is decided at creation has its selection applied there, and its errors are
+reported with the others of `create_job`. A Step still pending its `enableIf` keeps its
+selection in `PendingBinding::environment_selection`; one with nothing to apply is not
+stored (`EnvironmentSelection::is_empty`). A loop's body Steps' selections are kept in
+`job::Loop::body_environment_selections`, body order, when any has something to apply, and
+each body Step instance applies its Step's. A skipped Step never applies its selection, so
+its errors are not reported. `CreatedJob`'s per-Step lists (`disabled_environments`,
+`environment_statuses`, `discarded_host_requirements`) are for the top-level Steps, and are
+empty for a Step whose selection was not applied at creation; `warnings` are the
+submission's, whatever the Steps' enablement.
+
+The checks that depend on whether a Step runs are made before job creation only for a Step
+known to be enabled (see [validation.md](validation.md#known-to-be-enabled-control_flow)):
+the error for a disabled entry of an `ALWAYS` Environment, constraints 5–7, the
+single-wrap-layer rule, and literal combined host requirements. Job creation makes them for
+every Step whose selection is applied.
+
+#### advance_step_binding
+
+```rust
+pub fn advance_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    step_index: usize,
+    inputs: &StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, BindingError>
+```
+
+The public wrapper over the core for a pending Step of an existing Job. It
+rebuilds the job table from the parameter values and `job.name`, and the
+limits and budgets from `ctx`. It returns a new Step for the caller to swap
+in: more known, `Bound`, or `Skipped`; a `Bound` or `Skipped` Step, or a
+call with no new inputs, comes back unchanged. On every call, `inputs` must
+hold each producer in the Step's `input_producers()` whose state is known
+(Tasks known, succeeded, or skipped), including producers whose values
+`create_job` used and those of groups already known, because the Step's table
+and its `let` bindings are rebuilt from `inputs`. A known group whose input
+is missing from `inputs` is a caller error. On the first failing group it
+returns `BindingError { step, group, errors }`: the Step is `FAILED` at once.
+`errors` holds the group's `ModelError`, a `ModelValidation` error with a
+path per field (see each group above); where evaluating an expression
+failed, the message quotes it with a caret. Its `Display` is `Step '<name>' failed in its
+<group> group:` followed by each error. A caller error says nothing about the
+Step and does not fail it: its error is a `ModelError::Compatibility`,
+`BindingError::is_caller_error()` is `true`, and its `Display` begins
+`Binding Step '<name>' was refused in its <group> group:`. These
+are a Step index past the Job's (with `step` `#<index>`), a template whose
+Step there has another name (both in the enablement group), and a known
+group's input missing from `inputs` (in that group: `the remaining group of
+Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do
+not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped.`).
+
+#### StepInputs and add_producer
+
+`StepInputs` holds the concrete `Steps.*` values a binding reads, per
+producer. `add_producer(producer, state)` fills them, typed as RFC 0011 §The
+`Steps.*` scope table types them:
+
+* `ProducerState::Succeeded { task_outputs }` (a bound producer):
+  `Output.<V>` and `RawOutput.<V>` for each declared output — the Task's
+  value for a producer without a `parameterSpace`, otherwise a list with one
+  element per Task in iteration order (chunking disabled), typed by the
+  declared type, so zero Tasks give a typed `[]`. Each value is converted to
+  the declared type with EXPR coercion. Plus its `TaskParam`s.
+* `ProducerState::TasksKnown` (bound, or pending with `tasks: Known`):
+  `TaskParam.<N>` and `TaskRawParam.<N>` for each Task parameter, a list
+  with one element per Task from `StepParameterSpaceIterator::
+  new_with_chunk_override(space, Some(1))`; a `CHUNK[INT]` parameter's
+  one-value range becomes its `int`. A pending producer's parameter space is
+  read from `PendingBinding.tasks`, so a consumer's Tasks can become known
+  before its producer is bound.
+* `ProducerState::Given { task_outputs }` (a bound producer): as
+  `Succeeded`, for a caller that simulates the producer with only some of its
+  outputs (`openjd run --step-inputs`). A declared output absent from every
+  Task's map stays unknown (not concrete), so a binding that reads it still
+  waits on it; one present in some Tasks' maps but not others is refused. A
+  producer with zero Tasks gives every output, a typed `[]`.
+* `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
+
+A type that is or contains `path` gets a value only in its `Raw` form (the
+submission-context form, as a `path` value; a URI in the Posix format the
+model evaluates in, with its text unchanged, since a reported URI output
+carries `PathFormat::Uri` and the EXPR evaluator refuses a `path` value in
+another format than its own (EXPR recognizes a URI by its text, so nothing
+else changes). A Windows-format stored path (a reverse rule's source format)
+keeps its format, so reading it in a group or job output is refused rather
+than giving wrong results from path operations such as `.name`: reading the
+value, or an element of a list, gives "Path format mismatch", and reading an
+attribute of the symbol directly (`Steps.P.RawOutput.M.name`) gives
+"Undefined variable"; a `PATH` Task
+parameter's values are `path` values in the Posix format); its `Output` or `TaskParam`
+is concrete (`is_concrete`) but has no value (`get` returns `None`), because
+it is derived on the worker host. `add_producer` replaces a producer added
+before. `TasksKnown` on a skipped producer is the same as `Skipped`, since its
+`TaskParam` is concrete as `null` (and `tasks_known()` is `Some(0)`). It
+refuses, as a `ModelError::Compatibility`, a state that does not match the
+producer's binding, a `task_outputs` without one map per Task, a Task that
+lacks a declared output (under `Given`, one another Task has), and a value that does not convert. It does not check that the producer is a
+dependency of anything, because job outputs read any Step.
+
+#### attach_step_inputs
+
+```rust
+pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError>
+```
+
+A bound Step that reads `Steps.*` in its script or Step Environments (its
+host-scope fields) needs those values in `resolved_symtab` before its Tasks
+run; `create_job` and `advance_step_binding` put none there.
+`attach_step_inputs` finds the symbols those fields read
+(`collect_all_accessed_symbols`) and copies each value from `inputs`. For a
+path-typed `Steps.P.Output.X` or `TaskParam.N`, `inputs` holds only the `Raw`
+twin, so the twin is stored instead, as `include_raw_param_fallbacks` does
+for `PATH` `Param.*`. Every path-typed `Raw` value it stores is stored as a
+`string` (or list of strings, or list of lists of strings) and recorded in
+`job::Step::path_inputs` with its type (`path`, `list[path]`, or
+`list[list[path]]`), which the session uses to build the `path` values and
+map `Output` and `TaskParam` forward. A skipped producer's `null`s are
+stored as they are and are not recorded. Every `Steps.*` value in
+`resolved_symtab` and every `path_inputs` record comes from this call's
+`inputs`, so attaching again replaces an earlier call's (calling it again with
+the same inputs gives the same Step). It errors, as a `ModelError::Compatibility`,
+on a Step that is not bound and on a symbol that is not concrete in `inputs`,
+naming it.
+
+#### Reporting
+
+`job::Step::tasks_known()` is the Task count once Tasks are known (`Some(0)`
+for a skipped Step). `job::Step::binding_report()` is, for a pending Step,
+each group's `GroupReport`: `Known`, or `Waiting { on, for_enablement }`
+with its missing `Steps.*` symbols and whether it also waits for the
+undecided `enableIf`. `job::Step::input_producers()` lists the producers
+whose `Steps.*` symbols the Step reads: those its host-scope fields read (for
+`attach_step_inputs`) and, for a pending Step, those any of its groups read,
+known or not (`PendingBinding::producers`, which `create_job` and
+`advance_step_binding` record). It is what a caller passes on each call; none
+for a skipped Step. `job::Step::input_symbols()` lists the
+`Steps.<Step>.<Member>.<Name>` symbols themselves: those its host-scope fields
+read (what `attach_step_inputs` needs concrete) and, for a pending Step, those
+its groups still wait on (a known group's inputs are not listed); none for a
+skipped Step.
+
+### Loops (`CONTROL_FLOW`, RFC 0013)
+
+A loop is a node of the step graph, bound like a Step (RFC 0013 §Loop binding). Its body
+Steps run once per iteration: each iteration has an instance of every body Step, which is
+a `job::Step` bound by the same core as a top-level Step (`bind_step`, over a `StepSite`
+that names the Step's template, its location, its error path, and for an instance its
+iteration's `Loop.*` values). The caller keeps the loop's progress between iterations,
+as it keeps a Step's state. The functions are in `create_job/loops.rs`.
+
+#### Loop binding
+
+`create_job` and `advance_loop_binding` bind a loop with three groups, in order:
+
+1. **Enablement** (`MaterializationGroup::Enablement`): `enableIf`, an expression field
+   of type `bool` evaluated as a Step's is (see Step input binding), with `Step.Name` the
+   loop's name. While its `Steps.*` inputs are not concrete, the loop is `PendingInputs`
+   and nothing else of it is evaluated. `false` makes it `Skipped`.
+2. **Bound** (`LoopBound`): `maxIterations`, a literal or a format string of type `int`,
+   from 1 to 1,000 (`maxIterations must be from 1 to 1000; it is <n>.`, with the
+   expression on a line after it for a format string). It reads no `Steps.*` symbol, so it
+   is evaluated as soon as `enableIf` is `true`.
+3. **Start** (`LoopStart`): each variable's `initial`, in declaration order, with its
+   type as the target type, converted with EXPR's implicit coercion and checked against
+   its constraints (messages prefixed `Loop variable '<V>': `); then
+   `CallerLimits::max_loop_value_bytes` on the initial values (see Limits); then, for a
+   `while` loop, the first `while` with `Loop.Iteration` 0 and the initial values. Its
+   inputs are the `Steps.*` symbols of the `initial`s and the `while`. `while` and
+   `until` are expression fields of type `bool`, evaluated and reported as an `enableIf`
+   is (at `steps[i] -> loop -> while` or `-> until`); `maxIterations`, `initial`, `next`,
+   and the output `value`s are format strings.
+
+A group whose inputs are concrete at Job creation is evaluated then, and a failure in any
+of the three fails `create_job` (it is reported alone, as an `enableIf` error is). Later,
+`advance_loop_binding(job_template, job_parameter_values, ctx, job, loop_index, inputs)`
+evaluates the rest as the loop's dependencies (`job::Loop::input_producers()`) become
+known, and returns the loop `PendingInputs` with more known, `Bound`, or `Skipped`, or a
+`BindingError` (step: the loop's name) that fails the loop finally. Called on a bound or
+skipped loop it returns it unchanged. `create_job` evaluates nothing of a body Step,
+including the carried-forward checks it runs for every other Step: those are evaluation,
+found when iteration 0 starts (RFC 0013 Open Question 6). A body Step's Tasks are not
+counted in `max_task_count` at creation, and the `minLength` of a loop's `APPEND` outputs
+is never checked there.
+
+A bound loop whose first `while` is `false` has zero iterations
+(`BoundLoop::has_iterations`): once its dependencies are satisfied, the caller calls
+`end_without_iterations(job, loop_index)`, which checks each `APPEND` output's `minLength`
+against `[]` and gives a `LoopResult` with zero iterations, each `LAST` output `null`, and
+each `APPEND` output `[]`.
+
+`job::Loop::tasks_known()` is `Some(0)` for a skipped loop and `None` otherwise, since a
+loop's Tasks are not known until it ends. `job::Loop::binding_report()` reports the three
+groups as `job::Step::binding_report()` does a Step's.
+
+#### Iterations
+
+`LoopProgress::new(&job_loop)` gives iteration 0 with the `initial` values and no outputs.
+Every loop function that takes a `LoopProgress` checks its shape: exactly the loop's
+variables, each of its declared type, and exactly its outputs (`LAST` `null` or of its
+type, `APPEND` a list of its type); anything else is a caller error, so a progress
+restored from a scheduler's records cannot be mistaken for a loop failure.
+`start_iteration(.., loop_index, &progress, inputs, committed_task_count)` creates an
+instance of every body Step for `progress.iteration`, in body dependency order, each bound
+as `create_job` binds a top-level Step: every group whose inputs are concrete then is
+evaluated (RFC 0013 §Iterations item 3), including the carried-forward checks of its
+script and Step Environments. `inputs` holds the loop's dependencies; an instance skipped
+by its `enableIf`, or whose Tasks are known, makes its symbols concrete for the instances
+of the same iteration that read them. The result is a `LoopIteration` with one instance
+per body Step, in body order.
+
+- An instance is named by its body Step's name, unique in the template, so
+  `StepInputs::add_producer`, `attach_step_inputs`, and `Step::input_producers()` work
+  on it unchanged, and `Steps.<Body>.*` within the iteration needs no new symbol form.
+  `Step.Name` in an instance is the body Step's name (plan A20).
+  `LoopIteration::instance_name(j)` is `<Loop>[<N>].<Step>`, and a `BindingError` from
+  an instance names it so.
+- Its symbol table is the job table, `Step.Name`, the iteration's `Loop.Iteration`,
+  `Loop.<V>`, and `RawLoop.<V>`, and the concrete `Steps.*` values its groups read. A
+  variable whose type is or contains `path` has only `RawLoop.<V>` there, in the
+  submission path context. When the instance is bound, a path-typed variable that its
+  worker-resolved fields read, as `Loop.<V>` or `RawLoop.<V>`, is stored in its
+  `resolved_symtab` as `RawLoop.<V>`, a `string` or list of strings, and recorded in
+  `job::Step::path_inputs`; the Session derives `Loop.<V>` from it (see
+  [../sessions/session.md](../sessions/session.md)). `attach_step_inputs` keeps these
+  records and replaces only the `Steps.*` ones.
+- Task-count limits apply per instance as its Tasks become known:
+  `max_step_task_count`, and `max_task_count` with `committed_task_count`, which counts
+  the Tasks of every Step and earlier instance whose Tasks are known; `start_iteration`
+  adds each instance's Tasks to it as it goes (plan A19). An instance over a limit fails,
+  and the message names it as `<Loop>[<N>].<Step>`.
+
+`advance_body_step_binding(.., loop_index, &progress, &iteration, body_index, inputs,
+committed_task_count)` is `advance_step_binding` for a pending instance: `inputs` holds the
+loop's dependencies and the instances of the same iteration in the instance's
+`input_producers()` whose state is known. The caller swaps the result into
+`iteration.steps`. Every instance group error is a `BindingError` that fails the
+instance, and so the loop, finally (RFC 0013 §Failure).
+
+#### The iteration boundary
+
+When every instance of the iteration has succeeded or been skipped, the caller calls
+`evaluate_iteration_boundary(.., loop_index, &progress, inputs)`, with `inputs` holding
+the loop's dependencies and every instance of the iteration (`add_producer`, succeeded or
+skipped). With `Loop.*` holding the iteration's values, it evaluates, in RFC 0013's
+order:
+
+1. Each loop output's `value`, with its type (under `APPEND` its element type) as the
+   target type, converted, and checked: under `LAST` every constraint property, under
+   `APPEND` the `item` constraints on the new element (`check_element`) and `maxLength`
+   on the grown list. It becomes the iteration's value. Then the size limit.
+2. `until`, if present: `true` ends the loop, with no `next`, and it succeeds with `N + 1`
+   iterations once each `APPEND` output's `minLength` holds.
+3. Every variable's `next`, each reading iteration `N`'s values, converted and checked
+   against its constraints. Then the size limit on the new values and the outputs so far
+   (plan A21).
+4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`: `false` ends the
+   loop as in step 2.
+5. The bound: if `N + 1` is `maxIterations`, the loop fails (`Loop '<L>' has run
+   maxIterations (<n>) iterations without ending, so it fails.`, followed by a line holding
+   the expression when `maxIterations` is a format string).
+
+It returns `BoundaryOutcome::Continue(LoopProgress)` for iteration `N + 1`, or
+`Succeeded(LoopResult { iterations, ended_by, outputs })`. The first error stops it and
+fails the loop finally: a `LoopError` with the loop's name, the iteration, the field
+(`LoopErrorField`), and the error, a `ModelValidation` at the field's path
+(`steps[i] -> outputVariables[k] -> value`, `steps[i] -> loop -> until`,
+`steps[i] -> loop -> variables[k] -> next`, `steps[i] -> loop -> while`,
+`steps[i] -> loop -> maxIterations`, `steps[i] -> outputVariables[k] -> minLength`, or
+`steps[i]` for the size limit). An evaluation error quotes the expression with a caret;
+a conversion or constraint error ends with a line holding the expression. A symbol a
+boundary expression reads that is not concrete in `inputs` is a caller error.
+
+A loop's outputs reach its consumers like a Step's:
+`StepInputs::add_loop_producer(&job_loop, LoopProducerState::Succeeded { outputs })` (or
+`Skipped`) sets `Output.<V>` and `RawOutput.<V>` to each value itself, with no per-Task
+list; a path-typed output is held only in its `Raw` form and derived on the worker, unless
+it is `null`. `LoopProducerState::Given { outputs }` is the same for only the outputs
+`outputs` holds; the others stay unknown (`openjd run --step-inputs`). `create_job` uses a skipped loop's `null`s for the Steps and job outputs
+that read it.
+
+#### Failure, recovery, and consumption
+
+Every error the loop functions return for a loop is final (RFC 0013 §Failure): a loop
+group, an instance group, a Task-count limit, the boundary, `minLength`, the size limit,
+and the bound. The model never sees a Task attempt, so the one recoverable failure, of
+the Tasks of an instance of the iteration in progress, is the caller's to handle; the CLI
+has no retries. `BindingError::is_caller_error()` and `LoopError::is_caller_error()` tell
+a caller error, which says nothing about the loop, from a failure. A loop's
+`BindingError` is displayed as a Step's is (`Step 'L' failed in its start group:`, or
+`Binding Step 'L' was refused in its enablement group:` for a caller error, whose group
+is always `Enablement`), since a loop is a Step of the step graph.
+
+`job::Loop::expression_inputs(job_template, &LoopExpression)` lists the `Steps.*` symbols
+that one of the loop's expressions (`enableIf`, an `initial`, `while`, `until`, a `next`,
+or an output `value`) references, by symbol collection, so a scheduler that allows
+re-runs can mark them consumed when it evaluates the field (RFC 0013 §Retries and
+re-runs, RFC 0012 rule 3).
+
+#### Limits
+
+`CallerLimits::max_loop_value_bytes` (RFC 0013 §Limits item 4) bounds the total of a
+loop's variable and output values, each measured as its JSON serialization (numbers,
+strings, booleans, and arrays; a path as its text): each variable's value; each `LAST`
+output's value, or nothing while it is `null`; and the sum of each `APPEND` output's
+elements, so an `APPEND` output with no elements counts nothing (its brackets and commas
+are not counted). It is checked
+after the `initial` values, and at each boundary after step 1 and after step 3. `None`
+is no limit; the CLI sets none.
 
 ### convert_environment
 

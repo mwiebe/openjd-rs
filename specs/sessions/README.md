@@ -67,3 +67,6 @@ Currently implements `2023-09` with extensions:
 - `ENV_PARAMS` (Environment Parameters; prototype):
   `Session::enter_environment_with_parameters` binds `Env.Param.*` / `Env.RawParam.*`
   (see [session.md](session.md#enter-with-environment-parameter-values-env_params))
+- `CONTROL_FLOW` (RFC 0012, prototype): the `openjd_output_var` directive, `@` file values,
+  per-Task output values in `ActionResult::outputs`, and path-typed `Steps.*` inputs. See
+  [session.md § Output variables](session.md#output-variables-control_flow).

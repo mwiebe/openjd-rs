@@ -7,8 +7,10 @@ is essential for render farms where jobs are authored on one OS but executed on 
 or where storage mount points differ between submission and execution hosts.
 
 Defined in `path_mapping.rs` (PathFormat, PathMappingRule, PathMapper,
-InvalidPathMappingRule), `windows_upcase.rs` (the Windows uppercase table) and
-`uri_path.rs` (URI-aware path operations).
+InvalidPathMappingRule, and the reverse mapping
+`unapply_rules`/`unapply_rules_with_source_format`/`UnmapError`),
+`windows_upcase.rs` (the Windows uppercase table) and `uri_path.rs` (URI-aware
+path operations).
 
 ## PathFormat
 
@@ -97,6 +99,139 @@ the limit of <max> bytes`. Without the limit, a 10 MB rules file (which the
 CLI accepts) of rules near 32 KiB that share nothing would build a trie of
 about 1.2 GB. `openjd-sessions` takes the limit from
 `SessionLimits::max_path_mapping_trie_bytes`.
+
+### Reverse mapping
+
+`unapply_rules(mapper, path, worker_format) -> Result<String, UnmapError>` maps a
+path reported on a worker back to the submission path context, the form in which
+`PATH` job parameters are given. The CONTROL_FLOW extension stores `PATH` output
+values in that form (RFC 0012 §Path values, RFC 0012 Design Choice 5). The RFC states the
+requirement on the outcome: the stored value must map forward, with the producing
+Session's rules, to the reported path. `unapply_rules` implements the RFC's
+reference inverse:
+
+1. A URI (`is_uri`) is returned unchanged, with or without rules.
+2. Any other path must be absolute under `worker_format`, or the result is
+   `UnmapError::Relative`. This holds with no rules too: a relative path would be
+   relative to a Session Working Directory no consumer can see.
+3. With no rules, the absolute path is returned unchanged, not normalized.
+4. Otherwise the path and each rule's `destination_path` are lexically normalized
+   and compared under `worker_format`'s rules. A rule matches when its
+   `destination_path` is the path or a prefix of it ending on a component
+   boundary. Its candidate is the remaining components joined with the separator
+   of its `source_path_format` (`\` for Windows, `/` for POSIX and URI), appended to
+   `source_path` with one more separator unless `source_path` already ends with
+   one, or `source_path` itself when no components remain. Components keep the
+   spelling they have in the reported path, and are appended to a URI unchanged.
+5. Candidates are tried by decreasing `destination_path` length, counted in
+   normalized components, then in the order of `mapper.rules()`. The first candidate
+   that `mapper.map_with_format(candidate, worker_format)` maps to a path equal to
+   the reported one is returned. If none does, the result is
+   `UnmapError::NoRoundTrip`. The common case is a path under the Session Working
+   Directory, which no rule's `destination_path` covers.
+6. A candidate longer than `MAX_PATH_LEN` is skipped, and the result is
+   `UnmapError::TooLong` if no other candidate maps back (see **Paths longer than
+   `MAX_PATH_LEN`** below).
+
+The round trip is what makes the result correct, and it is needed because rules can
+nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
+is `P:\x\f`, which maps forward to `/data/x/f`, so the result is `NoRoundTrip`.
+The round trip forward-maps with the `mapper` it is given, so `mapper` must be the
+producing Session's own `PathMapper` (`openjd-sessions` passes the one it maps
+`PATH` parameters with). A mapper built from other rules reproduces the wrong forward
+mapping and can accept a value the Session maps elsewhere. Forward precedence is the
+mapper's (see [Which rule wins](#which-rule-wins)), so the result does not depend on
+the order of the rules except where the mapper's own precedence does: of the rules
+`P:\a` → `/x` and `P:/a` → `/y`, which name the same location, the mapper keeps the
+later one, so `/y/f` gives `P:/a\f` and `/x/f` is `NoRoundTrip`. Among candidates
+from destinations of the same length, `mapper.rules()` order breaks ties; that is the
+RFC's "the order the rules are listed".
+
+**Lexical normalization** removes `.` and empty components (runs of separators,
+trailing separators) and applies `..` to the preceding component, without resolving
+symbolic links. A `..` directly below a root is dropped, as `/..` is `/`. The anchor
+is kept separately and is never stripped, so a root keeps its separator. The POSIX
+anchor is `/`, however many leading slashes there are. POSIX lets exactly two be an
+implementation-defined root, and `path()` preserves that spelling, but here it is
+folded into `/`, as forward matching treats `//a` as `/a` (see
+[Divergence from Python](#divergence-from-python)). Windows anchors are `X:\` (either separator),
+`\\server\share`, and, for non-absolute `destination_path` values only, `X:` and `\`.
+A UNC anchor's server ends at the first separator, so `\\srv\\share` has an empty
+share, as Python 3.12's `PureWindowsPath` parses it. Normalization is applied to both sides of each
+comparison. It matters on the forward side because forward mapping appends the
+remaining components to `destination_path` as written and keeps a trailing
+separator, so `destination_path` `/mnt/./p` gives `/mnt/./p/x`.
+
+**Comparison** under `worker_format`: Windows paths compare case-insensitively
+with ASCII case folding, with `\` and `/` both separators;
+POSIX paths compare case-sensitively with `/` only. `PathFormat::Uri` as the worker
+format is treated as POSIX.
+
+**Absoluteness** agrees with `PurePosixPath`/`PureWindowsPath.is_absolute()` on
+ordinary forms: a leading `/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
+server and share (`\\server\share`) on Windows. A Windows path rooted without a
+drive (`\x`), drive-relative (`C:x`), with a non-letter drive (`1:\x`), or a UNC
+path with an empty server or share (`\\\share\x`, `\\srv\\share`) is `Relative`, and
+so is `\\srv\share` on POSIX, where `\` is an ordinary character. The same Windows
+anchor parser serves absoluteness and normalization, so the two agree. Python
+versions disagree on the edge forms, so this follows neither exactly: Python 3.9
+treats `\\srv\` (a UNC server with an empty share) as absolute, and Python 3.12
+treats `1:\x`, `\\\share\x`, and `\\srv\\share` as absolute; here all four are
+`Relative`, as none names a usable Windows location. Forward matching has its own
+test, for an absolute rule `source_path` (see
+[Source paths must be absolute](#source-paths-must-be-absolute)).
+
+**Paths longer than `MAX_PATH_LEN`.** The limit is 32 KiB counted in bytes, not
+characters. Every candidate is a rule's absolute
+`source_path` (a `PathMapper` rejects any other) or a path under it, so forward
+mapping finds a rule for it, unless it is longer than `MAX_PATH_LEN` (32 KiB), which
+matches no rule ([Path length limit](#path-length-limit)). Forward mapping would
+return such a candidate unchanged, so the round trip could accept it by identity even
+though the Session's rules send its location elsewhere (with `/m` → `/m` and `/m/a` →
+`/elsewhere`, the reported `/m/a/<32 KiB>` would be stored as itself). So a candidate
+longer than `MAX_PATH_LEN` is skipped, and if no other candidate maps back, the result
+is `UnmapError::TooLong` rather than `NoRoundTrip`, whose message would wrongly say
+the path is on the worker only. The reported path itself may be longer than the
+limit, because it is a forward result, and forward results can be: with `/s` →
+`/mnt/<just under 32 KiB>`, the reported `/mnt/<just under 32 KiB>/<100 bytes>` is
+stored as `/s/<100 bytes>`. With no rules, a
+long absolute path is accepted and stored unchanged like any other, as RFC 0012's
+inverse step 6 says; but a Session that then reads it as a `Steps.*` or `Loop.*` input
+cannot map it forward and fails, as it does for a `PATH` parameter longer than
+`MAX_PATH_LEN` (`specs/sessions/session.md`).
+The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward helper that
+reports whether a rule matched; the round trip on the forward result is what the RFC
+requires, and this length check is the one case where they would differ.
+
+**Source format filtering is not implemented.** The RFC says a runtime that knows the
+submission path format SHOULD use only rules whose `source_path_format` is that
+format or `URI`. `unapply_rules` takes no submission format, since no openjd runtime
+knows it (a Session has its rules but not the Job's submission path format), and a
+caller MUST NOT
+build `mapper` from filtered rules: the RFC defines the no-rules case "before any filtering by
+source format" and the round trip on the Session's own rules, so a list filtered to
+empty would wrongly return a worker-only path unchanged. Without the filter a
+candidate may be in another format than the submission's; the round trip still
+guarantees it maps forward to the reported path.
+
+**Rejected but valid spellings.** Normalization is lexical, as the RFC defines it, so
+some paths that name a location under a destination are still `NoRoundTrip`: a
+Windows `\\?\C:\...` extended-length path against a `C:\...` destination, and a
+non-ASCII component that differs only in case (folding here is ASCII-only, where
+forward matching uses the Windows uppercase table). Nothing is accepted wrongly; the
+round trip prevents that.
+
+`unapply_rules_with_source_format` takes the same arguments and returns the stored
+form together with its path format: `PathFormat::Uri` for a URI returned unchanged,
+`worker_format` for an absolute path returned unchanged because there are no rules,
+and otherwise the `source_path_format` of the rule whose candidate was returned.
+`unapply_rules` is this function without the format. A caller that stores the result
+as an `ExprValue::Path`, as the CONTROL_FLOW output collector does
+(`specs/model/outputs.md`), uses the format so the value carries the format of the
+submission path context it is in (RFC 0012 §Path values).
+
+`UnmapError` implements `Display` and `std::error::Error`. The caller, which knows
+the path and the output's name, builds the user-facing message around it.
 
 ### Serde
 
@@ -552,3 +687,6 @@ rule, UNC anchors), with these differences:
   non-root destination ends with (`s3://b` → `/local/` maps `s3://b` to
   `/local`), where Rust keeps it.
   Matching for a single URI rule is the same.
+
+The reverse mapping, `unapply_rules` and `unapply_rules_with_source_format`, has no
+Python counterpart yet: it is part of the draft CONTROL_FLOW extension (RFC 0012 §Path values), which this crate prototypes first.

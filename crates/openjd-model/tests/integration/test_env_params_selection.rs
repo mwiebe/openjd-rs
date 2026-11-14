@@ -253,7 +253,13 @@ fn enable_if(value: &str) -> String {
 #[test]
 fn enable_if_decodes_as_an_expression_field() {
     let dep_of = |jt: &openjd_model::template::JobTemplate| {
-        jt.steps[0].dependencies.as_ref().unwrap()[0].clone()
+        jt.steps[0]
+            .as_step()
+            .unwrap()
+            .dependencies
+            .as_ref()
+            .unwrap()[0]
+            .clone()
     };
     let dep = dep_of(&job_ok(&enable_if("false")));
     assert_eq!(dep.enable_if, Some(ExprField::Bool(false)));
@@ -336,16 +342,18 @@ fn an_enable_if_written_as_a_format_string_is_a_parse_error() {
     );
     job_err(
         &enable_if(r#""x{{ true }}""#),
-        &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Syntax error: invalid \
-           syntax. An expression field takes an expression without '{{ }}' (Template Schemas \
-           §7.6).\n  x{{ true }}\n   ^"],
+        &[
+            "steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Syntax error: \
+           Unexpected token at the end of an expression. An expression field takes an \
+           expression without '{{ }}' (Template Schemas §7.6).\n  x{{ true }}\n   ^",
+        ],
     );
     // A `{{` inside a string literal is text, and the hint is not added to
     // an unrelated parse error.
     job_ok(&enable_if(r#""Param.Mode != '{{x}}'""#));
     job_err(
         &enable_if(r#""Param.Mode =""#),
-        &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Syntax error: invalid syntax\n  Param.Mode =\n             ^"],
+        &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Syntax error: Unexpected token at the end of an expression\n  Param.Mode =\n             ^"],
     );
 }
 

@@ -7,6 +7,7 @@
 mod execution;
 mod params;
 mod result;
+mod simulator;
 
 pub use params::parse_cli_parameters;
 
@@ -17,7 +18,7 @@ use openjd_model::types::{JobParameterValues, ModelProfile, TaskParameterSet};
 use openjd_model::StepDependencyGraph;
 use openjd_sessions::action::ActionState;
 use openjd_sessions::path_mapping::PathMappingRule;
-use openjd_sessions::session::Session;
+use openjd_sessions::session::{EnvironmentOptions, EnvironmentOrigin, RunTaskOptions, Session};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,8 @@ type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<openjd_expr::SerializedSymbolTable>;
 
 struct PreparedRun {
+    job_template: openjd_model::template::JobTemplate,
+    validation_ctx: openjd_model::types::ValidationContext,
     /// The Job combined with the attached Environment Templates: their
     /// Environments lead `job_environments`, and each Step's
     /// `environment_parameters` covers them.
@@ -45,9 +48,11 @@ struct PreparedRun {
 }
 
 struct RunSelection {
-    selected_step_idx: Option<usize>,
+    /// The Step or loop `--step` names, or the Job's only top-level entry.
+    selected: Option<simulator::Node>,
     explicit_task_params: Option<Vec<HashMap<String, String>>>,
-    steps_to_run: Vec<usize>,
+    /// The top-level Steps and loops to run, in dependency order.
+    to_run: Vec<simulator::Node>,
 }
 
 struct EnteredEnvironment {
@@ -57,6 +62,11 @@ struct EnteredEnvironment {
     /// Which Job Environment this is, and the values it was entered with;
     /// `None` for a Step Environment.
     job_environment: Option<EnteredJobEnvironment>,
+    /// Passed again when the Environment is exited.
+    origin: EnvironmentOrigin,
+    /// A Step Environment's Step's path-typed `Steps.*` inputs, passed again
+    /// on exit.
+    path_inputs: Vec<openjd_model::job::PathInput>,
 }
 
 /// The identity of an entered Job Environment and the Environment
@@ -89,6 +99,17 @@ struct JobEnvironmentTarget<'a> {
     index: usize,
     env: &'a Environment,
     values: Option<&'a EnvironmentParameterValues>,
+    /// Which template defines it.
+    origin: EnvironmentOrigin,
+}
+
+/// The result of one Action that ran a Task (or a chunk of Tasks).
+struct TaskRun {
+    duration: f64,
+    succeeded: bool,
+    /// The values its Tasks reported, when the Step declares output
+    /// variables and the Action succeeded.
+    outputs: Option<openjd_sessions::action::ActionOutputs>,
 }
 
 struct RunContext {
@@ -186,6 +207,8 @@ impl RunContext {
                 target.env.resolved_symtab.clone(),
                 target.values,
                 Some(target.index),
+                target.origin,
+                &[],
             )
             .await;
         }
@@ -195,7 +218,10 @@ impl RunContext {
     /// (`ENV_PARAMS`) when it declares parameters. The values are printed
     /// after the banner, as given (before path mapping). `job_index` is the
     /// Environment's index in the combined Job's `job_environments`, or
-    /// `None` for a Step Environment.
+    /// `None` for a Step Environment. `origin` is which template defines it,
+    /// and `path_inputs` a Step Environment's Step's path-typed `Steps.*`
+    /// inputs (`CONTROL_FLOW`).
+    #[allow(clippy::too_many_arguments)]
     async fn enter_environment(
         &mut self,
         env: &Environment,
@@ -203,6 +229,8 @@ impl RunContext {
         symtab: EnvSymtab,
         values: Option<&EnvironmentParameterValues>,
         job_index: Option<usize>,
+        origin: EnvironmentOrigin,
+        path_inputs: &[openjd_model::job::PathInput],
     ) {
         let job_environment = job_index.map(|index| EnteredJobEnvironment {
             index,
@@ -215,9 +243,13 @@ impl RunContext {
                 println!("{}\t{name}({ty}) = {value}", self.timestamp());
             }
         }
+        let options = EnvironmentOptions {
+            origin,
+            path_inputs,
+        };
         match self
             .session
-            .enter_environment_with_parameters(env, symtab.as_ref(), values, None, None)
+            .enter_environment_with_parameters(env, symtab.as_ref(), values, None, None, &options)
             .await
         {
             Ok((identifier, _output)) => self.entered_envs.push(EnteredEnvironment {
@@ -225,6 +257,8 @@ impl RunContext {
                 name: name.to_string(),
                 symtab,
                 job_environment,
+                origin,
+                path_inputs: path_inputs.to_vec(),
             }),
             Err(e) => {
                 eprintln!("ERROR: Environment setup failed: {e}");
@@ -245,6 +279,8 @@ impl RunContext {
                             name: name.to_string(),
                             symtab,
                             job_environment,
+                            origin,
+                            path_inputs: path_inputs.to_vec(),
                         });
                     }
                 }
@@ -262,7 +298,16 @@ impl RunContext {
             self.print_action_banner(&format!("Exiting Environment: {}", entered.name));
             if let Err(e) = self
                 .session
-                .exit_environment(&entered.identifier, entered.symtab.as_ref(), true, None)
+                .exit_environment(
+                    &entered.identifier,
+                    entered.symtab.as_ref(),
+                    true,
+                    None,
+                    &EnvironmentOptions {
+                        origin: entered.origin,
+                        path_inputs: &entered.path_inputs,
+                    },
+                )
                 .await
             {
                 eprintln!("ERROR: Environment teardown failed: {e}");
@@ -275,7 +320,7 @@ impl RunContext {
         &mut self,
         step: &Step,
         task_values: Option<&TaskParameterSet>,
-    ) -> Result<f64, RunError> {
+    ) -> Result<TaskRun, RunError> {
         let task_start = Instant::now();
         let result = self
             .session
@@ -285,10 +330,14 @@ impl RunContext {
                 task_values,
                 step.resolved_symtab.as_ref(),
                 None,
+                &RunTaskOptions {
+                    output_variables: step.output_variables.as_deref(),
+                    path_inputs: &step.path_inputs,
+                },
             )
             .await
             .map_err(|e| format!("Step '{}': {e}", step.name))?;
-        let task_duration = task_start.elapsed().as_secs_f64();
+        let duration = task_start.elapsed().as_secs_f64();
 
         println!(
             "{}\tProcess exited with code: {}",
@@ -296,10 +345,15 @@ impl RunContext {
             result.exit_code.unwrap_or(-1)
         );
         self.tasks_run += 1;
-        if result.state != ActionState::Success {
+        let succeeded = result.state == ActionState::Success;
+        if !succeeded {
             self.session_failed = true;
         }
-        Ok(task_duration)
+        Ok(TaskRun {
+            duration,
+            succeeded,
+            outputs: result.outputs,
+        })
     }
 
     fn record_interruption(&mut self) {
@@ -330,7 +384,8 @@ pub struct RunArgs {
     /// Path to the job template file
     pub path: PathBuf,
 
-    /// The name of the Step to run (if omitted, runs all steps; auto-selects if only one step)
+    /// The name of the Step or loop to run (if omitted, runs all steps; auto-selects if the
+    /// Job has only one Step or loop). A loop runs as a whole; its body Steps cannot be named.
     #[arg(long)]
     pub step: Option<String>,
 
@@ -357,6 +412,15 @@ pub struct RunArgs {
     #[arg(long = "path-mapping-rules")]
     pub path_mapping_rules: Option<String>,
 
+    /// CONTROL_FLOW: the Steps.* output values that the Step or loop given with --step reads,
+    /// for running it without --run-dependencies (file://path, or inline JSON
+    /// '{"Steps.P.Output.V": value}'; a list with one value per Task for a Step with a
+    /// parameterSpace, and one value of the declared type for a loop output). Only the
+    /// outputs it reads are needed; when one is missing, the error lists each with its type
+    /// and an example.
+    #[arg(long = "step-inputs")]
+    pub step_inputs: Option<String>,
+
     /// Run dependency steps before the target step
     #[arg(long = "run-dependencies")]
     pub run_dependencies: bool,
@@ -365,10 +429,11 @@ pub struct RunArgs {
     #[arg(long = "no-run-dependencies")]
     pub no_run_dependencies: bool,
 
-    /// Maximum number of tasks to run (-1 for all).
+    /// Maximum number of tasks to run per Step (-1 for all; the default). For a loop,
+    /// applies to each body Step instance; an error with --step naming a loop.
     /// Mutually exclusive with --task-param and --tasks.
-    #[arg(long = "maximum-tasks", default_value = "-1")]
-    pub maximum_tasks: i64,
+    #[arg(long = "maximum-tasks", allow_negative_numbers = true)]
+    pub maximum_tasks: Option<i64>,
 
     /// Extensions to support (comma-separated or repeated). Empty string disables all.
     #[arg(long = "extensions")]
@@ -399,36 +464,49 @@ pub async fn execute(args: RunArgs) -> Result<(), RunError> {
     execution::execute(args).await
 }
 
-/// Resolve step dependencies transitively, returning indices in execution order.
-fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) -> Vec<usize> {
-    let step_name_to_idx: HashMap<String, usize> = job
+/// Resolve the dependencies of top-level entry `target` (a Step or loop)
+/// transitively, returning them and `target` in execution order.
+fn resolve_step_dependencies(
+    job: &openjd_model::job::Job,
+    target: simulator::Node,
+) -> Vec<simulator::Node> {
+    use simulator::Node;
+    let mut name_to_node: HashMap<&str, Node> = job
         .steps
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.name.clone(), i))
+        .map(|(i, s)| (s.name.as_str(), Node::Step(i)))
         .collect();
+    name_to_node.extend(
+        job.loops
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.name.as_str(), Node::Loop(i))),
+    );
+    let deps_of = |node: Node| match node {
+        Node::Step(i) => job.steps[i].dependencies.as_ref(),
+        Node::Loop(i) => job.loops[i].dependencies.as_ref(),
+    };
     let mut visited = std::collections::HashSet::new();
     let mut order = Vec::new();
-    fn visit(
-        job: &openjd_model::job::Job,
-        idx: usize,
-        name_to_idx: &HashMap<String, usize>,
-        visited: &mut std::collections::HashSet<usize>,
-        order: &mut Vec<usize>,
+    fn visit<'a>(
+        node: Node,
+        deps_of: &dyn Fn(Node) -> Option<&'a Vec<openjd_model::job::StepDependency>>,
+        name_to_node: &HashMap<&str, Node>,
+        visited: &mut std::collections::HashSet<Node>,
+        order: &mut Vec<Node>,
     ) {
-        if !visited.insert(idx) {
+        if !visited.insert(node) {
             return;
         }
-        if let Some(deps) = &job.steps[idx].dependencies {
-            for dep in deps {
-                if let Some(&dep_idx) = name_to_idx.get(&dep.depends_on) {
-                    visit(job, dep_idx, name_to_idx, visited, order);
-                }
+        for dep in deps_of(node).into_iter().flatten() {
+            if let Some(&dep_node) = name_to_node.get(dep.depends_on.as_str()) {
+                visit(dep_node, deps_of, name_to_node, visited, order);
             }
         }
-        order.push(idx);
+        order.push(node);
     }
-    visit(job, target_idx, &step_name_to_idx, &mut visited, &mut order);
+    visit(target, &deps_of, &name_to_node, &mut visited, &mut order);
     order
 }
 
@@ -453,6 +531,8 @@ mod tests {
             sticky_bit_policy: Default::default(),
             debug_collect_stdout: false,
             echo_openjd_directives: true,
+            control_flow: false,
+            output_callback: None,
             limits: Default::default(),
         })
         .unwrap();

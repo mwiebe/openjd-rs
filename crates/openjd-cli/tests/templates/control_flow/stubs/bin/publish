@@ -1,0 +1,10 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic publish stub: prints the pattern's file name and the note."""
+import os
+import sys
+
+args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+print(f"publish stub: {os.path.basename(args['--pattern'])} note: {args['--note']}")

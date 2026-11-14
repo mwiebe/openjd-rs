@@ -62,7 +62,8 @@ execute(args)
   ├── Resolve extensions list
   │   ├── --extensions "" → empty vec (no extensions)
   │   ├── --extensions "A,B" → vec!["A", "B"]
-  │   └── (not provided) → every name in ModelExtension::ALL
+  │   └── (not provided) → every ModelExtension::ALL name (TASK_CHUNKING, REDACTED_ENV_VARS,
+  │       FEATURE_BUNDLE_1, EXPR, WRAP_ACTIONS, ENV_PARAMS, CONTROL_FLOW)
   │
   ├── Parse specificationVersion into TemplateSpecificationVersion
   │

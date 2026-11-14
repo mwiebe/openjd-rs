@@ -41,7 +41,7 @@ lists only `EXPR` is unaffected, and one that uses an ENV_PARAMS field without l
 
 ## Pass Architecture
 
-The validation pipeline is passes 5–11 of the overall decode pipeline (passes 1–4 are in
+The validation pipeline is passes 5–12 of the overall decode pipeline (passes 1–4 are in
 the `parse` module — see [parsing.md](parsing.md)). Passes run sequentially. Each pass
 receives the template and the computed limits/rules, and appends errors to a shared
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
@@ -53,10 +53,11 @@ short-circuiting), so users see all problems at once. The one exception is the
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
 | 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
+| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` and `Loop.*` scopes, checks `enableIf`, `while`, and `until` as expression fields of type `bool`, and checks a loop's own expressions (RFC 0013) |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
 | 11 | `env_params.rs` | Gate ENV_PARAMS features (Environment `envParameterDefinitions`, `activation`, `hostRequirements`, and `enableIf`, the `step:` and `environment:` forms of `<StepDependency>`, the latter with its `enableIf`) and check their structural rules (Environment Parameters RFC) |
+| 12 | `control_flow.rs` | Gate CONTROL_FLOW features (Step `enableIf`, `outputVariables`, `jobOutputDefinitions`, loops), require `ENV_PARAMS` and `EXPR` with it, and enforce their structural rules (RFC 0011, RFC 0012, RFC 0013) |
 
 ### Environment template pipeline
 
@@ -89,6 +90,9 @@ checks have nothing to walk):
 - **Pass 11** — ENV_PARAMS gating and the Environment's `envParameterDefinitions` (see
   below). Pass 8 also checks each format-string `default` against the template's own
   `envParameterDefinitions` (see [Environment parameter scopes](#environment-parameter-scopes-env_params)).
+- **Pass 12** — `CONTROL_FLOW` applies to Job Templates only: listing it in an
+  Environment Template is an error whatever the extensions. An Environment Template's
+  `enableIf` is RFC 0010's, gated by `ENV_PARAMS` in pass 11.
 
 ## Pass 5: Limits Enforcement
 
@@ -99,7 +103,8 @@ Checks include:
 - Job name length vs `max_job_name_len`
 - Parameter count vs `max_param_count`
 - Parameter name lengths vs `max_identifier_len`
-- Step name lengths vs `max_step_name_len`
+- Step name lengths vs `max_step_name_len`, for every top-level Step, loop, and body Step
+  (RFC 0013)
 - Embedded file name/filename lengths
 - Task parameter name lengths
 - Environment name lengths vs `max_env_name_len`
@@ -109,7 +114,10 @@ Checks include:
 The largest pass. Validates template structure using `EffectiveRules`. Key checks:
 
 **Template level:**
-- At least one step required
+- At least one step required (a loop counts)
+- Caller limit `max_step_count` on the number of Steps, counting every top-level Step, loop,
+  and body Step once (RFC 0013 §Limits item 3; the plan's A18): `steps: exceeds caller
+  limit of N steps (M steps).`
 - Job name non-empty, no control characters
 - Extensions list non-empty if present (enforced early in pass 4)
 - Description length and control character validation
@@ -130,9 +138,13 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - A `stepEnvironments` name must not match any `jobEnvironments` name
 - Different steps may reuse a `stepEnvironments` name (only one step's environments are active in a session at a time)
 
-**Step validation:**
-- No duplicate step names
-- Step name non-empty, no control characters
+**Step validation** runs on every entry in template order, and on each loop's body Steps
+right after the loop, so a body Step gets every check below at its own path
+(`steps[i] -> loop -> steps[j]`):
+- No duplicate step names among all top-level Steps, loops, and body Steps (RFC 0013 §Job
+  Template constraint 1): `name: duplicate step name: 'X'`, at the later one
+- Step and loop name non-empty, no control characters, no format string; a loop's
+  `description` as a Step's
 - Must have `script` or exactly one simple action field (mutually exclusive)
 - Dependencies: §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and `environment`;
   `required`, `enableIf`, and `parameters` only with `environment`). With ENV_PARAMS the
@@ -150,7 +162,20 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   read through `StepDependency::step()` so the two are one form: no self-dependency, target
   must exist, no duplicates (a `step` and a `dependsOn` entry naming one Step are
   duplicates). The `environment:` form, and the `step` form's gate, are checked in pass 11,
-  and cycle detection sees the `dependsOn` and `step` entries as one graph.
+  and cycle detection sees the `dependsOn` and `step` entries as one graph (the top-level
+  graph and each loop body's). With loops (RFC 0013 §Job Template constraint 2,
+  §`<LoopDefinition>` item 5.3), a top-level Step or loop may depend only on top-level
+  entries, and a body Step only on Steps of its own body:
+
+  | Case | Message (at `... -> dependencies[k]`) |
+  |---|---|
+  | A top-level Step or loop names a body Step | `dependency 'W' is a body Step of loop 'L'; a top-level Step or loop may depend only on top-level Steps and loops. Depend on loop 'L' and read its outputs instead.` |
+  | A body Step names a top-level Step | `dependency 'S' is not a Step of loop 'L's body; a body Step may depend only on Steps of the same body. Add 'dependsOn: S' to loop 'L' instead: every body Step reads the Steps its loop depends on.` |
+  | A body Step names its own loop | `a body Step cannot depend on its own loop 'L'.` |
+  | A body Step names another loop's body Step | `dependency 'W' is a body Step of loop 'M'; a body Step may depend only on Steps of the same body.` |
+- A loop's body is not empty: `steps[i] -> loop -> steps: must contain at least one
+  element.` (A body entry with a `loop` key fails to parse; see
+  [template-types.md](template-types.md) § StepLoop and LoopDefinition.)
 - Caller limit `CallerLimits::max_step_environment_entries` (opt-in; Template Schemas §3
   item 4 sets no maximum on `dependencies` but lets an implementation constrain it): the
   number of entries with a non-null `environment` in one Step's `dependencies`, counted as
@@ -251,8 +276,10 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   the paths are reported.
 
 **Cycle detection:**
-- Iterative DFS with tri-state marking (Unvisited/Started/Completed) on the step
-  dependency graph
+- Kahn's algorithm on the name-keyed dependency graph of the top-level entries (Steps and
+  loops), reported at the root (`step dependencies contain a cycle.`), and on each loop
+  body's graph, reported at `steps[i] -> loop -> steps` (`the loop body's step
+  dependencies contain a cycle.`)
 
 **Combination expression validation:**
 - Character allowlist, balanced parentheses, tokenization
@@ -545,6 +572,258 @@ for an authored `script`).
 `@fmtstring[host]`), so malformed `{{ ... }}` syntax fails at parse time
 like every other format-string field; it no longer survives to job
 creation.
+
+### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0011)
+
+With `CONTROL_FLOW`, pass 8 implements items 2 to 6 of RFC 0011 §Validation, "At
+template validation", and the scope and typing part of item 9 (see § Job output values
+below). The shared code is `validate_v2023_09/steps_scope.rs`, which job
+creation also uses (see `specs/model/job-creation.md`).
+
+**Seeding.** `add_control_flow_scope(symtab, jt, reader, scope)` seeds the symbols a field
+read by `reader` may see (`StepsReader`: a Step at a `StepLocation`, one of a loop's own
+fields, a job output, or nothing); job creation calls it with the Step's `StepLocation`,
+for a top-level Step or a body Step instance. For a top-level Step `S` it adds, for each Step or loop `P` that
+`S` lists in its `dependencies`, that is not `S`, and whose name is an
+`<Identifier>`, the symbols `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of
+`P`'s output variables and, when `P` has a `parameterSpace`, `Steps.P.TaskParam.<N>` and
+`Steps.P.TaskRawParam.<N>` for each Task parameter. Each is `ExprValue::unresolved(T)`,
+typed by the table of RFC 0011 §The `Steps.*` scope:
+
+| Producer `P` | `Output.<V>` | `TaskParam.<N>` |
+|---|---|---|
+| no `parameterSpace`, no `enableIf` | `T` | not seeded |
+| no `parameterSpace`, `enableIf` | `T?` | not seeded |
+| `parameterSpace`, no `enableIf` | `list[T]` | `list[U]` |
+| `parameterSpace`, `enableIf` | `list[T]?` | `list[U]?` |
+
+`T` is the output type's expression type (`LIST[INT]` gives `list[int]`, so a multi-Task
+producer's `LIST[INT]` output is `list[list[int]]`). `U` is `int`, `float`, `string`, or
+`path` for an `INT`, `FLOAT`, `STRING`, or `PATH` Task parameter, and `int` for
+`CHUNK[INT]`, one element per Task. Any `enableIf`, including a literal `true`, makes the
+type optional, because RFC 0011's table is keyed on the field being present. The `Raw`
+forms have the same types. In a TEMPLATE-scope field, an `Output` or `TaskParam` whose
+type is or contains `path` (`PATH`, `LIST[PATH]` outputs; `PATH` Task parameters) is not
+seeded; its `Raw` form is.
+
+**Where each field family is seeded.** A Step's fields are seeded with its own direct
+dependencies' symbols:
+
+| Field | Scope |
+|---|---|
+| `enableIf` | TEMPLATE |
+| step `let` | TEMPLATE |
+| `hostRequirements` (names, `min`/`max`, `anyOf`/`allOf`) | TEMPLATE |
+| `parameterSpace` Task parameter `range`s and `chunks` fields | TEMPLATE |
+| Step Environment `enableIf`, `timeout`, `notifyPeriodInSeconds`, deferred `mode` | TEMPLATE |
+| Step Environment `variables`, script `let`, action `command`/`args`, embedded `data` | host |
+| script `timeout`, `notifyPeriodInSeconds`, deferred `mode`, and a SimpleAction's `timeout` / `cancelation` | TEMPLATE |
+| script `let`, `onRun` `command`/`args`, embedded `data`, and a SimpleAction's `script` / `args` / `let` | host |
+
+The job name and every field of `jobEnvironments` (including their `enableIf`) are never
+seeded. Environment Templates are not either; pass 11 rejects `CONTROL_FLOW` in them.
+
+**Reference messages.** Before a field is evaluated, `control_flow_ref_errors` scans the
+symbols it reads (`FormatString::accessed_symbols`, or a `let` binding's
+`ParsedExpression::accessed_symbols`) for the `Steps`, `Loop`, and `RawLoop` roots (the
+last two are covered in § Loops below), and gives each unavailable
+reference its own message instead of EXPR's `Undefined variable`. A field with any such
+reference is reported with those messages only and is not evaluated. Because the scan is
+static, a reference in a branch that is never taken is caught too. In a `let` binding the
+message is prefixed `Invalid expression in let binding '<name>': ` and the binding is
+bound `unresolved(ANY)`, so later uses of it are not reported as undefined variables
+(as for any failed binding, an attribute read from it still fails, as `Cannot access
+attribute 'foo' on any`). The checks, in order, with
+the first that applies reported:
+
+| Case | Message |
+|---|---|
+| A field that allows no `Steps.*` (job name, `jobEnvironments`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, a loop's enableIf, while, until, initial, next, and output values, and a job output's value, may read them.` |
+| Fewer than four parts (`Steps.P.Output`) | `'<sym>' is not a complete Steps.* reference; expected Steps.<StepName>.Output.<Name>, .RawOutput.<Name>, .TaskParam.<Name>, or .TaskRawParam.<Name>.` |
+| No such Step | `'<sym>': there is no Step named 'P'.` |
+| The Step's name is not an `<Identifier>` | `'<sym>': Step 'P' cannot be referenced through Steps.*, because its name is not an <Identifier>.` |
+| Self-reference (a Step's field only) | `'<sym>': a Step cannot read its own Steps.* symbols.` |
+| Not a direct dependency (a transitive one is not enough; a Step's field only) | `'<sym>': Step 'P' is not a direct dependency of Step 'S'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.` |
+| The reader may not read `P` for a loop reason (RFC 0013; see § Loops) | one of the loop messages in § Loops |
+| Unknown member | `'<sym>': 'X' is not a member of Steps.P; expected Output, RawOutput, TaskParam, TaskRawParam.` |
+| No such output | `'<sym>': Step 'P' has no output variable 'V'.` (`loop 'P'` for a loop) |
+| `TaskParam` or `TaskRawParam` of a loop | `'<sym>': 'P' is a loop, which has no Task parameters. Declare a loop output and read Steps.P.Output.<Name> instead.` |
+| `TaskParam` of a Step without a `parameterSpace` | `'<sym>': Step 'P' has no parameterSpace, so it has no Task parameters.` |
+| No such Task parameter | `'<sym>': Step 'P' has no Task parameter 'N'.` |
+| Path-typed `Output`/`TaskParam` in a TEMPLATE-scope field | `'Steps.P.Output.V' has a path type, so it is available only in fields resolved on the worker host. Use Steps.P.RawOutput.V here.` (or `TaskParam` and `TaskRawParam`) |
+
+`<sym>` is the symbol as the expression reads it, which may include a property after the
+name (`Steps.P.RawOutput.F.name`); the path-type message names only the four-part symbol. Several references in one field are reported in sorted
+symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
+ordinary `Undefined variable`.
+
+A format-string item of an `INT`, `CHUNK[INT]` or `FLOAT` range list (a string
+containing `{{`, `template::IntOrFormatString::FormatString` or
+`template::FloatRangeItem::FormatString`) is checked at `range[k]` with its list-item
+target (the "task param INT/CHUNK[INT]/FLOAT range list elements" row of the table in
+[Spec-Mandated Resolved-Value Constraints](#spec-mandated-resolved-value-constraints)),
+and with the same `Steps.*` scope as the Step's other TEMPLATE-scope fields.
+
+Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
+`FLOAT` Task parameter: it is checked only when job creation resolves it, a gap that
+predates `CONTROL_FLOW` (a `range: "{{Param.Nope}}"` passes `openjd check`). For those
+fields pass 8 runs the reference scan alone, so the `Steps.*` scope rules hold there, but
+their expressions are not type-checked.
+
+**`enableIf`.** A Step's `enableIf` is checked against a table of its own: `Param.*`
+(minus `PATH` types), `RawParam.*`, `Job.Name`, `Step.Name`, and the TEMPLATE-scope
+`Steps.*` of the Step's direct dependencies, with no `let` names, `Task.*`, or
+`Session.*`. A Step Environment's `enableIf` uses the same table. A Job Environment's
+uses `Param.*` (minus `PATH`), `RawParam.*`, and `Job.Name`, with the reference scan
+rejecting any `Steps.*`. Without `CONTROL_FLOW` pass 8 does not look at `enableIf`; pass
+11 rejects the field.
+
+A Step's `enableIf` (and a loop's `enableIf`, `while`, and `until`, below) is an
+expression field of target type `bool` (RFC 0010's Template Schemas §7.6;
+`validate_condition` calls `expr_field::validate` under the template-scope profile). The
+reference scan runs first, as for a format string, so a `Steps.*`, `Loop.*`, or
+`RawLoop.*` reference the field may not read gets the messages of the tables above and
+the field is not evaluated. Then:
+
+| Value | Result |
+|---|---|
+| `true` or `false` | accepted, with no check |
+| another scalar (`1`, `1.5`) | `the integer scalar 1 does not fit type bool: an expression field of type bool takes a boolean scalar or a string holding one expression (Template Schemas §7.6).` (`the float scalar 1.5 ...`) |
+| `null` | `must not be null: an expression field of type bool takes a boolean scalar or a string holding one expression (Template Schemas §7.6).` |
+| a string that does not parse | `Invalid expression: <parse error>` with the expression and a caret. When the value contains `{{`, the summary is followed by `An expression field takes an expression without '{{ }}' (Template Schemas §7.6).`, so `'{{Param.Run}}'` reads `Invalid expression: Set literals are not supported. An expression field takes an expression without '{{ }}' (Template Schemas §7.6).` |
+| a name that is not available | `Invalid expression: Undefined variable: 'run'.` with the expression and a caret |
+| static type `bool`, `bool?`, or `unresolved[bool]` | accepted; a `bool?`'s `null` fails when it is evaluated |
+| static type `nulltype` (`'null'`) | `has type nulltype, which does not fit type bool (Template Schemas §7.6).` |
+| any other static type | `has type string, which does not fit type bool; an expression field converts no type except int to float (Template Schemas §7.6).` (or `int`, and so on) |
+
+A type message is followed by the expression on a line of its own
+(`expr_field::with_source`). No string converts to `bool`: `'Param.Mode'` for a STRING
+parameter is a type error whatever its value, so a condition over a string is written as
+a comparison (`"Param.Mode == 'on'"`), and the string `'true'` is the expression `true`,
+which is accepted.
+
+An Environment's `enableIf` is RFC 0010's expression field (see [Environment
+enableIf](#environment-enableif-env_params)); RFC 0011 leaves it to `ENV_PARAMS`.
+
+**Entry scope.** An `environment:` entry's values and `enableIf` (RFC 0011
+`<Environment>` item 2) may not read `Steps.*`, `Loop.*`, or `RawLoop.*`, directly or
+through a step `let` binding, so a Step's Environment selection can be worked out at job
+creation (`format_strings::EntryScope`). Each such read is reported at the field, before
+any other check of it: `'Steps.P.Output.N': an environment entry may not read Steps.*,
+Loop.*, or RawLoop.* (RFC 0011 <Environment> item 2): which Environments a Step's Sessions
+enter, and its Environment parameter values, depend only on values known when the Job is
+created.`, or, for a binding that reads one, `'B' is a let binding that reads Steps.*,
+Loop.*, or RawLoop.*, which an environment entry may not read, directly or through a let
+binding (RFC 0011 <Environment> item 2).`
+
+**Job output values.** Each `jobOutputDefinitions[k] -> value` is checked against a table
+of its own (`validate_job_output_values`): `Param.*` (minus `PATH` and `LIST[PATH]`
+types), `RawParam.*`, `Job.Name`, and, through `add_job_output_steps_scope`, the
+TEMPLATE-scope `Steps.*` symbols of every Step whose name is an `<Identifier>`, with no
+dependency required. So a `PATH` or `LIST[PATH]` `Output` or `TaskParam` is available only
+through `RawOutput` or `TaskRawParam`, and gets the path-type message above. The
+reference scan runs with the job output reader, which skips the self-reference and
+direct-dependency checks. `Step.Name`, `Task.*`, `Session.*`, and `let` names are not in
+the table, so EXPR reports them as undefined variables (a `PATH` `Param.*` often with a
+`Did you mean: RawParam.X` hint, EXPR's closest-name suggestion, which can name another
+symbol instead). The target type is the declared type's expression type
+made optional (`INT` gives `int?`), because a `null` result means the output has no value:
+a static non-`null` value of another type fails EXPR's coercion (`Cannot coerce list[int]
+to int?`), and an unresolved `T?`, such as a conditional producer's output, is accepted.
+A value with text around an expression resolves to a string, which is converted to the
+declared type when it is evaluated; a literal value, or one that is fully static, is
+converted here, and fails with `must convert to int: Cannot convert 'abc' to int: invalid
+digit found in string.`. One that is not static is checked on its type alone: a string
+converts to `int`, `float`, `bool`, `path`, `range_expr`, and `string`, so for a
+`LIST[...]` type it fails with `resolves to text, which must convert to list[int]: Cannot
+coerce string to list[int].`. A `STRING` value needs no conversion.
+
+### Loops (CONTROL_FLOW, RFC 0013)
+
+Pass 8 implements items 7 (the format-string form), 8, 9, and 10 of RFC 0013 §Validation,
+"At template validation". Every body Step's fields are validated exactly as a top-level
+Step's, with the reader `StepsReader::Step` at its `StepLocation`, so the scope rules and
+seeding below follow from `add_control_flow_scope`.
+
+**`Steps.*` in and around a loop** (RFC 0013 §`Steps.*` in and around a loop). The
+producers a reader sees:
+
+| Reader | Sees `Steps.*` of |
+|---|---|
+| A top-level Step | the top-level Steps and loops it depends on |
+| A body Step of loop `L` | the body Steps it depends on (same iteration), and the entries `L` depends on |
+| `L`'s `enableIf`, `while`, each `initial` | the entries `L` depends on |
+| `L`'s `until`, each `next`, each output `value` | the entries `L` depends on, and every body Step of `L` |
+| `L`'s `maxIterations` | nothing |
+| A job output | every top-level Step and loop, with no dependency required |
+
+A loop's symbols are `Steps.L.Output.<V>` and `Steps.L.RawOutput.<V>` for each loop
+output, typed by RFC 0013's table, with no per-Task list:
+
+| Loop `L` | `LAST` output | `APPEND` output |
+|---|---|---|
+| `until`, no `enableIf` | `T` | `list[E]` |
+| `while`, no `enableIf` | `T?` | `list[E]` |
+| `enableIf` | `T?` | `list[E]?` |
+
+A loop output whose `collect` is missing or `ONCE` (pass 11 rejects both) is typed as
+`LAST`. In a TEMPLATE-scope field a path-typed loop `Output` is not seeded, only its
+`RawOutput`, as for a Step. The messages for a reference a loop rule forbids:
+
+| Case | Message |
+|---|---|
+| A body Step read outside its loop (top-level Step, job output, another loop or its body) | `'<sym>': Step 'A' is a body Step of loop 'L', and is available only within that loop. Read a loop output instead, as Steps.L.Output.<Name>.` |
+| A body Step reads a top-level entry its loop does not depend on | `'<sym>': Step 'P' is not a dependency of loop 'L'. A body Step reads the Steps its loop depends on: add 'dependsOn: P' to the dependencies of loop 'L' to read Steps.P.*.` |
+| A body Step reads its own loop | `'<sym>': Step 'B' is in the body of loop 'L', which cannot read the loop's own outputs: they are available only after the loop ends.` |
+| A loop's field reads the loop itself | `'<sym>': a loop cannot read its own Steps.* symbols; they are available only after the loop ends.` |
+| A loop's field reads a top-level entry it does not depend on | `'<sym>': Step 'P' is not a direct dependency of loop 'L'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.` |
+| `enableIf`, `while`, or `initial` reads a body Step | `'<sym>': Step 'A' is a body Step of loop 'L', which the loop's <field> cannot read: it is evaluated before an iteration runs. The loop's until, next, and output values may read its body Steps.` |
+| `maxIterations` reads `Steps.*` | `'<sym>': Steps.* symbols are not available in a loop's maxIterations, which is known at Job creation: it may read only Param.*, RawParam.*, and Job.Name.` |
+
+**The `Loop.*` scope** (RFC 0013 §The `Loop.*` scope). For a body Step of loop `L`
+(every field it has: `enableIf`, `let`, `hostRequirements`, `parameterSpace` ranges and
+`chunks`, `stepEnvironments`, and `script`), and for `L`'s `while`, `until`, `next`, and
+output `value`s, `add_control_flow_scope` seeds `Loop.Iteration` (`int`) and, for each
+variable `V` of `L`, `Loop.V` and `RawLoop.V`, both of the variable's expression type
+(`PATH` is `path`, as for `RawOutput`). In a TEMPLATE-scope field a path-typed `Loop.V` is
+not seeded, only `RawLoop.V`; every one of `L`'s own expressions is TEMPLATE scope. A
+variable named `Iteration` (pass 11 rejects it) is not seeded. The reference messages:
+
+| Case | Message |
+|---|---|
+| Outside any loop's body and conditions | `'<sym>': Loop.* and RawLoop.* symbols are available only in the body Steps of a loop and in the loop's while, until, next, and output values.` |
+| `L`'s `enableIf` or `initial` | `'<sym>': Loop.* and RawLoop.* symbols are not available in a loop's <field>, which is evaluated before the loop's first iteration.` |
+| `L`'s `maxIterations` | `'<sym>': Loop.* and RawLoop.* symbols are not available in a loop's maxIterations, which is known at Job creation: it may read only Param.*, RawParam.*, and Job.Name.` |
+| `Loop` or `RawLoop` alone | `'<sym>' is not a complete reference; expected Loop.<VarName>, RawLoop.<VarName>, or Loop.Iteration.` |
+| `RawLoop.Iteration` | `'<sym>': Loop.Iteration has no RawLoop form; use Loop.Iteration.` |
+| Not a variable of `L` | `'<sym>': loop 'L' has no variable 'V'.`, followed by ` 'V' is a variable of loop 'M', which is available only in that loop.` when another loop declares it |
+| A path-typed `Loop.V` in a TEMPLATE-scope field | `'Loop.V' has a path type, so it is available only in fields resolved on the worker host. Use RawLoop.V here.` |
+
+**A loop's own expressions** (`validate_loop_expressions`), each with its own table of
+`Param.*` (minus `PATH` types), `RawParam.*`, and `Job.Name`, plus:
+
+| Field | Path | Also reads | Target type |
+|---|---|---|---|
+| `enableIf` | `steps[i] -> enableIf` | `Step.Name` (the loop's name), the loop's dependencies | `bool`, an expression field, as a Step's `enableIf` |
+| `maxIterations` (a format string) | `steps[i] -> loop -> maxIterations` | nothing | `int`, 1 to 1,000 when static (`maxIterations must be from 1 to 1000.`) |
+| each `initial` | `steps[i] -> loop -> variables[k] -> initial` | the loop's dependencies | the variable's type |
+| `while` | `steps[i] -> loop -> while` | the loop's dependencies, `Loop.*` | `bool`, an expression field |
+| `until` | `steps[i] -> loop -> until` | the loop's dependencies, its body Steps, `Loop.*` | `bool`, an expression field |
+| each `next` | `steps[i] -> loop -> variables[k] -> next` | as `until` | the variable's type |
+| each output `value` | `steps[i] -> outputVariables[k] -> value` | as `until` | the output's type, or under `APPEND` its element type |
+
+None of them reads `let` names, `Task.*`, or `Session.*`. `enableIf`, `while`, and `until`
+are checked as a Step's `enableIf` is (above), and `maxIterations`, `initial`, `next`, and
+the output `value`s are format strings. The variable and output targets
+are not made optional (`ResolvedConstraint::LoopValue`), because a `null` result is an
+error: a static `null` fails with `Cannot coerce nulltype to int`. As everywhere in
+EXPR, an unresolved `T?`, such as a conditional body Step's output, is accepted where `T`
+is required and checked when concrete (RFC 0011 Design Choice 5). A literal `initial`,
+`next`, or `value`, or one that is fully static, is converted here as a job output's is
+(`must convert to int: Cannot convert 'abc' to int: invalid digit found in string.`).
+
+`TASK_DEPENDENCIES` is not an extension openjd-rs supports, so RFC 0013's rules for it
+(§Composition with other extensions) are not checked.
 
 ### Let Binding Validation
 
@@ -1045,6 +1324,198 @@ constraints 5–7 and its resolved format-string values for it.
 For an entry that names a `jobEnvironments` entry, for every literal Job Environment
 `default`, and for every non-literal one a Step takes, `create_job` makes those checks (see
 [job-creation.md](job-creation.md#environment-parameter-values-env_params)).
+
+## Pass 12: CONTROL_FLOW Gating and Structure
+
+Validates or rejects the fields `CONTROL_FLOW` (RFC 0011, RFC 0012, RFC 0013) adds. It implements
+item 1, the Environment Template part of item 5, and the structural part of item 9 of
+RFC 0011 §Validation, "At template validation", and item 1 of RFC 0012 §Validation.
+RFC 0011 items 2 to 6 (the `Steps.*` scope and `enableIf`) and the scope and typing of a
+job output's `value` (the rest of RFC 0011 item 9) are in pass 8.
+
+**Without the extension**, each field is an error at its own path, with the message
+`<field> requires the CONTROL_FLOW extension.`:
+
+- `jobOutputDefinitions`
+- `steps[i] -> enableIf`
+- `steps[i] -> outputVariables`
+- a loop (RFC 0013), at `steps[i] -> loop`: `loop requires the CONTROL_FLOW extension (RFC
+  0013).` Its body Steps still get every other pass's checks at their own paths, and pass 8,
+  which seeds no `Loop.*` without the extension, reports a `Loop.*` reference as an
+  undefined variable.
+
+Each per-Step rule here applies to body Steps too, at `steps[i] -> loop -> steps[j]`.
+
+A `Steps.*` reference fails in pass 8 as an
+undefined variable, because without the extension nothing seeds the `Steps` root. Pass 8
+checks `enableIf` and the `Steps.*` scope only with the extension (see § The `Steps.*`
+Scope and `enableIf`).
+
+An Environment's `enableIf` is RFC 0010's (`ENV_PARAMS`): pass 11 gates it, and pass 8
+checks it (see [Environment enableIf](#environment-enableif-env_params)).
+
+**Prerequisites.** `CONTROL_FLOW` builds on `ENV_PARAMS` (RFC 0011 §Extension), which in turn
+requires `EXPR`, so a template that lists `CONTROL_FLOW` must list both
+(`control_flow::check_prerequisites`). Each missing one is an error at `extensions`:
+`CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC
+0011).` (through `helpers::check_expr_prerequisite`, which pass 10 shares for
+`WRAP_ACTIONS`) and `CONTROL_FLOW requires ENV_PARAMS; both must be listed in the
+template's `extensions` (RFC 0011).` A template that lists neither gets both, and the
+`ENV_PARAMS` prerequisite's own error for `EXPR` too only when it lists `ENV_PARAMS`. The
+check also runs on the early-return path taken when the `ENV_PARAMS` prerequisite fails (see
+[Entry Points](#entry-points)), so the error is not lost.
+
+**With the extension**, each Step's `outputVariables` must satisfy:
+
+| Rule | Path | Message |
+|------|------|---------|
+| At least one element | `outputVariables` | `if provided, must contain at least one element.` |
+| At most 32 elements | `outputVariables` | `must not contain more than 32 elements.` |
+| Name length within the identifier limit (64, or 512 with `FEATURE_BUNDLE_1`) | `outputVariables[k]` | `name exceeds N characters.` (a name over 512 characters already fails deserialization: `Identifier length must be 1..=512, got N`) |
+| Unique names within the Step | `outputVariables[k]` (each repeat) | `duplicate output variable name: 'X'` |
+| No `default`, `userInterface`, or (on `PATH` and `LIST[PATH]`) `dataFlow` | `outputVariables[k] -> <property>` | `is not allowed in an output variable definition.` |
+| Constraint properties valid for the type | `outputVariables[k]` | the job parameter definition's message, relabeled `Output variable 'X': ...` |
+| `collect: APPEND` only with a `LIST[...]` type | `outputVariables[k] -> collect` | `APPEND requires a LIST[...] type; 'INT' is not a list type.` |
+| `unit` of 1 to 32 characters, none in Unicode Cc | `outputVariables[k] -> unit` | `must not be empty.`, `exceeds 32 characters.`, `contains control characters.` |
+| No `LIST[LIST[INT]]` on a Step with a `parameterSpace` | `outputVariables[k] -> type` | `LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: ...` |
+| In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values (checked only with `TASK_CHUNKING`; without it pass 9 rejects the parameter itself) | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
+
+With the extension, `jobOutputDefinitions` must satisfy the same rules, through the same
+helpers, with these differences:
+
+| Rule | Path | Message |
+|------|------|---------|
+| 1 to 50 elements | `jobOutputDefinitions` | `if provided, must contain at least one element.`, `must not contain more than 50 elements.` |
+| Unique names among the job outputs (a job parameter of the same name is fine: separate namespaces) | `jobOutputDefinitions[k]` | `duplicate job output name: 'X'` |
+| No `collect`, `default`, `userInterface`, or (on `PATH` and `LIST[PATH]`) `dataFlow` | `jobOutputDefinitions[k] -> <property>` | `is not allowed in a job output definition.` |
+| Constraint properties valid for the type | `jobOutputDefinitions[k]` | relabeled `Job output 'X': ...` |
+| `unit` | `jobOutputDefinitions[k] -> unit` | as for an output variable |
+
+There is no `collect: APPEND` rule (there is no `collect`), and `LIST[LIST[INT]]` is
+allowed, because a job output has no `parameterSpace` to nest it in. The name length rule
+is the output variable's. The deserialization rules below apply too, with `job output`
+in the messages, `value` and `unit` as the extra fields an unknown-field message lists,
+and a missing or `null` `value` reported as `missing 'value' field in job output
+definition`. Each definition's errors are reported in the order of the table rows, and an
+output variable's `collect` error comes before its `unit` error.
+
+Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks the
+distinct-values rule on the integer items of a `range` written as a YAML list. A range
+string such as `"1-10"` cannot repeat a value, because its sub-ranges may not overlap. A
+computed range, and a YAML list with format-string items, is checked when it is
+materialized (RFC 0012 §Chunked Steps item 1), in the Task enumeration group at job
+creation or at step input binding (see [job-creation.md](job-creation.md) § Step input
+binding).
+
+Constraint validity reuses `JobParameterDefinition::validate_definition` on the wrapped
+definition, so the rules are exactly those of the job parameter of the same type (for
+example, `minValue` may not exceed `maxValue`, and `allowedValues` must respect
+`minLength`/`maxLength`). Its messages start with `Parameter 'X': `, which pass 11
+replaces with `Output variable 'X': `. A constraint property that the type does not have
+(such as `minValue` on a `STRING`, or `allowedValues` on a `BOOL`) is an unknown field of
+that job parameter definition and fails deserialization.
+
+Some rules are enforced while the definition is deserialized, so they report the serde
+message without a path, as other schema errors do. An unknown field in an output
+variable's own mapping is reported with an output variable's fields
+(`unknown field `minValue`, expected one of `name`, `description`, `allowedValues`,
+`minLength`, `maxLength`, `collect`, `unit``), not the wrapped job parameter
+definition's, which would list `default` and `userInterface`:
+
+- an unknown type (`unknown output variable type: 'DICT'`), a missing one, or one that
+  is not a string (`'type' must be a string, got a number`);
+- a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
+- a `unit` that is not a string;
+- a `name` that is not an `<Identifier>`;
+- a Step's or a loop's `enableIf`, or a loop's `while` or `until`, that is a list or a
+  mapping (`enableIf must be a boolean, integer, float, or string (an expression field,
+  Template Schemas §7.6)`), or an integer above `i64::MAX`;
+An explicit `null` for `outputVariables`,
+`jobOutputDefinitions`, or an output's `collect`, `unit`, `default`, `userInterface`, or
+`dataFlow` means the field is omitted, as for the template's other optional fields, so it
+is neither gated nor reported. A `null` for a Step's or a loop's `enableIf`, or a loop's
+`while` or `until`, is not: an expression field's `null` is an error (§7.6), reported by
+pass 8 with the extension and gated by pass 11 without it. A `while: null` beside an `until`, or the reverse, counts
+as present, so it gets both pass 8's `must not be null` and pass 11's `not both`.
+
+**Loops** (RFC 0013 §Validation items 1, 5, 6, and the literal form of 7), with the
+extension:
+
+| Rule | Path | Message |
+|------|------|---------|
+| Exactly one of `while` and `until` | `steps[i] -> loop` | `must have exactly one of 'while' and 'until', not both.` or `must have exactly one of 'while' and 'until'.` |
+| A literal `maxIterations` from 1 to 1,000 | `steps[i] -> loop -> maxIterations` | `must be from 1 to 1000; got N.` |
+| `variables`: 1 to 32 elements | `steps[i] -> loop -> variables` | as for `outputVariables` |
+| A variable is not named `Iteration` | `... -> variables[k] -> name` | `'Iteration' is reserved: Loop.Iteration is the index of the current iteration.` |
+| Unique variable names, name length, constraint properties | `... -> variables[k]` | `duplicate loop variable name: 'V'`; relabeled `Loop variable 'V': ...` |
+| No `collect`, `unit`, `default`, `userInterface`, or (on path types) `dataFlow` on a variable | `... -> variables[k] -> <property>` | `is not allowed in a loop variable definition.` |
+| Loop `outputVariables`: 1 to 32 elements, unique names | `steps[i] -> outputVariables`, `[k]` | as for a Step's; `duplicate loop output name: 'X'` |
+| `collect` is present | `... -> outputVariables[k] -> collect` | `is required in a loop output definition: LAST or APPEND.` |
+| `collect` is not `ONCE` | same | `ONCE is not allowed for a loop output, whose value is evaluated at every iteration boundary; use LAST or APPEND.` |
+| `APPEND` only with a `LIST[...]` type | same | `APPEND requires a LIST[...] type; 'INT' is not a list type.` |
+| No `default`, `userInterface`, `dataFlow`; `unit` | `... -> outputVariables[k] -> <property>` | `is not allowed in a loop output definition.`; as for an output variable |
+
+`LIST[LIST[INT]]` is allowed for both: a loop has no `parameterSpace`. Missing `initial`,
+`next`, or `value`, an unknown field (listing `initial` and `next`, or `collect`, `value`,
+and `unit`), and an unknown type fail deserialization, as for an output variable, with
+`loop variable` or `loop output` in the message. Names, dependencies, the body's shape, and
+cycles are pass 6's, and the expressions pass 8's.
+
+**A loop's `dependencies`** may not have an `environment:` entry, since a loop has no
+Sessions (RFC 0011 `<Environment>` item 1): `a loop's dependencies may not have an
+'environment' entry: a loop has no Sessions. Put the entry on the body Steps that need the
+Environment (RFC 0011).`, at `steps[i] -> dependencies[k]`. Its `dependsOn` and `step`
+entries are allowed.
+
+**Environment Templates.** `CONTROL_FLOW` applies to Job Templates only. Listing it in an
+Environment Template is an error at `extensions`: `CONTROL_FLOW is not allowed in an
+Environment Template; it applies to Job Templates only (RFC 0011).` The template's
+environment's `enableIf` is RFC 0010's.
+
+### Known to be enabled (`CONTROL_FLOW`)
+
+RFC 0011 `<Environment>` item 3 has a Step's Environment selection applied only once the
+Step's `enableIf` is `true`, so a check that would fail a Step for its Environments fails a
+Step that runs. Before job creation, such a check is made only for a Step **known to be
+enabled**: Template Schemas §7.6 rule 5 applied to the Step's `enableIf`, with the
+`CONTROL_FLOW` scope (`Steps.*`, `Loop.*`, `RawLoop.*`) unknown; for a body Step, its loop's
+`enableIf` must also be known to be `true`, and so must its `while` (the first iteration's,
+with `Loop.*` unknown) if it has one: an `until` loop runs its first iteration. A Step without an `enableIf`, outside a loop, is known to be enabled.
+`KnownEnableIfs::step_known_enabled` holds the answer for every Step template, in
+`JobTemplate::step_templates()` order (body Steps included), and every check below reads it:
+
+- pass 11: the error for a disabled entry that names an `ALWAYS` Environment, constraints 5
+  and 6 for an entry's values, and constraint 7 (`check_required_parameters_supplied`);
+- pass 8: the type and resolve checks of an entry's values (a Step not known to be enabled
+  gets only the undefined-variable check of their scope);
+- pass 10: the single-wrap-layer rule;
+- `check_environment_templates`: an entry that names nothing or a missing `required`
+  Environment, the values, constraint 7, and the `ALWAYS` error, though an ambiguous
+  Environment name is always reported;
+- the literal combined host requirements (`host_requirements::check_literal_combinations`).
+
+For any other Step these checks are left to job creation, which makes them when the Step's
+selection is applied (see
+[job-creation.md](job-creation.md#environment-selection-control_flow)). Without
+`CONTROL_FLOW` every Step is known to be enabled, so nothing changes.
+
+### Known gaps inherited from job parameters
+
+Constraint validity is exactly the job parameter rule, including its gaps: the EXPR-type
+job parameter definitions (`RANGE_EXPR` and the `LIST[...]` types) check `minLength`
+against `maxLength`, `item` bounds, and `RANGE_EXPR` `minLength >= 1` only through their
+`default`, so an output (or a job parameter) declaring `minLength: 5, maxLength: 1`
+passes. Fixing that belongs in `expr_parameters.rs`, for both.
+
+### Not yet checked
+
+These RFC rules belong to later changes in the prototype plan
+(`docs/control-flow-prototype-plan.md`):
+
+- The warning for a conditional Step's `null`, or a `while` loop's `LAST` output (RFC
+  0013), in a discarding position (RFC 0011 §Validation item 7). openjd-rs has no
+  validation-warning channel; adding one is a public API decision (see ambiguity A1 in the
+  plan).
 
 ## Error Infrastructure
 

@@ -10,8 +10,10 @@
 //!
 //! # Equality and hashing
 //!
-//! All types in this module implement `PartialEq` and `Hash` with the
-//! invariant `a == b ⇒ hash(a) == hash(b)`. Equality is structural on
+//! The job types in this module implement `PartialEq` and `Hash` with the
+//! invariant `a == b ⇒ hash(a) == hash(b)`. The step input binding helpers
+//! re-exported here ([`StepInputs`], [`ProducerState`], [`BindingError`])
+//! are working values, not parts of a job, and implement neither. Equality is structural on
 //! the *created job*, not the source template: derived state such as
 //! `resolved_symtab` participates, and since its transport format
 //! preserves original float literals, jobs created from `1.0` vs `1.00`
@@ -22,9 +24,33 @@
 //! `-0.0 == 0.0`. Types with `f64` fields implement `PartialEq` but not
 //! `Eq`.
 
+mod binding;
+mod chunk_task_index;
 pub mod create_job;
+mod job_output;
+mod output_variable;
 pub mod step_dependency_graph;
+mod step_loop;
 pub mod step_param_space;
+
+pub use binding::{
+    BindingError, BindingReport, GroupReport, MaterializationGroup, ProducerState, StepInputs,
+};
+pub use chunk_task_index::ChunkTaskIndex;
+pub use job_output::{JobOutput, JobOutputValue};
+pub use output_variable::{
+    EnvironmentHostRequirements, EnvironmentSelection, GroupState, OutputAllowedValues,
+    OutputBound, OutputConstraints, OutputVariable, PathInput, PendingBinding, SelectionError,
+    StepBinding,
+};
+pub(crate) use step_loop::{
+    empty_outputs as step_loop_empty_outputs, instance_name as step_loop_instance_name,
+};
+pub use step_loop::{
+    BoundLoop, BoundaryOutcome, Loop, LoopBinding, LoopBindingReport, LoopCondition, LoopEnd,
+    LoopError, LoopErrorField, LoopExpression, LoopIteration, LoopProducerState, LoopProgress,
+    LoopResult, LoopStart, PendingLoopBinding,
+};
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -77,8 +103,18 @@ pub struct Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<crate::types::ModelExtension>>,
     pub parameters: IndexMap<String, JobParameter>,
+    /// The top-level Steps, in template order. A loop's body Steps are not
+    /// here: their instances are created per iteration (RFC 0013).
     pub steps: Vec<Step>,
+    /// The loops (`CONTROL_FLOW`, RFC 0013), in template order. Empty, and
+    /// not serialized, for a Job without loops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<Loop>,
     pub job_environments: Option<Vec<Environment>>,
+    /// The Job's outputs (`CONTROL_FLOW`, RFC 0011 `jobOutputDefinitions`),
+    /// in template order, or `None` when the template declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<JobOutput>>,
 }
 
 /// Manual because `IndexMap` has no `Hash`; parameters hash as
@@ -90,7 +126,9 @@ impl Hash for Job {
         self.extensions.hash(state);
         hash_map_entries(self.parameters.iter(), state);
         self.steps.hash(state);
+        self.loops.hash(state);
         self.job_environments.hash(state);
+        self.outputs.hash(state);
     }
 }
 
@@ -119,9 +157,8 @@ pub struct Step {
     pub description: Option<String>,
     pub script: StepScript,
     /// The Step's own Environments, entered after its Job Environments, in
-    /// written order. With `ENV_PARAMS`, one whose `enableIf` (Template
-    /// Schemas §4 item 6) is `false` for the Step is left out; `None` when
-    /// that leaves none.
+    /// written order. One whose `enableIf` (Template Schemas §4 item 6) is
+    /// `false` for the Step is left out; `None` when that leaves none.
     pub step_environments: Option<Vec<Environment>>,
     pub parameter_space: Option<StepParameterSpace>,
     /// The Step's resolved `hostRequirements`. When an Environment the
@@ -187,6 +224,21 @@ pub struct Step {
     /// entered after these, and are not listed here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<Vec<EnvironmentRef>>,
+    /// The Step's output variable declarations (`CONTROL_FLOW`), or `None`
+    /// when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_variables: Option<Vec<OutputVariable>>,
+    /// The Step's binding state (`CONTROL_FLOW`): [`StepBinding::Bound`]
+    /// unless the Step is pending inputs or skipped. A pending Step keeps
+    /// `parameter_space`, `host_requirements`, and `resolved_symtab` as
+    /// `None`; a skipped Step keeps them `None` for good.
+    #[serde(default, skip_serializing_if = "StepBinding::is_bound")]
+    pub binding: StepBinding,
+    /// The path-typed `Steps.*` values stored in `resolved_symtab` in their
+    /// submission form (`CONTROL_FLOW`), recorded by
+    /// [`attach_step_inputs`](crate::create_job::attach_step_inputs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_inputs: Vec<PathInput>,
 }
 
 impl Step {

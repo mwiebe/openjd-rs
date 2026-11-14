@@ -119,6 +119,61 @@ pub type EnvironmentIdentifier = String;
 /// Callback invoked when action status changes.
 pub type SessionCallbackType = Box<dyn Fn(&str, &ActionStatus) + Send + Sync>;
 
+/// Callback invoked once for each output value a running Task reports
+/// (RFC 0012 §Committing values): `(session_id, task, name, value)`. `task`
+/// is the Task's `CHUNK[INT]` value in a chunked Step and `None` otherwise;
+/// under `collect: APPEND`, `value` is the new element. A `PATH` value is in
+/// the submission path context. The values are not committed: if the Action
+/// then fails, the caller discards them. See [`SessionConfig::output_callback`].
+pub type OutputCallbackType =
+    Box<dyn Fn(&str, Option<i64>, &str, &openjd_expr::ExprValue) + Send + Sync>;
+
+/// Which template defines an Environment, which decides how its actions
+/// treat `openjd_output_var` lines in a Session whose Job lists
+/// `CONTROL_FLOW` (RFC 0012 §The `openjd_output_var` directive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnvironmentOrigin {
+    /// A Job Environment or Step Environment of the Job Template. A
+    /// directive in one of its actions is invalid and fails the action.
+    #[default]
+    JobTemplate,
+    /// An Environment Template, which has not opted in to `CONTROL_FLOW`. A
+    /// directive in one of its actions is ordinary output.
+    EnvironmentTemplate,
+}
+
+/// Options for [`Session::enter_environment`],
+/// [`Session::enter_environment_with_output`], and
+/// [`Session::exit_environment`]. The default is a Job Template Environment
+/// with no path-typed `Steps.*` inputs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvironmentOptions<'a> {
+    /// Which template defines the Environment. Under `WRAP_ACTIONS`, a wrap
+    /// hook that runs in place of the Environment's action is treated as
+    /// that action, so this is the origin of the wrapped Environment.
+    pub origin: EnvironmentOrigin,
+    /// For a Step Environment, its Step's `job::Step::path_inputs`: the
+    /// path-typed `Steps.*` values in `resolved_symtab`, which the Session
+    /// turns into `path` values and maps forward (see
+    /// [`Session::build_symbol_table`]).
+    pub path_inputs: &'a [openjd_model::job::PathInput],
+}
+
+/// Options for [`Session::run_task`] that come from the Step being run. The
+/// default is a Step with no output variables and no path-typed `Steps.*`
+/// inputs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunTaskOptions<'a> {
+    /// The Step's `job::Step::output_variables`. `Some` makes the Task's
+    /// `openjd_output_var` directives report values, which
+    /// [`ActionResult::outputs`] returns; `None`, in a Session whose Job
+    /// lists `CONTROL_FLOW`, makes a directive invalid (RFC 0012).
+    pub output_variables: Option<&'a [openjd_model::job::OutputVariable]>,
+    /// The Step's `job::Step::path_inputs`: the path-typed `Steps.*` values
+    /// in `resolved_symtab` (see [`Session::build_symbol_table`]).
+    pub path_inputs: &'a [openjd_model::job::PathInput],
+}
+
 /// Configuration for creating a new Session.
 #[allow(
     missing_docs,
@@ -193,6 +248,17 @@ pub struct SessionConfig {
     /// `openjd_model::CallerLimits` fields a submitting service would
     /// set. Defaults to no limits beyond the OpenJD specification.
     pub limits: crate::limits::SessionLimits,
+    /// Whether the Job's Job Template lists the `CONTROL_FLOW` extension
+    /// (RFC 0012). Only then are `openjd_output_var` lines directives: a Task
+    /// of a Step with output variables reports values, and a directive in any
+    /// other Job Template action is invalid. When `false`, every such line is
+    /// ordinary output, as it is without the extension. Set it from the Job
+    /// Template's own extensions, not from [`profile`](Self::profile), which
+    /// selects functions and may be wider.
+    pub control_flow: bool,
+    /// Called once for each output value a running Task reports, so the
+    /// caller can forward values as they arrive. See [`OutputCallbackType`].
+    pub output_callback: Option<OutputCallbackType>,
 }
 
 fn format_exit_code(code: Option<i32>) -> String {
@@ -251,6 +317,13 @@ struct ActionStatusFields {
     progress: Option<f64>,
     status_message: Option<String>,
     fail_message: Option<String>,
+    /// Set when an invalid `openjd_output_var` directive gave the reason the
+    /// action is failing: a later `openjd_fail` (often printed from a cancel
+    /// handler) or `CancelMarkFailed` must not replace it, because RFC 0012
+    /// requires the failure to name the output, the problem, and the text.
+    /// Other messages keep the last-write-wins behavior of the Python
+    /// reference.
+    fail_message_final: bool,
     exit_code: Option<i32>,
     started_at: Option<std::time::SystemTime>,
     ended_at: Option<std::time::SystemTime>,
@@ -263,6 +336,7 @@ impl ActionStatusFields {
             progress: None,
             status_message: None,
             fail_message: None,
+            fail_message_final: false,
             exit_code: None,
             started_at: None,
             ended_at: None,
@@ -277,6 +351,7 @@ impl ActionStatusFields {
         self.progress = None;
         self.status_message = None;
         self.fail_message = None;
+        self.fail_message_final = false;
         self.exit_code = None;
     }
 }
@@ -412,6 +487,14 @@ impl SessionCancelHandle {
             shared.mark_failed = true;
         }
 
+        // Record the request before writing to the helper pipe:
+        // `run_via_helper` reads it to resend a cancel the idle helper
+        // dropped and to report the run Canceled, so it must already be set
+        // when the helper acts on the pipe command.
+        if let Some(tx) = &shared.request_tx {
+            let _ = tx.send(time_limit);
+        }
+
         // Cross-user sessions: also deliver the cancel command to the helper
         // process over the dup'd pipe, mirroring Session::cancel_action.
         if let Some(ref writer) = self.cancel_writer {
@@ -421,10 +504,6 @@ impl SessionCancelHandle {
                 time_limit,
                 shared.terminate_delay,
             );
-        }
-
-        if let Some(tx) = &shared.request_tx {
-            let _ = tx.send(time_limit);
         }
         token.cancel();
         true
@@ -458,15 +537,19 @@ fn send_helper_cancel_command(
     let cmd = if is_terminate {
         format!(r#"{{{token_field}"cancel":"TERMINATE"}}"#)
     } else {
+        // Whole seconds on the wire; a non-zero period under a second is
+        // one second, as in `cross_user_helper::write_cancel`.
         let notify_period = effective_limit
             .unwrap_or(Duration::from_secs(DEFAULT_CANCEL_NOTIFY_PERIOD_SECS))
-            .as_secs();
+            .as_secs()
+            .max(1);
         format!(
             r#"{{{token_field}"cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
         )
     };
-    let _ = writer.write_all(cmd.as_bytes());
-    let _ = writer.write_all(b"\n");
+    // One write, so the line can't interleave with a cancel the action's
+    // runner writes to the same pipe at the same time.
+    let _ = writer.write_all(format!("{cmd}\n").as_bytes());
     let _ = writer.flush();
 }
 
@@ -603,6 +686,10 @@ pub struct Session {
     /// Caller-policy caps and evaluation budgets (see
     /// [`SessionConfig::limits`]).
     limits: crate::limits::SessionLimits,
+    /// See [`SessionConfig::control_flow`].
+    control_flow: bool,
+    /// See [`SessionConfig::output_callback`].
+    output_callback: Option<OutputCallbackType>,
 }
 
 impl Session {
@@ -646,6 +733,8 @@ impl Session {
             debug_collect_stdout: true, // test constructor — tests need captured stdout
             limits: crate::limits::SessionLimits::default(),
             echo_openjd_directives: true, // matches default in production config
+            control_flow: false,
+            output_callback: None,
         }
     }
 
@@ -896,6 +985,8 @@ impl Session {
             debug_collect_stdout: config.debug_collect_stdout,
             echo_openjd_directives: config.echo_openjd_directives,
             limits: config.limits,
+            control_flow: config.control_flow,
+            output_callback: config.output_callback,
         })
     }
 
@@ -1129,6 +1220,16 @@ impl Session {
         // via `set_cancel_writer_for_test`), the test is responsible for
         // asserting whatever framing it expects; we still write a valid
         // tokenized command if we have a token.
+        //
+        // The request is recorded first, as in `SessionCancelHandle::cancel`:
+        // `run_via_helper` must see it once the helper acts on the command.
+        let (token, request_tx) = {
+            let shared = self.cancel.lock();
+            (shared.token.clone(), shared.request_tx.clone())
+        };
+        if let Some(tx) = request_tx {
+            let _ = tx.send(time_limit);
+        }
         if let Some(ref writer) = self.cross_user.cancel_writer {
             send_helper_cancel_command(
                 writer,
@@ -1136,14 +1237,6 @@ impl Session {
                 time_limit,
                 self.cancel.lock().terminate_delay,
             );
-        }
-
-        let (token, request_tx) = {
-            let shared = self.cancel.lock();
-            (shared.token.clone(), shared.request_tx.clone())
-        };
-        if let Some(tx) = request_tx {
-            let _ = tx.send(time_limit);
         }
         if let Some(token) = token {
             token.cancel();
@@ -1381,6 +1474,10 @@ impl Session {
     /// the RFC 0008 wrap hooks — see it either way. If both are supplied, the
     /// argument wins.
     ///
+    /// `options` says which template defines the Environment and, for a Step
+    /// Environment, its Step's path-typed `Steps.*` inputs (see
+    /// [`EnvironmentOptions`]).
+    ///
     /// # Errors
     ///
     /// [`SessionError::InvalidState`] if the session isn't `Ready`,
@@ -1406,9 +1503,10 @@ impl Session {
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<String, SessionError> {
         let (id, _stdout) = self
-            .enter_environment_with_output(env, resolved_symtab, identifier, os_env_vars)
+            .enter_environment_with_output(env, resolved_symtab, identifier, os_env_vars, options)
             .await?;
         Ok(id)
     }
@@ -1427,9 +1525,17 @@ impl Session {
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<(String, String), SessionError> {
-        self.enter_environment_with_parameters(env, resolved_symtab, None, identifier, os_env_vars)
-            .await
+        self.enter_environment_with_parameters(
+            env,
+            resolved_symtab,
+            None,
+            identifier,
+            os_env_vars,
+            options,
+        )
+        .await
     }
 
     /// Enter an environment with its Environment parameter values
@@ -1477,6 +1583,7 @@ impl Session {
         parameters: Option<&EnvironmentParameterValues>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<(String, String), SessionError> {
         if self.state() != SessionState::Ready {
             return Err(SessionError::InvalidState {
@@ -1558,7 +1665,7 @@ impl Session {
         // caller learns of it from the error and the action status, and
         // exits the environment as usual.
         let banner = format!("Entering Environment: {}", env.name);
-        let symtab = match self.build_symbol_table(None, resolved_symtab) {
+        let symtab = match self.build_symbol_table(None, resolved_symtab, options.path_inputs) {
             Ok(symtab) => symtab,
             Err(e) => return Err(self.fail_action_before_start(&banner, e)),
         };
@@ -1730,6 +1837,7 @@ impl Session {
             .with_echo_openjd_directives(self.echo_openjd_directives)
             .with_limits(self.limits)
             .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+            .with_output_vars(self.environment_output_vars(options.origin))
             .with_cancel_token(cancel_token)
             .with_cancel_request_rx(cancel_rx);
             if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -1893,6 +2001,8 @@ impl Session {
     /// `Timeout`, stays `ReadyEnding` until the caller calls
     /// [`clear_ending_only`](Self::clear_ending_only).
     ///
+    /// `options` is as for [`enter_environment`](Self::enter_environment).
+    ///
     /// # Errors
     ///
     /// [`SessionError::InvalidState`] if the session isn't `Ready` or
@@ -1914,6 +2024,7 @@ impl Session {
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
         keep_session_running: bool,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<String, SessionError> {
         if !matches!(
             self.state(),
@@ -1979,7 +2090,7 @@ impl Session {
         // As in the Python runtime, the symbol table is built only once the
         // environment is off the stack: a failure here fails the action, and
         // the failed exit still counts as an exit.
-        let symtab = match self.build_symbol_table(None, resolved_symtab) {
+        let symtab = match self.build_symbol_table(None, resolved_symtab, options.path_inputs) {
             Ok(symtab) => symtab,
             Err(e) => {
                 let banner = format!("Exiting Environment: {}", env.name);
@@ -2138,6 +2249,7 @@ impl Session {
             .with_echo_openjd_directives(self.echo_openjd_directives)
             .with_limits(self.limits)
             .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+            .with_output_vars(self.environment_output_vars(options.origin))
             .with_cancel_token(cancel_token)
             .with_cancel_request_rx(cancel_rx);
             if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -2231,6 +2343,18 @@ impl Session {
     /// surfaced as `WrappedStep.Name` to a wrapping environment's
     /// `onWrapTaskRun` hook (RFC 0008).
     ///
+    /// `options` carries the Step's output variables and path-typed
+    /// `Steps.*` inputs (RFC 0011, see [`RunTaskOptions`]). In a Session
+    /// whose Job lists `CONTROL_FLOW` and a Step that declares output
+    /// variables, the Task's `openjd_output_var` directives are collected as
+    /// they are printed (each accepted value goes to
+    /// [`SessionConfig::output_callback`]), an invalid one cancels and fails
+    /// the Action at once, and on success the values are checked for
+    /// completeness and returned in [`ActionResult::outputs`]. A Step with a
+    /// `CHUNK[INT]` Task parameter runs a chunk, whose Tasks are the
+    /// parameter's values: a `RangeExpr` value, or a string that parses as
+    /// one.
+    ///
     /// # Errors
     ///
     /// [`SessionError::InvalidState`] if the session isn't `Ready`, which
@@ -2248,6 +2372,7 @@ impl Session {
         task_parameter_values: Option<&openjd_model::types::TaskParameterSet>,
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &RunTaskOptions<'_>,
     ) -> Result<ActionResult, SessionError> {
         if self.state() != SessionState::Ready {
             return Err(SessionError::InvalidState {
@@ -2263,7 +2388,10 @@ impl Session {
         log_section_banner(&self.session_id, "Running Task");
 
         let symtab = self
-            .build_symbol_table(task_parameter_values, resolved_symtab)
+            .build_symbol_table(task_parameter_values, resolved_symtab, options.path_inputs)
+            .map_err(|e| self.fail_action_setup(e))?;
+        let output_vars = self
+            .task_output_vars(options.output_variables, task_parameter_values)
             .map_err(|e| self.fail_action_setup(e))?;
 
         let cancel_token = self.new_action_cancel_token();
@@ -2397,6 +2525,7 @@ impl Session {
         .with_echo_openjd_directives(self.echo_openjd_directives)
         .with_limits(self.limits)
         .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+        .with_output_vars(output_vars)
         .with_cancel_token(cancel_token)
         .with_cancel_request_rx(cancel_rx);
         if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -2464,13 +2593,61 @@ impl Session {
             .drive_action(runner_fut, &mut rx, &step_identifier)
             .await;
         self.cross_user.helper = runner.take_helper();
+        // Checked by the runner at a successful exit (RFC 0012 §Processing a
+        // directive: every Task has its ONCE and LAST outputs and its APPEND
+        // minLength); `None` for an attempt that failed.
+        let outputs = runner.take_outputs();
         let result = result?;
 
         Ok(ActionResult {
             state: result.state,
             exit_code: result.exit_code,
             stdout: result.stdout,
+            outputs: outputs.filter(|_| result.state == ActionState::Success),
         })
+    }
+
+    /// How an Environment's actions treat `openjd_output_var` lines.
+    fn environment_output_vars(&self, origin: EnvironmentOrigin) -> crate::output_vars::OutputVars {
+        match (self.control_flow, origin) {
+            (true, EnvironmentOrigin::JobTemplate) => crate::output_vars::OutputVars::forbidden(),
+            _ => crate::output_vars::OutputVars::ignored(),
+        }
+    }
+
+    /// How a Task's `onRun` treats `openjd_output_var` lines: with a collector
+    /// for a Step with output variables, built with the Session's path
+    /// mapping rules (to map `PATH` values back) and, in a chunked Step, the
+    /// chunk's `CHUNK[INT]` values.
+    fn task_output_vars(
+        &self,
+        output_variables: Option<&[openjd_model::job::OutputVariable]>,
+        task_parameter_values: Option<&openjd_model::types::TaskParameterSet>,
+    ) -> Result<crate::output_vars::OutputVars, SessionError> {
+        if !self.control_flow {
+            return Ok(crate::output_vars::OutputVars::ignored());
+        }
+        let Some(declared) = output_variables else {
+            return Ok(crate::output_vars::OutputVars::forbidden());
+        };
+        let chunk = task_parameter_values
+            .map(chunk_values)
+            .transpose()?
+            .flatten();
+        let max_bytes = self.limits.task_output_bytes();
+        let collector = openjd_model::outputs::OutputCollector::new(
+            declared,
+            max_bytes,
+            Arc::clone(&self.path_mapper),
+            openjd_expr::PathFormat::host(),
+            chunk,
+        )
+        .map_err(|e| SessionError::Runtime(e.message().to_string()))?;
+        Ok(crate::output_vars::OutputVars::allowed(
+            collector,
+            self.working_directory.clone(),
+            max_bytes,
+        ))
     }
 
     /// Run an ad-hoc subprocess within the Session.
@@ -2778,7 +2955,9 @@ impl Session {
                 self.action.status_message = Some(s);
             }
             ActionMessage::Fail(s) => {
-                self.action.fail_message = Some(s);
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(s);
+                }
             }
             ActionMessage::SetEnv { name, value } => {
                 let key = normalize_env_key(&name);
@@ -2804,8 +2983,24 @@ impl Session {
                 }
                 self.redacted_values.insert(value);
             }
+            ActionMessage::OutputVar { task, name, value } => {
+                if let Some(cb) = &self.output_callback {
+                    cb(&self.session_id, task, &name, &value);
+                }
+                // A value changes no ActionStatus field.
+                return;
+            }
             ActionMessage::CancelMarkFailed { fail_message } => {
-                self.action.fail_message = Some(fail_message);
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(fail_message);
+                }
+                let _ = self.cancel_action(None, true);
+            }
+            ActionMessage::InvalidOutputVar { fail_message } => {
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(fail_message);
+                    self.action.fail_message_final = true;
+                }
                 let _ = self.cancel_action(None, true);
             }
         }
@@ -3106,14 +3301,38 @@ impl Session {
     /// If `base` is provided, clones it as the starting point (it already contains Param.*, RawParam.*,
     /// Job.Name, Step.Name, and let bindings) and only layers Session.WorkingDirectory and Task.* on top.
     /// If `base` is None, builds from scratch using self.job_parameter_values.
+    ///
+    /// `path_inputs` lists the path-typed `Steps.*` values in `base`
+    /// (`job::Step::path_inputs`, RFC 0012 §Path values), and for a body Step
+    /// instance its path-typed `RawLoop.*` values (RFC 0013). Each is stored
+    /// there as a string, or a list of them, in the submission path context. The table
+    /// gets its `RawOutput.<V>`, `TaskRawParam.<N>`, or `RawLoop.<V>` symbol as `path` values
+    /// in that stored form, each with the stored value's own path format
+    /// (Windows for a drive path or one starting with `\\`, the host's for a URI,
+    /// POSIX otherwise), and its `Output.<V>`, `TaskParam.<N>`, or `Loop.<V>` twin as
+    /// `path` values mapped forward with the Session's rules, element by
+    /// element. A `null` (from a skipped producer) is left as it is. A stored
+    /// path longer than [`MAX_PATH_LEN`](openjd_expr::path_mapping::MAX_PATH_LEN)
+    /// bytes is a [`SessionError::Runtime`], with or without rules, as for a
+    /// PATH parameter.
     pub fn build_symbol_table(
         &self,
         task_parameter_values: Option<&openjd_model::types::TaskParameterSet>,
         base: Option<&openjd_expr::SerializedSymbolTable>,
+        path_inputs: &[openjd_model::job::PathInput],
     ) -> Result<SymbolTable, SessionError> {
         use openjd_model::types::TaskParameterType;
 
         let host_path_format = openjd_expr::path_mapping::PathFormat::host();
+        if base.is_none() {
+            if let Some(input) = path_inputs.first() {
+                return Err(SessionError::Runtime(format!(
+                    "Path input '{}' has no value: path inputs are read from the Step's \
+                     resolved_symtab, and none was given",
+                    input.symbol
+                )));
+            }
+        }
         let mut symtab = if let Some(base) = base {
             // Deserialize with host path format — this is the template→session boundary.
             // Path values stored as Posix in template scope get normalized to host format.
@@ -3163,6 +3382,9 @@ impl Session {
                     }
                     _ => {}
                 }
+            }
+            for input in path_inputs {
+                self.set_path_input(&mut s, input)?;
             }
             s
         } else {
@@ -3270,6 +3492,66 @@ impl Session {
         }
 
         Ok(symtab)
+    }
+
+    /// Set one path-typed `Steps.*` input and its forward-mapped twin (see
+    /// [`build_symbol_table`](Self::build_symbol_table)).
+    fn set_path_input(
+        &self,
+        symtab: &mut SymbolTable,
+        input: &openjd_model::job::PathInput,
+    ) -> Result<(), SessionError> {
+        let err = |detail: String| {
+            SessionError::Runtime(format!(
+                "Path input '{}' in resolved_symtab: {detail}",
+                input.symbol
+            ))
+        };
+        let Some(twin) = forward_twin(&input.symbol) else {
+            return Err(err(
+                "not a Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name> symbol"
+                    .to_string(),
+            ));
+        };
+        let depth = path_type_depth(&input.ty).ok_or_else(|| {
+            err(format!(
+                "its type {} is not path, list[path], or list[list[path]]",
+                input.ty
+            ))
+        })?;
+        let Some(stored) = symtab.get_value(&input.symbol).cloned() else {
+            return Err(err("missing".to_string()));
+        };
+        if matches!(stored, openjd_expr::ExprValue::Null) {
+            return Ok(());
+        }
+        let raw = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
+            Ok(openjd_expr::ExprValue::new_path(s, stored_path_format(s)))
+        })
+        .map_err(err)?;
+        let host = openjd_expr::path_mapping::PathFormat::host();
+        let max = openjd_expr::path_mapping::MAX_PATH_LEN;
+        let mapped = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
+            // As for PATH parameters, a path too long to map is an error
+            // rather than passed through unmapped.
+            if s.len() > max {
+                return Err(format!(
+                    "the path is {} bytes long, more than the limit of {max} bytes \
+                     that path mapping handles",
+                    s.len()
+                ));
+            }
+            Ok(openjd_expr::ExprValue::new_path(
+                self.path_mapper.map(s),
+                host,
+            ))
+        })
+        .map_err(err)?;
+        symtab
+            .set(&input.symbol, raw)
+            .map_err(|e| err(e.to_string()))?;
+        symtab.set(&twin, mapped).map_err(|e| err(e.to_string()))?;
+        Ok(())
     }
 
     /// Coerce a parameter value to its declared type using `ExprValue::coerce`.
@@ -3545,6 +3827,134 @@ fn is_parameter_name(name: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The `CHUNK[INT]` values of the chunk `task_parameter_values` runs, or
+/// `None` when the Step has no `CHUNK[INT]` parameter. The value is a
+/// `RangeExpr` or a string that parses as one, such as `"10-12"`.
+fn chunk_values(
+    task_parameter_values: &openjd_model::types::TaskParameterSet,
+) -> Result<Option<Vec<i64>>, SessionError> {
+    use openjd_model::types::TaskParameterType;
+    let Some((name, tv)) = task_parameter_values
+        .iter()
+        .find(|(_, tv)| tv.param_type == TaskParameterType::ChunkInt)
+    else {
+        return Ok(None);
+    };
+    match &tv.value {
+        openjd_expr::ExprValue::RangeExpr(r) => Ok(Some(r.to_vec())),
+        openjd_expr::ExprValue::String(text) => text
+            .parse::<openjd_expr::range_expr::RangeExpr>()
+            .map(|r| Some(r.to_vec()))
+            .map_err(|e| {
+                SessionError::Runtime(format!(
+                    "CHUNK[INT] parameter '{name}' value '{text}' is not a range expression: {e}"
+                ))
+            }),
+        other => Err(SessionError::Runtime(format!(
+            "CHUNK[INT] parameter '{name}' value '{}' is not a range expression",
+            other.to_display_string()
+        ))),
+    }
+}
+
+/// `Steps.P.Output.X` for `Steps.P.RawOutput.X`, `Steps.P.TaskParam.N` for
+/// `Steps.P.TaskRawParam.N`, and `Loop.V` for `RawLoop.V` (a body Step
+/// instance's path-typed loop variable, RFC 0013); `None` for any other
+/// symbol.
+fn forward_twin(symbol: &str) -> Option<String> {
+    if let Some(name) = symbol.strip_prefix("RawLoop.") {
+        return (!name.is_empty() && !name.contains('.')).then(|| format!("Loop.{name}"));
+    }
+    let mut parts = symbol.splitn(4, '.');
+    let (root, step, member, name) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let twin = match (root, member) {
+        ("Steps", "RawOutput") => "Output",
+        ("Steps", "TaskRawParam") => "TaskParam",
+        _ => return None,
+    };
+    Some(format!("Steps.{step}.{twin}.{name}"))
+}
+
+/// The path format of a path stored in the submission path context:
+/// Windows for a drive path (`C:`) or one starting with `\\`, POSIX
+/// otherwise, and the host's for a URI. EXPR recognizes a URI by its value
+/// whatever its format, and its evaluator reads only `path` values in the
+/// host's format, so a URI given `PathFormat::Uri` could not be read.
+fn stored_path_format(path: &str) -> openjd_expr::path_mapping::PathFormat {
+    use openjd_expr::path_mapping::PathFormat;
+    let b = path.as_bytes();
+    if openjd_expr::path_mapping::is_uri(path) {
+        PathFormat::host()
+    } else if (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+        || path.starts_with("\\\\")
+    {
+        PathFormat::Windows
+    } else {
+        PathFormat::Posix
+    }
+}
+
+/// How many list levels `ty` has around `path`: 0 for `path`, 1 for
+/// `list[path]`, 2 for `list[list[path]]`; `None` for any other type.
+fn path_type_depth(ty: &openjd_expr::ExprType) -> Option<usize> {
+    use openjd_expr::ExprType;
+    if *ty == ExprType::PATH {
+        Some(0)
+    } else if *ty == ExprType::list(ExprType::PATH) {
+        Some(1)
+    } else if *ty == ExprType::list(ExprType::list(ExprType::PATH)) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// Turn a stored `string` (`depth` 0), `list[string]` (1), or
+/// `list[list[string]]` (2) into the same shape of `path` values, converting
+/// each string with `f`, which may refuse it. A stored value of another shape
+/// is an error that names `ty`, the type the input was recorded with.
+fn map_stored_paths(
+    value: &openjd_expr::ExprValue,
+    depth: usize,
+    ty: &openjd_expr::ExprType,
+    f: &mut dyn FnMut(&str) -> Result<openjd_expr::ExprValue, String>,
+) -> Result<openjd_expr::ExprValue, String> {
+    use openjd_expr::{ExprType, ExprValue};
+    let paths = |items: Vec<ExprValue>, elem: ExprType| {
+        ExprValue::make_list(items, elem).map_err(|e| e.to_string())
+    };
+    match (depth, value) {
+        (0, ExprValue::String(s)) => f(s),
+        (1, ExprValue::ListString(items, _)) => paths(
+            items.iter().map(|s| f(s)).collect::<Result<_, _>>()?,
+            ExprType::PATH,
+        ),
+        // An empty list can be stored without its element type.
+        (1, ExprValue::ListList(items, _, _)) if items.is_empty() => {
+            paths(Vec::new(), ExprType::PATH)
+        }
+        (2, ExprValue::ListList(items, _, _)) => {
+            let lists = items
+                .iter()
+                .map(|v| map_stored_paths(v, 1, ty, f))
+                .collect::<Result<Vec<_>, _>>()?;
+            paths(lists, ExprType::list(ExprType::PATH))
+        }
+        (2, ExprValue::ListString(items, _)) if items.is_empty() => {
+            paths(Vec::new(), ExprType::list(ExprType::PATH))
+        }
+        (_, other) => Err(format!(
+            "it is recorded as {ty}, so its value must be stored as {}, but it is {}",
+            match depth {
+                0 => "a string",
+                1 => "a list of strings",
+                _ => "a list of lists of strings",
+            },
+            other.expr_type()
+        )),
+    }
 }
 
 /// Returns true iff the environment defines any of the three wrap hooks
@@ -4149,6 +4559,8 @@ mod cleanup_failure_log_tests {
             debug_collect_stdout: false,
             echo_openjd_directives: true,
             sticky_bit_policy: crate::tempdir::StickyBitPolicy::Disabled,
+            control_flow: false,
+            output_callback: None,
         })
         .unwrap();
         let wd = session.working_directory().to_path_buf();
@@ -4231,7 +4643,7 @@ mod typed_param_seeding_tests {
             );
         }
         session.set_job_parameter_values_for_test(job_params);
-        session.build_symbol_table(None, None)
+        session.build_symbol_table(None, None, &[])
     }
 
     /// Helper: build a test Session with job parameters and task parameters,
@@ -4263,7 +4675,7 @@ mod typed_param_seeding_tests {
                 },
             );
         }
-        session.build_symbol_table(Some(&tp), None)
+        session.build_symbol_table(Some(&tp), None, &[])
     }
 
     /// Helper: evaluate a format-string expression against a symbol table.

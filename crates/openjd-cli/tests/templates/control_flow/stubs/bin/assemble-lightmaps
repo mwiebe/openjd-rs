@@ -1,0 +1,10 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic assemble-lightmaps stub: lists the bakes in the directory."""
+import os
+import sys
+
+bakes = sorted(n for n in os.listdir(sys.argv[1]) if n.endswith(".bake"))
+print(f"assemble-lightmaps stub: {bakes}")

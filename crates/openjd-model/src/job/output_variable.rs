@@ -1,0 +1,719 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright by contributors to this project.
+// SPDX-License-Identifier: (Apache-2.0 OR MIT)
+
+//! Job-side `CONTROL_FLOW` types (RFC 0011, RFC 0012): a Step's output variable
+//! declarations, its binding state, and the path-typed `Steps.*` inputs it
+//! reads.
+//!
+//! `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`, and
+//! the template's `JobParameterDefinition` implements none of the first three,
+//! so an output declaration is carried here in its own form:
+//! [`OutputVariable`] holds the declared constraint properties as
+//! [`OutputConstraints`], which is hashable and serializable.
+
+use openjd_expr::value::Float64;
+use openjd_expr::{ExprType, ExprValue};
+use serde::{Deserialize, Serialize};
+
+use crate::types::{JobParameterType, OutputCollectMode};
+
+/// One output variable declared by a Step (RFC 0012 `<OutputVariableDefinition>`),
+/// in the form `create_job` stores on [`job::Step`](super::Step).
+///
+/// The constraint checks apply only the properties the definition declared:
+/// no property that a job parameter of the same type implies when omitted is
+/// checked (RFC 0012 `<OutputVariableDefinition>` item 6).
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputVariable {
+    /// The `<Identifier>` the output is reported and referenced by.
+    pub name: String,
+    /// The declared `<OutputVariableType>`. Serialized as the spec string
+    /// (`"INT"`, `"LIST[STRING]"`), as in the template.
+    #[serde(rename = "type", with = "job_param_type_spec")]
+    pub param_type: JobParameterType,
+    /// How a Task's directives for this output become its value.
+    #[serde(default, skip_serializing_if = "is_default_collect")]
+    pub collect: OutputCollectMode,
+    /// The display unit, if declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// The constraint properties the definition declared.
+    #[serde(default, skip_serializing_if = "OutputConstraints::is_empty")]
+    pub constraints: OutputConstraints,
+}
+
+fn is_default_collect(c: &OutputCollectMode) -> bool {
+    *c == OutputCollectMode::default()
+}
+
+/// Serialize a [`JobParameterType`] as its spec string and parse it back
+/// (case-insensitive, as `JobParameterType::from_spec_str` is).
+mod job_param_type_spec {
+    use crate::types::JobParameterType;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(ty: &JobParameterType, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(ty.as_spec_str())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<JobParameterType, D::Error> {
+        let s = String::deserialize(d)?;
+        JobParameterType::from_spec_str(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown output variable type: '{s}'")))
+    }
+}
+
+/// The constraint properties an output variable declared, in hashable,
+/// serializable form.
+///
+/// `create_job` builds it from the template, so each property has the form
+/// the declared type takes. Deserialization does not re-check that: a
+/// property of the wrong form (say a `float` bound on an `INT` output) is
+/// kept and has no effect on the checks.
+///
+/// The meaning of each field follows the job parameter definition of the
+/// same type. For a list type, `min_length`/`max_length` bound the number of
+/// elements and `item` holds the per-element constraints; for `STRING`,
+/// `PATH`, and `RANGE_EXPR` they bound the character count.
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputConstraints {
+    /// `allowedValues`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_values: Option<OutputAllowedValues>,
+    /// `minValue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_value: Option<OutputBound>,
+    /// `maxValue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<OutputBound>,
+    /// `minLength`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// `maxLength`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// `item`: constraints on each element of a list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<Box<OutputConstraints>>,
+}
+
+impl OutputConstraints {
+    /// `true` when no constraint property is declared.
+    pub fn is_empty(&self) -> bool {
+        self.allowed_values.is_none()
+            && self.min_value.is_none()
+            && self.max_value.is_none()
+            && self.min_length.is_none()
+            && self.max_length.is_none()
+            && self.item.is_none()
+    }
+}
+
+/// An `allowedValues` list.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputAllowedValues {
+    /// For `INT` values.
+    Int(Vec<i64>),
+    /// For `FLOAT` values.
+    Float(Vec<Float64>),
+    /// For `STRING` and `PATH` values.
+    String(Vec<String>),
+}
+
+/// A `minValue` or `maxValue` bound.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputBound {
+    /// For `INT` values.
+    Int(i64),
+    /// For `FLOAT` values.
+    Float(Float64),
+}
+
+/// What a check is looking at, for the message.
+#[derive(Clone, Copy)]
+enum Subject {
+    /// The whole value.
+    Value,
+    /// Element `i` of a list value.
+    Item(usize),
+    /// Element `i` of element `j` of a `LIST[LIST[INT]]` value.
+    ItemItem(usize, usize),
+    /// One element reported under `collect: APPEND`.
+    Element,
+    /// Element `i` of an element reported under `collect: APPEND`.
+    ElementItem(usize),
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value => f.write_str("value"),
+            Self::Item(i) => write!(f, "item[{i}]"),
+            Self::ItemItem(j, i) => write!(f, "item[{j}][{i}]"),
+            Self::Element => f.write_str("element"),
+            Self::ElementItem(i) => write!(f, "element item[{i}]"),
+        }
+    }
+}
+
+/// How [`OutputVariable`]'s messages name their subject.
+const OUTPUT_VARIABLE_LABEL: &str = "Output variable";
+
+impl OutputVariable {
+    /// Check a whole value (one Task's value) against the declared type and
+    /// constraint properties. For a list type that is the length, with
+    /// `minLength` applied, and every element.
+    pub fn check_constraints(&self, value: &ExprValue) -> Result<(), String> {
+        match self.param_type {
+            JobParameterType::ListInt
+            | JobParameterType::ListFloat
+            | JobParameterType::ListString
+            | JobParameterType::ListPath
+            | JobParameterType::ListBool
+            | JobParameterType::ListListInt => {
+                let items = self.list_items(value)?;
+                self.check_length(items.len(), true)?;
+                for (i, item) in items.iter().enumerate() {
+                    self.check_list_element(item, Subject::Item(i))?;
+                }
+                Ok(())
+            }
+            _ => self.check_scalar(&self.constraints, self.param_type, value, Subject::Value),
+        }
+    }
+
+    /// Check one element reported under `collect: APPEND` against the
+    /// element type and the `item` constraints. Errors when the declared
+    /// type is not a list.
+    pub fn check_element(&self, element: &ExprValue) -> Result<(), String> {
+        if element_type(self.param_type).is_none() {
+            return Err(self.msg(format_args!(
+                "{} is not a list type, so it has no elements",
+                self.param_type
+            )));
+        }
+        self.check_list_element(element, Subject::Element)
+    }
+
+    /// Check the length of a list being collected under `collect: APPEND`.
+    /// `maxLength` applies at every length; `minLength` only when `at_exit`
+    /// is `true`, because the list is still growing until the Action exits.
+    /// Errors when the declared type is not a list, as `check_element` does.
+    pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String> {
+        if element_type(self.param_type).is_none() {
+            return Err(self.msg(format_args!(
+                "{} is not a list type, so it has no elements",
+                self.param_type
+            )));
+        }
+        if at_exit {
+            if let Some(min) = self.constraints.min_length {
+                if len < min {
+                    return Err(
+                        self.msg(format_args!("list length {len} is less than minimum {min}"))
+                    );
+                }
+            }
+        }
+        if let Some(max) = self.constraints.max_length {
+            if len > max {
+                return Err(self.msg(format_args!("list length {len} exceeds maximum {max}")));
+            }
+        }
+        Ok(())
+    }
+
+    fn msg(&self, detail: std::fmt::Arguments<'_>) -> String {
+        format!("{OUTPUT_VARIABLE_LABEL} '{}': {detail}", self.name)
+    }
+
+    /// [`check_constraints`](Self::check_constraints), with each message
+    /// naming its subject as `label` (such as `Job output`) instead of
+    /// `Output variable`.
+    pub(crate) fn check_constraints_as(
+        &self,
+        value: &ExprValue,
+        label: &str,
+    ) -> Result<(), String> {
+        self.check_constraints(value)
+            .map_err(|m| match m.strip_prefix(OUTPUT_VARIABLE_LABEL) {
+                Some(rest) => format!("{label}{rest}"),
+                None => m,
+            })
+    }
+
+    /// `result` with its message naming its subject as `label` (such as
+    /// `Loop output`) instead of `Output variable`.
+    pub(crate) fn relabel(result: Result<(), String>, label: &str) -> Result<(), String> {
+        result.map_err(|m| match m.strip_prefix(OUTPUT_VARIABLE_LABEL) {
+            Some(rest) => format!("{label}{rest}"),
+            None => m,
+        })
+    }
+
+    fn type_mismatch(&self, expected: &ExprType, value: &ExprValue, subject: Subject) -> String {
+        self.msg(format_args!(
+            "{subject} has type {}, expected {expected}",
+            value.expr_type()
+        ))
+    }
+
+    /// The elements of a list value of the declared list type.
+    fn list_items(&self, value: &ExprValue) -> Result<Vec<ExprValue>, String> {
+        let expected = self.param_type.expr_type();
+        let items: Option<Vec<ExprValue>> = match (self.param_type, value) {
+            (JobParameterType::ListInt, ExprValue::ListInt(v)) => {
+                Some(v.iter().map(|i| ExprValue::Int(*i)).collect())
+            }
+            (JobParameterType::ListFloat, ExprValue::ListFloat(v)) => {
+                Some(v.iter().cloned().map(ExprValue::Float).collect())
+            }
+            // A list of paths is a list of strings, as for a LIST[STRING]
+            // job parameter value.
+            (JobParameterType::ListString, ExprValue::ListString(v, _))
+            | (JobParameterType::ListString, ExprValue::ListPath(v, _, _)) => {
+                Some(v.iter().cloned().map(ExprValue::String).collect())
+            }
+            (JobParameterType::ListPath, ExprValue::ListPath(v, _, _))
+            | (JobParameterType::ListPath, ExprValue::ListString(v, _)) => {
+                Some(v.iter().cloned().map(ExprValue::String).collect())
+            }
+            (JobParameterType::ListBool, ExprValue::ListBool(v)) => {
+                Some(v.iter().map(|b| ExprValue::Bool(*b)).collect())
+            }
+            // A non-empty list's elements are checked one by one; an empty
+            // one has only its hint to go on.
+            // (An untyped empty list is the arm below.)
+            (JobParameterType::ListListInt, ExprValue::ListList(v, hint, _))
+                if !v.is_empty() || *hint == ExprType::list(ExprType::INT) =>
+            {
+                Some(v.clone())
+            }
+            // An empty list built without a type hint is `list[nulltype]`.
+            (_, ExprValue::ListList(v, hint, _)) if v.is_empty() && *hint == ExprType::NULLTYPE => {
+                Some(Vec::new())
+            }
+            _ => None,
+        };
+        items.ok_or_else(|| self.type_mismatch(&expected, value, Subject::Value))
+    }
+
+    /// Check one element of a list-typed output.
+    fn check_list_element(&self, element: &ExprValue, subject: Subject) -> Result<(), String> {
+        let Some(elem_ty) = element_type(self.param_type) else {
+            return Ok(());
+        };
+        let empty = OutputConstraints::default();
+        let item = self.constraints.item.as_deref().unwrap_or(&empty);
+        if elem_ty != JobParameterType::ListInt {
+            return self.check_scalar(item, elem_ty, element, subject);
+        }
+        // LIST[LIST[INT]]: the element is a list[int].
+        let ints: Vec<i64> = match element {
+            ExprValue::ListInt(v) => v.clone(),
+            ExprValue::ListList(v, hint, _) if v.is_empty() && *hint == ExprType::NULLTYPE => {
+                Vec::new()
+            }
+            _ => {
+                return Err(self.type_mismatch(&elem_ty.expr_type(), element, subject));
+            }
+        };
+        if let Some(min) = item.min_length {
+            if ints.len() < min {
+                return Err(self.msg(format_args!(
+                    "{subject} length {} is less than minimum {min}",
+                    ints.len()
+                )));
+            }
+        }
+        if let Some(max) = item.max_length {
+            if ints.len() > max {
+                return Err(self.msg(format_args!(
+                    "{subject} length {} exceeds maximum {max}",
+                    ints.len()
+                )));
+            }
+        }
+        let inner = item.item.as_deref().unwrap_or(&empty);
+        for (i, v) in ints.iter().enumerate() {
+            let sub = match subject {
+                Subject::Item(j) => Subject::ItemItem(j, i),
+                _ => Subject::ElementItem(i),
+            };
+            self.check_scalar(inner, JobParameterType::Int, &ExprValue::Int(*v), sub)?;
+        }
+        Ok(())
+    }
+
+    /// Check a scalar value of type `ty` against `c`.
+    fn check_scalar(
+        &self,
+        c: &OutputConstraints,
+        ty: JobParameterType,
+        value: &ExprValue,
+        subject: Subject,
+    ) -> Result<(), String> {
+        match (ty, value) {
+            (JobParameterType::Int, ExprValue::Int(v)) => self.check_int(c, *v, subject),
+            (JobParameterType::Float, ExprValue::Float(v)) => self.check_float(c, v, subject),
+            // A path is a string, as for a STRING job parameter value.
+            (JobParameterType::String, ExprValue::String(s))
+            | (JobParameterType::String, ExprValue::Path { value: s, .. })
+            | (JobParameterType::Path, ExprValue::String(s))
+            | (JobParameterType::Path, ExprValue::Path { value: s, .. }) => {
+                self.check_str(c, s, subject)
+            }
+            (JobParameterType::RangeExpr, ExprValue::RangeExpr(r)) => {
+                self.check_lengths(c, r.to_string().chars().count(), subject)
+            }
+            // A range expression as written: checked in that spelling and
+            // in its canonical form, as a RANGE_EXPR job parameter value is
+            // in a document that lists ENV_PARAMS, which CONTROL_FLOW
+            // requires (Template Schemas §2.10; RFC 0012
+            // `<OutputVariableDefinition>` item 6).
+            (JobParameterType::RangeExpr, ExprValue::String(s)) => {
+                let r = s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
+                    self.msg(format_args!(
+                        "{subject} {} is not a valid range expression",
+                        crate::outputs::quote(s)
+                    ))
+                })?;
+                self.check_lengths(c, s.chars().count(), subject)?;
+                self.check_lengths(c, r.to_string().chars().count(), subject)
+            }
+            (JobParameterType::Bool, ExprValue::Bool(_)) => Ok(()),
+            _ => Err(self.type_mismatch(&ty.expr_type(), value, subject)),
+        }
+    }
+
+    fn check_int(&self, c: &OutputConstraints, v: i64, subject: Subject) -> Result<(), String> {
+        if let Some(OutputBound::Int(min)) = &c.min_value {
+            if v < *min {
+                return Err(self.msg(format_args!("{subject} {v} is less than minimum {min}")));
+            }
+        }
+        if let Some(OutputBound::Int(max)) = &c.max_value {
+            if v > *max {
+                return Err(self.msg(format_args!("{subject} {v} exceeds maximum {max}")));
+            }
+        }
+        if let Some(OutputAllowedValues::Int(allowed)) = &c.allowed_values {
+            if !allowed.contains(&v) {
+                return Err(self.msg(format_args!("{subject} {v} is not in allowed values")));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_float(
+        &self,
+        c: &OutputConstraints,
+        v: &Float64,
+        subject: Subject,
+    ) -> Result<(), String> {
+        let f = v.value();
+        // A float keeps its written spelling, which can be as long as the
+        // value's text, so the message shows it cut.
+        let v = crate::outputs::shorten(&v.to_display_string());
+        if let Some(OutputBound::Float(min)) = &c.min_value {
+            if f < min.value() {
+                return Err(self.msg(format_args!("{subject} {v} is less than minimum {min}")));
+            }
+        }
+        if let Some(OutputBound::Float(max)) = &c.max_value {
+            if f > max.value() {
+                return Err(self.msg(format_args!("{subject} {v} exceeds maximum {max}")));
+            }
+        }
+        if let Some(OutputAllowedValues::Float(allowed)) = &c.allowed_values {
+            if !allowed.iter().any(|a| a.value() == f) {
+                return Err(self.msg(format_args!("{subject} {v} is not in allowed values")));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_str(&self, c: &OutputConstraints, s: &str, subject: Subject) -> Result<(), String> {
+        self.check_lengths(c, s.chars().count(), subject)?;
+        if let Some(OutputAllowedValues::String(allowed)) = &c.allowed_values {
+            if !allowed.iter().any(|a| a == s) {
+                return Err(self.msg(format_args!(
+                    "{subject} {} is not in allowed values",
+                    crate::outputs::quote(s)
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_lengths(
+        &self,
+        c: &OutputConstraints,
+        len: usize,
+        subject: Subject,
+    ) -> Result<(), String> {
+        if let Some(min) = c.min_length {
+            if len < min {
+                return Err(self.msg(format_args!(
+                    "{subject} length {len} is less than minimum {min}"
+                )));
+            }
+        }
+        if let Some(max) = c.max_length {
+            if len > max {
+                return Err(self.msg(format_args!("{subject} length {len} exceeds maximum {max}")));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The element type of a list output type, or `None` for a scalar type.
+fn element_type(ty: JobParameterType) -> Option<JobParameterType> {
+    match ty {
+        JobParameterType::ListInt => Some(JobParameterType::Int),
+        JobParameterType::ListFloat => Some(JobParameterType::Float),
+        JobParameterType::ListString => Some(JobParameterType::String),
+        JobParameterType::ListPath => Some(JobParameterType::Path),
+        JobParameterType::ListBool => Some(JobParameterType::Bool),
+        JobParameterType::ListListInt => Some(JobParameterType::ListInt),
+        _ => None,
+    }
+}
+
+/// The binding state of a [`job::Step`](super::Step) (RFC 0011 §Step input
+/// binding).
+///
+/// Step input binding is progressive: a Step's materialization expressions
+/// fall into groups (enablement, Task enumeration, host selection, and the
+/// remaining group), `enableIf` is decided first, and each other group is
+/// evaluated as soon as its own inputs are concrete. While some group has not
+/// evaluated, the Step is [`PendingInputs`](Self::PendingInputs) and its
+/// [`PendingBinding`] records what is known so far.
+// The pending state is much larger than the others. Each `job::Step` holds
+// one `StepBinding`, beside fields of the same size (its parameter space and
+// host requirements), so boxing it would add an indirection to the public
+// type, which callers match and build, without saving much.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum StepBinding {
+    /// Every group has evaluated: the Step is `READY`, and its Tasks may be
+    /// dispatched once its dependencies are satisfied.
+    #[default]
+    Bound,
+    /// Not bound yet (`PENDING_INPUTS`). What is known so far, per group.
+    PendingInputs(PendingBinding),
+    /// The Step's `enableIf` evaluated to `false` (`SKIPPED`): its parameter
+    /// space is empty, so it has zero Tasks.
+    Skipped,
+}
+
+impl StepBinding {
+    /// `true` for [`Bound`](Self::Bound).
+    pub fn is_bound(&self) -> bool {
+        matches!(self, Self::Bound)
+    }
+}
+
+/// What is known of a [`StepBinding::PendingInputs`] Step, per
+/// materialization group (RFC 0011 §Materialization groups).
+///
+/// A pending Step keeps [`job::Step::parameter_space`](super::Step::parameter_space)
+/// and [`host_requirements`](super::Step::host_requirements) as `None`, so a
+/// reader of those fields never sees a partial Step. The materialized
+/// parameter space and the evaluated host requirements wait here, and move
+/// into the Step's own fields when it is bound.
+///
+/// There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBinding {
+    /// `Known(())` once `enableIf` is `true` (or absent).
+    pub enablement: GroupState<()>,
+    /// The materialized parameter space once Tasks are known; `Known(None)`
+    /// for a Step without a `parameterSpace`, which has one Task.
+    pub tasks: GroupState<Option<super::StepParameterSpace>>,
+    /// The evaluated host requirements once known; `Known(None)` for a Step
+    /// without `hostRequirements`.
+    pub host_requirements: GroupState<Option<super::HostRequirements>>,
+    /// The Step Environments' `enableIf` and TEMPLATE-scope fields, and the
+    /// script's TEMPLATE-scope fields. When it is known, each Step
+    /// Environment's `enableIf` is decided, and a disabled one is left out
+    /// of [`step_environments`](super::Step::step_environments); its other
+    /// values are needed only to run the Step's Tasks.
+    pub remaining: GroupState<()>,
+    /// The Step's Environment selection (`CONTROL_FLOW` with `ENV_PARAMS`,
+    /// RFC 0011 `<Environment>` item 3) while its `enableIf` is not decided:
+    /// what job creation worked out for it, which binding applies once the
+    /// `enableIf` is `true`. `None` once it is applied, and for a Step that
+    /// has none to apply. Serialized only when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_selection: Option<EnvironmentSelection>,
+    /// The entered Environments' resolved host requirements, from the
+    /// Step's Environment selection, which its host selection group
+    /// combines with its own (RFC 0011 `<Environment>` item 5). Empty when
+    /// no entered Environment has any, or once the group is known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_host_requirements: Vec<super::EnvironmentHostRequirements>,
+    /// The wrap-hook layers the Step's Sessions enter from the Job's
+    /// Environments, from its Environment selection, which its remaining
+    /// group checks with its Step Environments against the `WRAP_ACTIONS`
+    /// single-layer rule (RFC 0011 `<Environment>` item 6). Empty once the
+    /// group is known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrap_layers: Vec<String>,
+    /// The producers whose `Steps.*` symbols any of the Step's groups read,
+    /// sorted, whether or not that group is known yet: every later binding
+    /// call needs their values again (see
+    /// [`Step::input_producers`](super::Step::input_producers)). Serialized
+    /// only when not empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producers: Vec<String>,
+}
+
+/// A Step's Environment selection (`CONTROL_FLOW` with `ENV_PARAMS`, RFC
+/// 0011 `<Environment>` item 3): the work RFC 0010 does for one Step at
+/// job creation (its Template Schemas §7.4.1 steps 2 and 4 to 8, less the
+/// Step Environments' `enableIf`, the checks over the whole set of the
+/// Step's Environments, and the Step's own host requirements).
+///
+/// Its inputs are concrete at job creation (RFC 0011 `<Environment>` item
+/// 2), so job creation works it out for every Step. It is applied, or its
+/// errors fail the Step, once the Step's `enableIf` is decided `true`; a
+/// Step that is skipped never applies it.
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentSelection {
+    /// The Job Environments the Step's Sessions enter, as
+    /// [`Step::environments`](super::Step::environments) gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<Vec<super::EnvironmentRef>>,
+    /// The Step's effective Environment parameter values, as
+    /// [`Step::environment_parameters`](super::Step::environment_parameters)
+    /// gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_parameters: Option<Vec<super::EnvironmentParameterValues>>,
+    /// The entered Environments' resolved host requirements, for the
+    /// Step's host selection group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_requirements: Vec<super::EnvironmentHostRequirements>,
+    /// The wrap-hook layers the Step's Sessions enter from the Job's
+    /// Environments, for the Step's remaining group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrap_layers: Vec<String>,
+    /// The errors the selection found. Applying it fails the Step with
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<SelectionError>,
+    /// What the errors are reported for: `JobTemplate` when no Environment
+    /// Template is attached, and `Submission` otherwise, as job creation's
+    /// errors are.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+}
+
+impl EnvironmentSelection {
+    /// Whether applying the selection changes nothing: no Environment set
+    /// or values, no host requirements, no wrap layers, and no errors, as
+    /// for a Step of a Job with no Environments.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.environments.is_none()
+            && self.environment_parameters.is_none()
+            && self.host_requirements.is_empty()
+            && self.wrap_layers.is_empty()
+            && self.errors.is_empty()
+    }
+}
+
+/// One error of an [`EnvironmentSelection`], at its path in the
+/// submission.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionError {
+    /// Where the error is, relative to the Job Template when no Environment
+    /// Template is attached, and otherwise starting with the document.
+    pub path: Vec<crate::error::PathElement>,
+    /// What the error is.
+    pub message: String,
+}
+
+/// One entered Environment's resolved host requirements for a Step, as a
+/// source of its combined host requirements (Template Schemas §3.3.3).
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentHostRequirements {
+    /// How a conflict message names the source:
+    /// `<path> -> hostRequirements (Environment '<name>')`.
+    pub label: String,
+    /// The requirements, resolved with the Step's effective values.
+    pub requirements: super::HostRequirements,
+}
+
+/// One materialization group of a [`PendingBinding`].
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GroupState<T> {
+    /// Not evaluated.
+    Waiting {
+        /// The group's own inputs that are not concrete yet: `Steps.*`
+        /// symbols in the form `Steps.<Step>.<Member>.<Name>`, sorted. It
+        /// does not count the enablement group's inputs, which RFC 0011 also
+        /// counts as inputs of every other group, so it is empty for a group
+        /// that waits only for `enableIf`. Every binding call recomputes it,
+        /// also while enablement is still waiting.
+        on: Vec<String>,
+    },
+    /// Evaluated successfully, with its result.
+    Known(T),
+}
+
+impl<T> GroupState<T> {
+    /// `true` for [`Known`](Self::Known).
+    pub fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+}
+
+/// A path-typed `Steps.*` value a Step reads in a host-scope field, stored in
+/// its submission (`Raw`) form as a `string` (or list of strings) in the
+/// Step's `resolved_symtab`, so the session can build the `path` values and
+/// map them forward on the worker host.
+///
+/// Recorded by [`attach_step_inputs`](crate::create_job::attach_step_inputs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathInput {
+    /// The `Steps.*` symbol, such as `Steps.P.RawOutput.X`.
+    pub symbol: String,
+    /// `path`, `list[path]`, or `list[list[path]]` as binding writes it.
+    /// Serialized under the key `type`, as the type's expression-language
+    /// spelling; deserialization accepts any type that spelling parses to.
+    #[serde(rename = "type", with = "expr_type_string")]
+    pub ty: ExprType,
+}
+
+/// Serialize an [`ExprType`] as its spelling (`list[path]`) and parse it back.
+mod expr_type_string {
+    use openjd_expr::ExprType;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(ty: &ExprType, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(ty)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ExprType, D::Error> {
+        let s = String::deserialize(d)?;
+        ExprType::parse(&s).map_err(serde::de::Error::custom)
+    }
+}

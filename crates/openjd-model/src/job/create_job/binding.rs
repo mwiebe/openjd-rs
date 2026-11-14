@@ -1,0 +1,1405 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright by contributors to this project.
+// SPDX-License-Identifier: (Apache-2.0 OR MIT)
+
+//! Progressive step input binding (`CONTROL_FLOW`, RFC 0011 §Step input
+//! binding).
+//!
+//! A Step's materialization expressions fall into four groups (enablement,
+//! Task enumeration, host selection, remaining). [`bind_step`] is the core
+//! that both `create_job` and [`advance_step_binding`] call: it decides the
+//! Step's `enableIf` first, then evaluates every other group whose inputs are
+//! concrete, in that order, and stops at the first group that fails. A
+//! group's inputs come from static analysis ([`StepGroups`]): the `Steps.*`
+//! symbols its fields reference, directly or through the step `let` bindings
+//! it uses, whether or not a branch reading them is ever taken.
+
+use std::collections::{BTreeSet, HashMap};
+
+use openjd_expr::path_mapping::PathFormat;
+use openjd_expr::symbol_table::SymbolTable;
+use openjd_expr::{ExprType, ExprValue};
+
+use super::instantiate::{self, step_path};
+use super::{ranges, EvalBudgets};
+use crate::error::{path_field, path_index, ModelError, PathElement, ValidationErrors};
+use crate::job::{
+    self, binding::steps_key, BindingError, GroupState, MaterializationGroup, PendingBinding,
+    StepBinding, StepInputs,
+};
+use crate::template::expr_field::{self, ExprFieldEval};
+use crate::template::validate_v2023_09::steps_scope::{
+    add_control_flow_scope, StepLocation, StepsFieldScope, StepsReader,
+};
+use crate::template::validate_v2023_09::EffectiveLimits;
+use crate::template::{self, ExprField, JobTemplate, StepEntry, StepTemplate};
+use crate::types::{JobParameterValues, ValidationContext};
+
+/// Everything a binding needs from the Job besides the Step and its inputs.
+pub(super) struct BindContext<'a> {
+    pub(super) jt: &'a JobTemplate,
+    pub(super) ctx: &'a ValidationContext,
+    /// The job symbol table: `Param.*`, `RawParam.*`, and with `EXPR`
+    /// `Job.Name`.
+    pub(super) symtab: &'a SymbolTable,
+    pub(super) has_expr: bool,
+    pub(super) limits: &'a EffectiveLimits,
+    pub(super) budgets: EvalBudgets,
+}
+
+/// The Step a binding is for: its template, where it is, and for a body Step
+/// instance the values of its iteration's loop.
+pub(super) struct StepSite<'a> {
+    pub(super) st: &'a StepTemplate,
+    pub(super) loc: StepLocation,
+    /// `steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step.
+    pub(super) path: Vec<PathElement>,
+    /// How messages name it: the Step's name, or `<Loop>[<N>].<Step>` for a
+    /// body Step instance.
+    pub(super) name: String,
+    /// The `Loop.*` and `RawLoop.*` values of a body Step instance's
+    /// iteration (RFC 0013 §Iterations item 1); `None` for a top-level Step.
+    pub(super) loop_layer: Option<super::loops::LoopLayer<'a>>,
+    /// The Step's Environment selection (RFC 0011 `<Environment>` item 3),
+    /// which [`bind_step`] applies once the Step's `enableIf` is `true`,
+    /// when it is not applied yet: from job creation for a top-level Step,
+    /// or from the loop for a body Step instance. A pending Step keeps its
+    /// own in its [`PendingBinding`].
+    pub(super) selection: Option<&'a job::EnvironmentSelection>,
+}
+
+impl<'a> StepSite<'a> {
+    /// Top-level Step `entry` of `jt`'s `steps`, or the caller error for an
+    /// entry that is not a Step.
+    pub(super) fn top(jt: &'a JobTemplate, entry: usize) -> Result<Self, ModelError> {
+        let st = jt
+            .top_level_step(entry)
+            .ok_or_else(|| no_top_level_step(entry))?;
+        Ok(Self {
+            st,
+            loc: StepLocation::top(entry),
+            path: step_path(entry).to_vec(),
+            name: st.name.clone(),
+            loop_layer: None,
+            selection: None,
+        })
+    }
+}
+
+/// How a group failure reaches the caller of `create_job`.
+#[derive(Debug)]
+pub(super) enum Failure {
+    /// A step `let` error, or the remaining group's check errors: collected
+    /// with the other Steps' errors and reported together.
+    Collected(ValidationErrors),
+    /// An `enableIf`, range, or host requirement error, a repeated
+    /// `CHUNK[INT]` value, or a Task-count limit: reported alone.
+    Abort(ModelError),
+}
+
+/// A failed group.
+#[derive(Debug)]
+pub(super) struct GroupFailure {
+    pub(super) group: MaterializationGroup,
+    pub(super) failure: Failure,
+}
+
+impl GroupFailure {
+    pub(super) fn abort(group: MaterializationGroup, e: ModelError) -> Self {
+        Self {
+            group,
+            failure: Failure::Abort(e),
+        }
+    }
+
+    fn collected(group: MaterializationGroup, errors: ValidationErrors) -> Self {
+        Self {
+            group,
+            failure: Failure::Collected(errors),
+        }
+    }
+
+    pub(super) fn into_binding_error(self, step: &str) -> BindingError {
+        let error = match self.failure {
+            Failure::Abort(e) => e,
+            Failure::Collected(errors) => match errors.into_result("JobTemplate") {
+                Err(e) => e,
+                Ok(()) => ModelError::DecodeValidation(
+                    "internal error: a binding group failed without an error".to_string(),
+                ),
+            },
+        };
+        BindingError {
+            step: step.to_string(),
+            group: self.group,
+            errors: vec![error],
+        }
+    }
+}
+
+// ── Group inputs ──────────────────────────────────────────────────
+
+/// The static inputs of a Step's groups: the `Steps.*` symbols each group
+/// references (as `Steps.<Step>.<Member>.<Name>`), directly or through the
+/// step `let` bindings it uses, and those bindings' indices.
+#[derive(Debug, Default)]
+pub(super) struct StepGroups {
+    enablement: BTreeSet<String>,
+    tasks: BTreeSet<String>,
+    tasks_lets: BTreeSet<usize>,
+    host: BTreeSet<String>,
+    host_lets: BTreeSet<usize>,
+    /// Uses every step `let` binding.
+    remaining: BTreeSet<String>,
+}
+
+impl StepGroups {
+    /// The groups of `st`, a Step of `jt`.
+    pub(super) fn of(jt: &JobTemplate, st: &StepTemplate) -> Self {
+        let lets = LetRefs::of(st);
+        let mut groups = Self::default();
+
+        if let Some(field) = &st.enable_if {
+            // enableIf may not read `let` (validation), so no expansion.
+            groups.enablement = steps_symbols(expr_field::accessed_symbols_with_profile(
+                field,
+                &template_expr_profile(jt),
+            ));
+        }
+
+        let mut tasks_syms = Vec::new();
+        for tp in st
+            .parameter_space
+            .iter()
+            .flat_map(|ps| &ps.task_parameter_definitions)
+        {
+            for fs in instantiate::task_parameter_format_strings(tp) {
+                tasks_syms.extend(fs.accessed_symbols());
+            }
+        }
+        (groups.tasks, groups.tasks_lets) = lets.expand(tasks_syms);
+
+        let mut host_syms = Vec::new();
+        for fs in host_requirement_format_strings(st) {
+            host_syms.extend(fs.accessed_symbols());
+        }
+        (groups.host, groups.host_lets) = lets.expand(host_syms);
+
+        let mut remaining_syms: Vec<String> = Vec::new();
+        for env in st.step_environments.iter().flatten() {
+            if let Some(field) = &env.enable_if {
+                remaining_syms.extend(expr_field::accessed_symbols_with_profile(
+                    field,
+                    &template_expr_profile(jt),
+                ));
+            }
+            if let Some(script) = &env.script {
+                for action in script.actions.iter_actions() {
+                    template_scope_action_symbols(action, &mut remaining_syms);
+                }
+            }
+        }
+        if let Some(script) = st.resolve_syntax_sugar() {
+            template_scope_action_symbols(&script.actions.on_run, &mut remaining_syms);
+        }
+        for refs in &lets.refs {
+            remaining_syms.extend(refs.iter().cloned());
+        }
+        (groups.remaining, _) = lets.expand(remaining_syms);
+        groups
+    }
+
+    /// The producers whose symbols a group of the Step reads, sorted.
+    pub(super) fn producers(&self) -> Vec<String> {
+        let set: BTreeSet<String> = self
+            .all()
+            .filter_map(|s| s.split('.').nth(1).map(str::to_string))
+            .collect();
+        set.into_iter().collect()
+    }
+
+    /// Every `Steps.*` symbol a group of the Step reads.
+    pub(super) fn all(&self) -> impl Iterator<Item = &String> {
+        self.enablement
+            .iter()
+            .chain(&self.tasks)
+            .chain(&self.host)
+            .chain(&self.remaining)
+    }
+}
+
+/// The symbols of each step `let` binding, by index, and the indices of
+/// each name.
+struct LetRefs {
+    refs: Vec<Vec<String>>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl LetRefs {
+    fn of(st: &StepTemplate) -> Self {
+        let mut refs = Vec::new();
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (j, binding) in st.let_bindings.iter().flatten().enumerate() {
+            let (name, symbols) = match binding.split_once('=') {
+                Some((name, expr)) => (
+                    name.trim().to_string(),
+                    openjd_expr::eval::ParsedExpression::new(expr.trim())
+                        .map(|p| p.accessed_symbols().iter().cloned().collect())
+                        .unwrap_or_default(),
+                ),
+                None => (String::new(), Vec::new()),
+            };
+            by_name.entry(name).or_default().push(j);
+            refs.push(symbols);
+        }
+        Self { refs, by_name }
+    }
+
+    /// The `Steps.*` symbols of `symbols` and of the `let` bindings they
+    /// read, transitively, with those bindings' indices.
+    fn expand(&self, symbols: Vec<String>) -> (BTreeSet<String>, BTreeSet<usize>) {
+        let mut steps = BTreeSet::new();
+        let mut lets = BTreeSet::new();
+        let mut work = symbols;
+        while let Some(sym) = work.pop() {
+            if let Some(key) = steps_key(&sym) {
+                steps.insert(key);
+                continue;
+            }
+            let root = sym.split('.').next().unwrap_or(&sym);
+            for &j in self.by_name.get(root).into_iter().flatten() {
+                if lets.insert(j) {
+                    work.extend(self.refs[j].iter().cloned());
+                }
+            }
+        }
+        (steps, lets)
+    }
+}
+
+/// The indices of `st`'s `let` bindings that read no `Steps.*`, `Loop.*`,
+/// or `RawLoop.*` symbol, directly or through another binding: those an
+/// `environment:` entry may read (RFC 0011 `<Environment>` item 2), which
+/// are concrete at job creation.
+pub(super) fn creation_scope_lets(st: &StepTemplate) -> BTreeSet<usize> {
+    let lets = LetRefs::of(st);
+    let run_time = |k: usize| {
+        lets.refs[k]
+            .iter()
+            .any(|s| s.starts_with("Loop.") || s.starts_with("RawLoop."))
+    };
+    (0..lets.refs.len())
+        .filter(|&j| {
+            let (steps, used) = lets.expand(lets.refs[j].clone());
+            steps.is_empty() && !run_time(j) && !used.into_iter().any(run_time)
+        })
+        .collect()
+}
+
+/// The scope of `st`'s `environment:` entries at job creation (RFC 0011
+/// `<Environment>` item 2): the job table, `Step.Name`, and the Step's
+/// [`creation_scope_lets`]. A binding that fails here is left out; its
+/// error is reported by the group that evaluates it.
+pub(super) fn creation_scope_symtab(
+    st: &StepTemplate,
+    symtab: &SymbolTable,
+    has_expr: bool,
+    ctx: &ValidationContext,
+) -> Result<SymbolTable, ModelError> {
+    let mut out = symtab.clone();
+    if !has_expr {
+        return Ok(out);
+    }
+    out.set("Step.Name", ExprValue::String(st.name.clone()))?;
+    if let Some(bindings) = &st.let_bindings {
+        let include = creation_scope_lets(st);
+        let mut scratch = ValidationErrors::default();
+        crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
+            bindings,
+            &[],
+            &mut out,
+            ctx,
+            openjd_expr::HostContext::None,
+            &mut scratch,
+            |j| include.contains(&j),
+        );
+    }
+    Ok(out)
+}
+
+pub(super) fn steps_symbols(symbols: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    symbols.into_iter().filter_map(|s| steps_key(&s)).collect()
+}
+
+/// The format strings of a Step's `hostRequirements`.
+fn host_requirement_format_strings(st: &StepTemplate) -> Vec<&openjd_expr::FormatString> {
+    let mut fields = Vec::new();
+    if let Some(hr) = &st.host_requirements {
+        for amt in hr.amounts.iter().flatten() {
+            fields.push(&amt.name);
+            fields.extend(amt.min.iter());
+            fields.extend(amt.max.iter());
+        }
+        for attr in hr.attributes.iter().flatten() {
+            fields.push(&attr.name);
+            for values in [&attr.any_of, &attr.all_of].into_iter().flatten() {
+                match values {
+                    template::AttributeValues::List(items) => fields.extend(items),
+                    template::AttributeValues::Expression(fs) => fields.push(fs),
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// The symbols of an action's TEMPLATE-scope fields (Template Schemas §5:
+/// plain `@fmtstring`, not `@fmtstring[host]`): `timeout`, and the
+/// cancelation's `notifyPeriodInSeconds` and format-string `mode`.
+fn template_scope_action_symbols(action: &template::Action, out: &mut Vec<String>) {
+    if let Some(t) = &action.timeout {
+        out.extend(t.accessed_symbols());
+    }
+    match &action.cancelation {
+        Some(template::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(n),
+        }) => out.extend(n.accessed_symbols()),
+        Some(template::CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => {
+            out.extend(mode.accessed_symbols());
+            if let Some(n) = notify_period_in_seconds {
+                out.extend(n.accessed_symbols());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The symbols of `inputs` that are not concrete, in sorted order.
+pub(super) fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<String> {
+    symbols
+        .iter()
+        .filter(|s| !inputs.is_concrete(s))
+        .cloned()
+        .collect()
+}
+
+// ── The core ──────────────────────────────────────────────────────
+
+/// Bind Step `step_index` as far as `inputs` allow (RFC 0011 §How a Step is
+/// bound): the Step as it now is, `PendingInputs` (with more known than
+/// `prior`, or the same), `Bound`, or `Skipped`; or the first group that
+/// failed.
+///
+/// `prior` is the Step from an earlier call, whose known groups are kept
+/// rather than evaluated again; `None` at job creation. `committed_task_count`
+/// is the number of Tasks of the other Steps whose Tasks are known, for the
+/// Job-total Task-count limit. It is a `u128`, like the total without
+/// `CONTROL_FLOW`, so that the total is compared and reported exactly.
+pub(super) fn bind_step(
+    cx: &BindContext<'_>,
+    site: &StepSite<'_>,
+    prior: Option<&job::Step>,
+    inputs: &StepInputs,
+    committed_task_count: u128,
+) -> Result<job::Step, GroupFailure> {
+    use MaterializationGroup::*;
+    let st = site.st;
+    let groups = StepGroups::of(cx.jt, st);
+    let path = site.path.as_slice();
+    let prior_pending = match prior.map(|s| &s.binding) {
+        Some(StepBinding::PendingInputs(p)) => Some(p),
+        _ => None,
+    };
+
+    // `inputs` must hold every value given in earlier calls: a known group
+    // is not evaluated again, but the `let` bindings are, and the Step's
+    // table is rebuilt from `inputs` alone.
+    if let Some(p) = prior_pending {
+        let known: [(MaterializationGroup, bool, &BTreeSet<String>); 4] = [
+            (Enablement, p.enablement.is_known(), &groups.enablement),
+            (TaskEnumeration, p.tasks.is_known(), &groups.tasks),
+            (HostSelection, p.host_requirements.is_known(), &groups.host),
+            (Remaining, p.remaining.is_known(), &groups.remaining),
+        ];
+        for (group, is_known, symbols) in known {
+            if let Some(sym) = is_known
+                .then(|| missing(symbols, inputs))
+                .and_then(|m| m.into_iter().next())
+            {
+                return Err(GroupFailure::abort(
+                    group,
+                    ModelError::Compatibility(format!(
+                        "the {group} group of Step '{}' was evaluated with '{sym}', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped.",
+                        site.name
+                    )),
+                ));
+            }
+        }
+    }
+
+    let mut step = instantiate::step_shell(st).map_err(|e| GroupFailure::abort(Enablement, e))?;
+    // What an earlier call decided: the Environment selection with the
+    // enablement group, and the Step Environments with the remaining group.
+    let mut environment_host_requirements = Vec::new();
+    let mut wrap_layers = Vec::new();
+    let mut environment_selection = site.selection.filter(|s| !s.is_empty()).cloned();
+    if let (Some(prior), Some(p)) = (prior, prior_pending) {
+        step.environments = prior.environments.clone();
+        step.environment_parameters = prior.environment_parameters.clone();
+        environment_host_requirements = p.environment_host_requirements.clone();
+        wrap_layers = p.wrap_layers.clone();
+        environment_selection = p.environment_selection.clone();
+        if p.remaining.is_known() {
+            step.step_environments = prior.step_environments.clone();
+        }
+    }
+
+    // The Step's table: the job table, `Step.Name`, and the concrete
+    // `Steps.*` values its groups read.
+    let mut step_symtab = cx.symtab.clone();
+    let internal = |e: openjd_expr::symbol_table::SymbolTableError| {
+        GroupFailure::abort(Enablement, ModelError::from(e))
+    };
+    if cx.has_expr {
+        step_symtab
+            .set("Step.Name", ExprValue::String(st.name.clone()))
+            .map_err(internal)?;
+    }
+    if let Some(layer) = &site.loop_layer {
+        layer.set_symbols(&mut step_symtab).map_err(internal)?;
+    }
+    for sym in groups.all() {
+        if let Some(v) = inputs.get(sym) {
+            step_symtab.set(sym, v.clone()).map_err(internal)?;
+        }
+    }
+
+    // ── Enablement ──
+    let enablement_known = prior_pending.is_some_and(|p| p.enablement.is_known());
+    if !enablement_known {
+        let waiting = missing(&groups.enablement, inputs);
+        if !waiting.is_empty() {
+            step.binding = StepBinding::PendingInputs(PendingBinding {
+                enablement: GroupState::Waiting { on: waiting },
+                tasks: GroupState::Waiting {
+                    on: missing(&groups.tasks, inputs),
+                },
+                host_requirements: GroupState::Waiting {
+                    on: missing(&groups.host, inputs),
+                },
+                remaining: GroupState::Waiting {
+                    on: missing(&groups.remaining, inputs),
+                },
+                environment_selection,
+                environment_host_requirements: Vec::new(),
+                wrap_layers: Vec::new(),
+                producers: groups.producers(),
+            });
+            return Ok(step);
+        }
+        let enabled = evaluate_condition(
+            cx.jt,
+            st.enable_if.as_ref(),
+            &step_symtab,
+            cx.budgets,
+            &path_field(path, "enableIf"),
+        )
+        .map_err(|e| GroupFailure::abort(Enablement, e))?;
+        if !enabled {
+            // A skipped Step has no Environment selection (RFC 0011
+            // `<Environment>` item 3).
+            step.binding = StepBinding::Skipped;
+            return Ok(step);
+        }
+        // RFC 0011 `<Environment>` item 3: the Environment selection is
+        // part of the enablement group, made once `enableIf` is `true`.
+        if let Some(selection) = environment_selection.take() {
+            if !selection.errors.is_empty() {
+                return Err(GroupFailure::abort(Enablement, selection_error(&selection)));
+            }
+            step.environments = selection.environments;
+            step.environment_parameters = selection.environment_parameters;
+            environment_host_requirements = selection.host_requirements;
+            wrap_layers = selection.wrap_layers;
+        }
+    }
+
+    let mut lets = LetEvaluator::new(cx, st, path);
+
+    // ── Task enumeration ──
+    let tasks = match prior_pending.map(|p| &p.tasks) {
+        Some(GroupState::Known(space)) => GroupState::Known(space.clone()),
+        _ => {
+            let waiting = missing(&groups.tasks, inputs);
+            if waiting.is_empty() {
+                lets.evaluate(&groups.tasks_lets, &mut step_symtab)
+                    .map_err(|e| GroupFailure::collected(TaskEnumeration, e))?;
+                let space = enumerate_tasks(cx, site, &step_symtab, committed_task_count)
+                    .map_err(|e| GroupFailure::abort(TaskEnumeration, e))?;
+                GroupState::Known(space)
+            } else {
+                GroupState::Waiting { on: waiting }
+            }
+        }
+    };
+
+    // ── Host selection ──
+    let host_requirements = match prior_pending.map(|p| &p.host_requirements) {
+        Some(GroupState::Known(hr)) => GroupState::Known(hr.clone()),
+        _ => {
+            let waiting = missing(&groups.host, inputs);
+            if waiting.is_empty() {
+                lets.evaluate(&groups.host_lets, &mut step_symtab)
+                    .map_err(|e| GroupFailure::collected(HostSelection, e))?;
+                let own = st
+                    .host_requirements
+                    .as_ref()
+                    .map(|hr| {
+                        super::host_requirements::resolve_host_requirements(
+                            hr,
+                            &step_symtab,
+                            cx.ctx,
+                            &super::host_requirements::Site::step_at(path, &st.name),
+                            cx.budgets,
+                            true,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|e| {
+                        // A resolution error names the field in its text;
+                        // give it the Step's path too.
+                        let e = match e {
+                            e @ ModelError::ModelValidation(_) => e,
+                            e => located(&path_field(path, "hostRequirements"), &e),
+                        };
+                        GroupFailure::abort(HostSelection, e)
+                    })?
+                    .and_then(|r| r.requirements);
+                // RFC 0011 `<Environment>` item 5: the Step's own
+                // requirements are combined with its Environments' here.
+                let mut conflicts = ValidationErrors::default();
+                let hr = super::host_requirements::combine_with_environments(
+                    &site.name,
+                    path,
+                    own,
+                    &environment_host_requirements,
+                    &mut conflicts,
+                );
+                if !conflicts.is_empty() {
+                    return Err(GroupFailure::abort(
+                        HostSelection,
+                        match conflicts.into_result("JobTemplate") {
+                            Err(e) => e,
+                            Ok(()) => unreachable!("a conflict was added"),
+                        },
+                    ));
+                }
+                environment_host_requirements.clear();
+                GroupState::Known(hr)
+            } else {
+                GroupState::Waiting { on: waiting }
+            }
+        }
+    };
+
+    // ── Remaining ──
+    let remaining = match prior_pending.map(|p| &p.remaining) {
+        Some(GroupState::Known(())) => GroupState::Known(()),
+        _ => {
+            let waiting = missing(&groups.remaining, inputs);
+            if waiting.is_empty() {
+                lets.evaluate_all(&mut step_symtab)
+                    .map_err(|e| GroupFailure::collected(Remaining, e))?;
+                let mut errors = evaluate_remaining(cx, site, &step_symtab, &mut step)
+                    .map_err(|e| GroupFailure::abort(Remaining, e))?;
+                // RFC 0011 `<Environment>` item 6: the single-layer rule,
+                // now that the Step Environments are decided.
+                if let Some(message) =
+                    super::external::step_wrap_layers_error(std::mem::take(&mut wrap_layers), &step)
+                {
+                    errors.add(path, message);
+                }
+                if !errors.is_empty() {
+                    return Err(GroupFailure::collected(Remaining, errors));
+                }
+                GroupState::Known(())
+            } else {
+                GroupState::Waiting { on: waiting }
+            }
+        }
+    };
+
+    match (tasks, host_requirements, remaining) {
+        (GroupState::Known(space), GroupState::Known(hr), GroupState::Known(())) => {
+            // Every binding has evaluated successfully in this call or an
+            // earlier one; one not evaluated in this call gives the same
+            // value again.
+            lets.evaluate_all(&mut step_symtab)
+                .map_err(|e| GroupFailure::collected(Remaining, e))?;
+            step.parameter_space = space;
+            step.host_requirements = hr;
+            step.resolved_symtab = Some(instantiate::resolved_step_symtab(&step, st, &step_symtab));
+            if let Some(layer) = &site.loop_layer {
+                layer
+                    .store_path_values(&mut step, st)
+                    .map_err(|e| GroupFailure::abort(Remaining, e))?;
+            }
+            step.binding = StepBinding::Bound;
+            Ok(step)
+        }
+        (tasks, host_requirements, remaining) => {
+            step.binding = StepBinding::PendingInputs(PendingBinding {
+                enablement: GroupState::Known(()),
+                tasks,
+                host_requirements,
+                remaining,
+                environment_selection: None,
+                environment_host_requirements,
+                wrap_layers,
+                producers: groups.producers(),
+            });
+            Ok(step)
+        }
+    }
+}
+
+/// The errors of an Environment selection, which fail its Step.
+fn selection_error(selection: &job::EnvironmentSelection) -> ModelError {
+    let mut errors = ValidationErrors::default();
+    for e in &selection.errors {
+        errors.add(&e.path, e.message.clone());
+    }
+    match errors.into_result(&selection.model) {
+        Err(e) => e,
+        Ok(()) => unreachable!("a selection with errors was given"),
+    }
+}
+
+/// The Expression Language profile of `jt`'s template scope, with no host
+/// context: the profile template validation checks its expression fields
+/// with, and so the one job creation parses and evaluates them with.
+pub(super) fn template_expr_profile(jt: &JobTemplate) -> openjd_expr::ExprProfile {
+    jt.profile().to_expr_profile(openjd_expr::HostContext::None)
+}
+
+/// Evaluate a condition of `jt`: a Step's or a loop's `enableIf`, or a loop's
+/// `while` or `until`. Each is an expression field of type `bool` (RFC 0010's
+/// Template Schemas §7.6), so a `null` result, or a result of another type,
+/// is an error reported at `path`. `None` (the field is absent) is `true`.
+pub(super) fn evaluate_condition(
+    jt: &JobTemplate,
+    field: Option<&ExprField>,
+    symtab: &SymbolTable,
+    budgets: EvalBudgets,
+    path: &[PathElement],
+) -> Result<bool, ModelError> {
+    let Some(field) = field else {
+        return Ok(true);
+    };
+    let profile = template_expr_profile(jt);
+    let library = openjd_expr::FunctionLibrary::for_profile(&profile);
+    let ev = ExprFieldEval {
+        profile: &profile,
+        library: &library,
+        memory_limit: budgets.memory,
+        operation_limit: budgets.operations,
+    };
+    match expr_field::resolve(field, &ExprType::BOOL, symtab, &ev) {
+        Ok(ExprValue::Bool(b)) => Ok(b),
+        // `resolve` returns only values that fit `bool`.
+        Ok(other) => unreachable!("an expression field of type bool resolved to {other:?}"),
+        Err(message) => Err(error_at_path(path, expr_field::with_source(message, field))),
+    }
+}
+
+/// A validation error with one `message` at `path`.
+fn error_at_path(path: &[PathElement], message: String) -> ModelError {
+    let mut errors = ValidationErrors::default();
+    errors.add(path, message);
+    match errors.into_result("JobTemplate") {
+        Err(e) => e,
+        Ok(()) => unreachable!("one error was added"),
+    }
+}
+
+/// The Task enumeration group: materialize the parameter space, check its
+/// combination, its distinct `CHUNK[INT]` values in a Step with outputs, and
+/// the Task-count limits. `None` for a Step without a `parameterSpace`.
+///
+/// Every error is located (RFC 0011 §How a Step is bound item 3: the message
+/// names the field and the expression): a range or `chunks` error at
+/// `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
+/// `-> chunks`), a combination error at `steps[i] -> parameterSpace`, and a
+/// Task-count limit at `steps[i]`.
+fn enumerate_tasks(
+    cx: &BindContext<'_>,
+    site: &StepSite<'_>,
+    step_symtab: &SymbolTable,
+    committed_task_count: u128,
+) -> Result<Option<job::StepParameterSpace>, ModelError> {
+    let st = site.st;
+    let step_path = &site.path;
+    let ps_path = path_field(step_path, "parameterSpace");
+    let tpd_path = path_field(&ps_path, "taskParameterDefinitions");
+    let space = st
+        .parameter_space
+        .as_ref()
+        .map(|ps| {
+            ranges::resolve_parameter_space_by_field(
+                ps,
+                step_symtab,
+                cx.limits,
+                cx.budgets,
+                ranges::RangeRules {
+                    expr: cx.has_expr,
+                    control_flow: true,
+                },
+            )
+        })
+        .transpose()
+        .map_err(|(k, e)| located(&path_field(&path_index(&tpd_path, k), e.field), &e.error))?;
+    if let Some(space) = &space {
+        // Association length mismatches and the like.
+        crate::step_param_space::StepParameterSpaceIterator::new(space)
+            .map_err(|e| located(&ps_path, &e))?;
+        if st.output_variables.is_some() {
+            check_chunk_values_distinct(space)
+                .map_err(|(k, e)| located(&path_field(&path_index(&tpd_path, k), "range"), &e))?;
+        }
+    }
+    let task_count = job::binding::task_count(space.as_ref())?;
+    check_task_count(cx.ctx, &site.name, task_count, committed_task_count)
+        .map_err(|e| located(step_path, &e))?;
+    Ok(space)
+}
+
+/// `error` as a one-error `ModelValidation` at `path`, its message without
+/// the `ModelError` variant's prefix.
+pub(super) fn located(path: &[PathElement], error: &ModelError) -> ModelError {
+    let message = match error {
+        ModelError::DecodeValidation(m) => m.clone(),
+        ModelError::Expression(e) => e.to_string(),
+        e @ ModelError::FormatStringError { .. } => {
+            let text = e.to_string();
+            text.strip_prefix("Format string error: ")
+                .map(str::to_string)
+                .unwrap_or(text)
+        }
+        ModelError::ModelValidation(errors) => errors
+            .errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    };
+    let mut errors = ValidationErrors::default();
+    errors.add(path, message);
+    match errors.into_result("JobTemplate") {
+        Err(e) => e,
+        Ok(()) => unreachable!("one error was added"),
+    }
+}
+
+/// In a Step that declares `outputVariables`, a `CHUNK[INT]` range must
+/// have distinct values, so that a task selector names one Task (RFC 0012
+/// §Chunked Steps). A range expression's values are distinct by
+/// construction. The error names the parameter's index.
+fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (usize, ModelError)> {
+    for (k, param) in space.task_parameter_definitions.values().enumerate() {
+        let job::TaskParameter::ChunkInt {
+            range: job::TaskParamRange::List(values),
+            ..
+        } = param
+        else {
+            continue;
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut repeated = BTreeSet::new();
+        for v in values {
+            if !seen.insert(*v) {
+                repeated.insert(*v);
+            }
+        }
+        if !repeated.is_empty() {
+            let values: Vec<String> = repeated.iter().map(i64::to_string).collect();
+            let (noun, verb) = if values.len() == 1 {
+                ("value", "appears")
+            } else {
+                ("values", "appear")
+            };
+            return Err((
+                k,
+                ModelError::DecodeValidation(format!(
+                    "must have distinct values in a Step with outputVariables, so that each value names one Task; {noun} {} {verb} more than once.",
+                    values.join(", ")
+                )),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The caller's Task-count limits, checked when a Step's Tasks become known
+/// (RFC 0011 §Limits item 1). The total is summed in `u128`, as without
+/// `CONTROL_FLOW`, so it is compared and reported exactly.
+pub(super) fn check_task_count(
+    ctx: &ValidationContext,
+    step: &str,
+    task_count: u64,
+    committed_task_count: u128,
+) -> Result<(), ModelError> {
+    check_step_task_count(ctx, step, task_count)?;
+    if let Some(max) = ctx.caller_limits.max_task_count {
+        let total = committed_task_count + u128::from(task_count);
+        if total > u128::from(max) {
+            return Err(ModelError::ModelValidation(ValidationErrors::single(format!(
+                "Total task count ({total}) exceeds caller limit of {max}: Step '{step}' has {task_count} Tasks, and the Steps whose Tasks are known before it have {committed_task_count}."
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// `CallerLimits::max_step_task_count`.
+pub(super) fn check_step_task_count(
+    ctx: &ValidationContext,
+    step: &str,
+    task_count: u64,
+) -> Result<(), ModelError> {
+    if let Some(max) = ctx.caller_limits.max_step_task_count {
+        if task_count > max {
+            return Err(ModelError::ModelValidation(ValidationErrors::single(format!(
+                "Step '{step}' has {task_count} Tasks, which exceeds the caller limit of {max} Tasks per Step."
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// The remaining group: each Step Environment's `enableIf` (leaving a
+/// disabled one out of `step`), then the carried-forward checks of the
+/// script and of each enabled Step Environment. Returns the errors, which `create_job`
+/// collects; `Err` only for an internal symbol-table failure.
+fn evaluate_remaining(
+    cx: &BindContext<'_>,
+    site: &StepSite<'_>,
+    step_symtab: &SymbolTable,
+    step: &mut job::Step,
+) -> Result<ValidationErrors, ModelError> {
+    let st = site.st;
+    let path = site.path.as_slice();
+    let steps_scope = Some((cx.jt, site.loc));
+    let mut template_check_symtab = step_symtab.clone();
+    add_control_flow_scope(
+        &mut template_check_symtab,
+        cx.jt,
+        StepsReader::Step(site.loc),
+        StepsFieldScope::Template,
+    )?;
+    let mut errors = ValidationErrors::default();
+    instantiate::check_step_script(
+        st,
+        path,
+        step_symtab,
+        &template_check_symtab,
+        steps_scope,
+        cx.has_expr,
+        cx.ctx,
+        &mut errors,
+    )?;
+    let mut enabled_envs = Vec::new();
+    for (j, env) in st.step_environments.iter().flatten().enumerate() {
+        let env_path = path_index(&path_field(path, "stepEnvironments"), j);
+        // RFC 0011 `<Environment>` item 4: a Step Environment's `enableIf`
+        // (RFC 0010's expression field) is decided in the remaining group.
+        let enabled = match evaluate_condition(
+            cx.jt,
+            env.enable_if.as_ref(),
+            step_symtab,
+            cx.budgets,
+            &path_field(&env_path, "enableIf"),
+        ) {
+            Ok(enabled) => enabled,
+            Err(ModelError::ModelValidation(e)) => {
+                errors.errors.extend(e.errors);
+                enabled_envs.push(true);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        enabled_envs.push(enabled);
+        if !enabled {
+            // A disabled Environment is never entered, so its fields never
+            // apply.
+            continue;
+        }
+        instantiate::check_step_environment(
+            env,
+            path,
+            j,
+            step_symtab,
+            &template_check_symtab,
+            steps_scope,
+            cx.has_expr,
+            cx.limits,
+            cx.ctx,
+            &mut errors,
+        )?;
+    }
+    // A Step Environment whose `enableIf` is `false` is not entered by the
+    // Step's Sessions, so it is left out of the Step, as without
+    // CONTROL_FLOW (RFC 0010's Template Schemas §4 item 6).
+    step.step_environments =
+        instantiate::filter_step_environments(step.step_environments.take(), &enabled_envs);
+    Ok(errors)
+}
+
+/// Evaluates step `let` bindings on demand, each at most once per call.
+struct LetEvaluator<'a> {
+    cx: &'a BindContext<'a>,
+    st: &'a StepTemplate,
+    let_path: Vec<PathElement>,
+    evaluated: BTreeSet<usize>,
+}
+
+impl<'a> LetEvaluator<'a> {
+    fn new(cx: &'a BindContext<'a>, st: &'a StepTemplate, step_path: &[PathElement]) -> Self {
+        Self {
+            cx,
+            st,
+            let_path: path_field(step_path, "let"),
+            evaluated: BTreeSet::new(),
+        }
+    }
+
+    /// Evaluate the bindings `indices` not evaluated yet into `symtab`, in
+    /// declaration order. Their errors, at `steps[i] -> let[j]`, if any.
+    fn evaluate(
+        &mut self,
+        indices: &BTreeSet<usize>,
+        symtab: &mut SymbolTable,
+    ) -> Result<(), ValidationErrors> {
+        let Some(bindings) = &self.st.let_bindings else {
+            return Ok(());
+        };
+        if !self.cx.has_expr {
+            return Ok(());
+        }
+        let todo: BTreeSet<usize> = indices.difference(&self.evaluated).copied().collect();
+        if todo.is_empty() {
+            return Ok(());
+        }
+        let mut errors = ValidationErrors::default();
+        crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
+            bindings,
+            &self.let_path,
+            symtab,
+            self.cx.ctx,
+            openjd_expr::HostContext::None,
+            &mut errors,
+            |j| todo.contains(&j),
+        );
+        self.evaluated.extend(todo);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn evaluate_all(&mut self, symtab: &mut SymbolTable) -> Result<(), ValidationErrors> {
+        let all: BTreeSet<usize> = (0..self.st.let_bindings.as_ref().map_or(0, Vec::len)).collect();
+        self.evaluate(&all, symtab)
+    }
+}
+
+/// The caller error for an entry of the template's `steps` that is not a
+/// Step.
+fn no_top_level_step(entry: usize) -> ModelError {
+    ModelError::Compatibility(format!(
+        "entry {entry} of the template's steps is not a Step; pass the template the Job was created from."
+    ))
+}
+
+/// The index in the template's `steps` of the `k`-th top-level Step, which
+/// is `job.steps[k]` of a Job created from it.
+pub(super) fn step_entry_index(jt: &JobTemplate, k: usize) -> Option<usize> {
+    jt.steps
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StepEntry::Step(_)))
+        .nth(k)
+        .map(|(i, _)| i)
+}
+
+// ── create_job's inputs ───────────────────────────────────────────
+
+/// An entry of the template's `steps` that `create_job` has instantiated.
+// Nearly every entry is a Step, and these live only while `create_job` runs.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub(super) enum Built {
+    Step(job::Step),
+    Loop(job::Loop),
+}
+
+/// The `Steps.*` values that are concrete at job creation for an entry that
+/// depends on `deps` and whose groups read `symbols`
+/// (`Steps.<Step>.<Member>.<Name>`), from the entries already instantiated
+/// (`built`, by template index): the `null`s of a skipped producer, and the
+/// `TaskParam`s of a producer Step whose Tasks are known.
+pub(super) fn creation_inputs<'s>(
+    jt: &JobTemplate,
+    deps: &[template::StepDependency],
+    symbols: impl Iterator<Item = &'s String>,
+    built: &[Option<Built>],
+) -> Result<StepInputs, ModelError> {
+    // Only the producers the groups read, and a producer's TaskParam lists
+    // only when they read its TaskParam or TaskRawParam: building them walks
+    // the producer's whole parameter space, and its Output is never concrete
+    // here except as a skipped producer's `null`.
+    let mut read = BTreeSet::new();
+    let mut reads_task_params = BTreeSet::new();
+    for s in symbols {
+        let mut parts = s.split('.').skip(1);
+        let (Some(p), Some(member)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if matches!(member, "TaskParam" | "TaskRawParam") {
+            reads_task_params.insert(p.to_string());
+        }
+        read.insert(p.to_string());
+    }
+    let mut inputs = StepInputs::new();
+    for dep in deps {
+        let Some(name) = dep.step().filter(|name| read.contains(*name)) else {
+            continue;
+        };
+        let Some(producer) = jt
+            .steps
+            .iter()
+            .position(|s| s.name() == name)
+            .and_then(|i| built[i].as_ref())
+        else {
+            continue;
+        };
+        match producer {
+            Built::Step(producer) => match &producer.binding {
+                StepBinding::Skipped => {
+                    inputs.add_producer(producer, job::ProducerState::Skipped)?
+                }
+                _ if producer.tasks_known().is_some()
+                    && reads_task_params.contains(&producer.name) =>
+                {
+                    inputs.add_producer(producer, job::ProducerState::TasksKnown)?
+                }
+                _ => {}
+            },
+            Built::Loop(producer) => {
+                if matches!(producer.binding, job::LoopBinding::Skipped) {
+                    inputs.add_loop_producer(producer, job::LoopProducerState::Skipped)?;
+                }
+            }
+        }
+    }
+    Ok(inputs)
+}
+
+/// [`creation_inputs`] for top-level Step `st`.
+pub(super) fn step_creation_inputs(
+    jt: &JobTemplate,
+    st: &StepTemplate,
+    built: &[Option<Built>],
+) -> Result<StepInputs, ModelError> {
+    let groups = StepGroups::of(jt, st);
+    creation_inputs(
+        jt,
+        st.dependencies.as_deref().unwrap_or(&[]),
+        groups.all(),
+        built,
+    )
+}
+
+/// The job symbol table a Job was created with (`Param.*`, `RawParam.*`, and
+/// with `EXPR` `Job.Name` and `Job.EnvNames`, the names of the Job's
+/// Environments in its Environment order, RFC 0010's Template Schemas
+/// §7.3.1), and whether `EXPR` is enabled.
+pub(super) fn job_symbol_table(
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+) -> Result<(SymbolTable, bool), ModelError> {
+    let has_expr = ctx
+        .profile
+        .has_extension(crate::types::ModelExtension::Expr);
+    let mut symtab = super::build_symbol_table(job_parameter_values)?;
+    if has_expr {
+        symtab.set("Job.Name", ExprValue::String(job.name.clone()))?;
+        let names: Vec<String> = job
+            .job_environments
+            .iter()
+            .flatten()
+            .map(|e| e.name.clone())
+            .collect();
+        symtab.set("Job.EnvNames", super::external::env_names_value(&names))?;
+    }
+    Ok((symtab, has_expr))
+}
+
+// ── Public API ────────────────────────────────────────────────────
+
+/// Advance the binding of pending Step `step_index` of `job` with the
+/// `Steps.*` values in `inputs` (RFC 0011 §How a Step is bound).
+///
+/// Evaluates every group of the Step that has not evaluated and whose
+/// inputs are now concrete, in RFC 0011's order: enablement first, and
+/// nothing else until it is `true`, at which point the Step's Environment
+/// selection is applied; then Task enumeration (materialize the parameter
+/// space, check distinct `CHUNK[INT]` values in a Step with outputs and
+/// the Task-count limits); then host selection (combined with the entered
+/// Environments' requirements); then the remaining group (each Step
+/// Environment's `enableIf`, a disabled one being left out of
+/// [`step_environments`](job::Step::step_environments), the carried-forward
+/// checks of the script and the enabled Environments, and the
+/// single-wrap-layer rule). It stops at the first group
+/// that fails and returns it: the Step is `FAILED` at once, whatever its
+/// other groups wait for.
+///
+/// Returns the Step with more known, `Bound` once every group has evaluated
+/// (its parameter space and host requirements moved into its own fields and
+/// its `resolved_symtab` built), or `Skipped` when `enableIf` is `false`.
+/// Called with no new inputs, it returns the Step unchanged; called on a
+/// bound or skipped Step, it returns it unchanged. The caller swaps the
+/// result into its Job, and dispatches Tasks only of a bound Step, so
+/// dispatch stays atomic.
+///
+/// `job_template`, `job_parameter_values`, and `ctx` are the ones `job` was
+/// created from. `committed_task_count` is the number of Tasks of the other
+/// Steps whose Tasks are known, for `CallerLimits::max_task_count`.
+///
+/// `inputs` must hold, on every call, each producer in the Step's
+/// [`input_producers()`](job::Step::input_producers) whose state is known:
+/// whose Tasks are known ([`ProducerState::TasksKnown`](job::ProducerState::TasksKnown)),
+/// or that has succeeded or been skipped. That includes producers whose
+/// values `create_job` used, and those of groups already known, because Step
+/// `let` bindings are evaluated on demand, only those the group being
+/// evaluated uses, and are evaluated again in later calls rather than
+/// cached; this gives the same values as long as the inputs do. A known
+/// group's input missing from `inputs` is refused rather than reported as
+/// the Step failing. A bound
+/// Step that reads `Steps.*` in its script or Step Environments needs
+/// [`attach_step_inputs`] before its Tasks run.
+///
+/// Caller errors, which say nothing about the Step, are a `BindingError`
+/// whose error is a [`ModelError::Compatibility`]: a `step_index` past the
+/// Job's Steps (with `step` `#<index>`), a template whose Step at that index
+/// has another name, and the missing input above. Every other
+/// `BindingError` fails the Step.
+pub fn advance_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    step_index: usize,
+    inputs: &StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, BindingError> {
+    let misuse = |step: &str, message: String| BindingError {
+        step: step.to_string(),
+        group: MaterializationGroup::Enablement,
+        errors: vec![ModelError::Compatibility(message)],
+    };
+    let Some(step) = job.steps.get(step_index) else {
+        return Err(misuse(
+            &format!("#{step_index}"),
+            format!(
+                "the Job has {} Steps, so it has no Step {step_index}.",
+                job.steps.len()
+            ),
+        ));
+    };
+    if !matches!(step.binding, StepBinding::PendingInputs(_)) {
+        return Ok(step.clone());
+    }
+    let entry = step_entry_index(job_template, step_index);
+    let site = match entry.map(|e| StepSite::top(job_template, e)) {
+        Some(Ok(site)) if site.st.name == step.name => site,
+        _ => {
+            return Err(misuse(
+                &step.name,
+                format!(
+                    "Step {step_index} of the Job is '{}', but the template's is not; pass the template the Job was created from.",
+                    step.name
+                ),
+            ))
+        }
+    };
+    let to_err = |e: ModelError| BindingError {
+        step: step.name.clone(),
+        group: MaterializationGroup::Enablement,
+        errors: vec![e],
+    };
+    let (symtab, has_expr) = job_symbol_table(job_parameter_values, ctx, job).map_err(to_err)?;
+    let limits = EffectiveLimits::from_context(ctx);
+    let cx = BindContext {
+        jt: job_template,
+        ctx,
+        symtab: &symtab,
+        has_expr,
+        limits: &limits,
+        budgets: EvalBudgets::from_ctx(ctx),
+    };
+    bind_step(
+        &cx,
+        &site,
+        Some(step),
+        inputs,
+        u128::from(committed_task_count),
+    )
+    .map_err(|f| f.into_binding_error(&step.name))
+}
+
+/// Merge the concrete `Steps.*` values that bound Step `step`'s script and
+/// Step Environments read into its `resolved_symtab`, so its Tasks can run
+/// (RFC 0011 §The `Steps.*` scope, Concreteness: they are concrete once its
+/// dependencies have finished).
+///
+/// A path-typed `Steps.P.Output.X` or `Steps.P.TaskParam.N` is not in
+/// `inputs` (only its `Raw` twin is), so the twin is stored instead, as a
+/// `PATH` `Param.*` falls back to its `RawParam.*`. Every path-typed `Raw`
+/// value stored, read directly or through this fallback, is stored as a
+/// `string` (or a list of strings) and recorded in
+/// [`job::Step::path_inputs`], so that the session builds the `path` values
+/// and maps `Output` and `TaskParam` forward on the worker host. A skipped
+/// producer's `null`s are stored as they are. Every `Steps.*` value and
+/// `Steps.*` `path_inputs` record comes from `inputs`: attaching again
+/// replaces those of an earlier call. A body Step instance's `RawLoop.*`
+/// records, made when it was bound, are kept.
+///
+/// Errors, each a [`ModelError::Compatibility`] (a caller error), when the
+/// Step is not bound, or when a symbol it reads is not concrete in `inputs`
+/// (the error names it).
+pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError> {
+    if !step.binding.is_bound() {
+        return Err(ModelError::Compatibility(format!(
+            "Step '{}' is not bound, so its Steps.* inputs cannot be attached.",
+            step.name
+        )));
+    }
+    let symbols: BTreeSet<String> = host_scope_symbols(step)
+        .iter()
+        .filter_map(|s| steps_key(s))
+        .collect();
+    // A body Step instance's path-typed `RawLoop.*` values are recorded when
+    // it is bound, and kept: only the `Steps.*` ones come from `inputs`.
+    let is_steps_input = |p: &&job::PathInput| p.symbol.starts_with("Steps.");
+    if symbols.is_empty() && !step.path_inputs.iter().any(|p| is_steps_input(&p)) {
+        return Ok(step.clone());
+    }
+    // Start from the table without any `Steps.*` value: every one, and every
+    // `path_inputs` record, comes from this call's `inputs`, so attaching
+    // again with other inputs leaves nothing of the earlier ones behind.
+    let mut symtab = SymbolTable::new();
+    if let Some(s) = &step.resolved_symtab {
+        let full = s
+            .to_symtab(PathFormat::Posix)
+            .map_err(ModelError::DecodeValidation)?;
+        for path in full.all_paths("") {
+            if path.starts_with("Steps.") {
+                continue;
+            }
+            if let Some(v) = full.get_value(&path) {
+                symtab.set(&path, v.clone())?;
+            }
+        }
+    }
+    let mut path_inputs: std::collections::BTreeMap<String, job::PathInput> = step
+        .path_inputs
+        .iter()
+        .filter(|p| !is_steps_input(p))
+        .map(|p| (p.symbol.clone(), p.clone()))
+        .collect();
+    for sym in &symbols {
+        let (stored, value) = match inputs.get(sym) {
+            Some(v) => (sym.clone(), v.clone()),
+            None if inputs.is_concrete(sym) => {
+                let twin = raw_twin(sym);
+                let Some(v) = inputs.get(&twin) else {
+                    return Err(not_concrete(step, sym));
+                };
+                (twin, v.clone())
+            }
+            None => return Err(not_concrete(step, sym)),
+        };
+        let value = match path_as_strings(&value) {
+            Some(strings) => {
+                path_inputs.insert(
+                    stored.clone(),
+                    job::PathInput {
+                        symbol: stored.clone(),
+                        ty: value.expr_type(),
+                    },
+                );
+                strings
+            }
+            None => value,
+        };
+        symtab.set(&stored, value)?;
+    }
+    let mut attached = step.clone();
+    attached.resolved_symtab = Some(openjd_expr::SerializedSymbolTable::from_symtab(&symtab));
+    attached.path_inputs = path_inputs.into_values().collect();
+    Ok(attached)
+}
+
+fn not_concrete(step: &job::Step, sym: &str) -> ModelError {
+    ModelError::Compatibility(format!(
+        "Step '{}' reads '{sym}', which is not concrete in the given inputs.",
+        step.name
+    ))
+}
+
+/// `Steps.P.RawOutput.X` for `Steps.P.Output.X`, `Steps.P.TaskRawParam.N`
+/// for `Steps.P.TaskParam.N`.
+fn raw_twin(sym: &str) -> String {
+    let parts: Vec<&str> = sym.splitn(4, '.').collect();
+    let member = match parts.get(2) {
+        Some(&"Output") => "RawOutput",
+        Some(&"TaskParam") => "TaskRawParam",
+        Some(other) => other,
+        None => "",
+    };
+    format!(
+        "Steps.{}.{member}.{}",
+        parts.get(1).unwrap_or(&""),
+        parts.get(3).unwrap_or(&"")
+    )
+}
+
+/// A value that is or contains `path`, as the same shape of strings; `None`
+/// for any other value.
+pub(super) fn path_as_strings(value: &ExprValue) -> Option<ExprValue> {
+    match value {
+        ExprValue::Path { value, .. } => Some(ExprValue::String(value.clone())),
+        ExprValue::ListPath(v, _, _) => ExprValue::make_list(
+            v.iter().cloned().map(ExprValue::String).collect(),
+            ExprType::STRING,
+        )
+        .ok(),
+        ExprValue::ListList(elems, elem_ty, _) if *elem_ty == ExprType::list(ExprType::PATH) => {
+            let strings: Option<Vec<ExprValue>> = elems.iter().map(path_as_strings).collect();
+            ExprValue::make_list(strings?, ExprType::list(ExprType::STRING)).ok()
+        }
+        _ => None,
+    }
+}
+
+/// The symbols a Step's worker-resolved fields read: its script (actions,
+/// embedded files, script `let`) and Step Environments.
+pub(crate) fn host_scope_symbols(step: &job::Step) -> std::collections::HashSet<String> {
+    instantiate::collect_all_accessed_symbols(Some(&step.script), &step.step_environments, None)
+}

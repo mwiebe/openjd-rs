@@ -11,6 +11,9 @@ use openjd_expr::symbol_table::SymbolTable;
 use crate::error::{path_field, path_index, ModelError, PathElement, ValidationErrors};
 use crate::job;
 use crate::template;
+use crate::template::validate_v2023_09::steps_scope::{
+    add_control_flow_scope, StepLocation, StepsFieldScope, StepsReader,
+};
 use crate::template::validate_v2023_09::EffectiveLimits;
 use openjd_expr::ExpressionError;
 
@@ -52,18 +55,10 @@ pub(super) fn instantiate_step<'a>(
     staged: &mut super::staged::StagedErrors,
 ) -> Result<Option<(job::Step, super::env_params::StepSelection<'a>)>, ModelError> {
     let mut step_symtab = symtab.clone();
-
-    let step_name = st.name.clone();
-    let step_path = [
-        PathElement::Field("steps".to_string()),
-        PathElement::Index(step_index),
-    ];
+    let step_path = step_path(step_index);
 
     if has_expr {
-        step_symtab.set(
-            "Step.Name",
-            openjd_expr::ExprValue::String(step_name.clone()),
-        )?;
+        step_symtab.set("Step.Name", openjd_expr::ExprValue::String(st.name.clone()))?;
     }
 
     // Evaluate step-level let bindings (TEMPLATE scope — no PATH Param.*,
@@ -84,75 +79,30 @@ pub(super) fn instantiate_step<'a>(
         }
     }
 
-    let script_template = st.resolve_syntax_sugar();
-    let script = script_template.as_ref().map(convert_step_script);
-    // When the script came from a SimpleAction (§8), diagnostics on the
-    // desugared form must point at the field the author wrote.
-    let sugar_kind = if st.script.is_none() {
-        st.simple_actions().next().map(|(kind, _)| kind)
-    } else {
-        None
-    };
-
-    // Re-run the carried-forward format-string resolved-value checks —
-    // the script's `let` bindings, the `onRun` action's
-    // `command`/`args`/`timeout`/`cancelation`, and each embedded file's
-    // `data` — against check symbol tables where job parameters are
-    // bound to real values. A violation template validation could only
-    // lower-bound is decidable here: fail at submission, not on every
-    // worker. These are exactly the checks pass 8 applies — to the same
-    // desugared form for a SimpleAction step, with the same path remap
-    // back onto the authored field.
-    if let Some(s) = &script_template {
-        // A SimpleAction's checks run into a scratch collection rooted at
-        // the desugared `script` node and are re-rooted afterwards.
-        let mut scratch = ValidationErrors::default();
-        let (script_path, target): (Vec<PathElement>, &mut ValidationErrors) = match sugar_kind {
-            Some(_) => (Vec::new(), &mut scratch),
-            None => (path_field(&step_path, "script"), &mut *check_errors),
-        };
-        // Check symbol table for the step script's carried-forward
-        // (session/task-scope) format strings: `step_symtab`'s concrete
-        // values plus `Unresolved` placeholders for everything only a
-        // session can bind, with the script-level `let` bindings
-        // evaluated in (reported at `<script> -> let[j]`).
-        let cst =
-            build_task_check_symtab(st, s, &step_symtab, has_expr, ctx, &script_path, target)?;
-        crate::template::validate_v2023_09::format_strings::check_carried_forward_step_script(
-            s,
-            &cst,
-            &step_symtab,
-            ctx,
-            &script_path,
-            target,
-        );
-        if let Some(kind) = sugar_kind {
-            let sa_path = path_field(&step_path, kind.field_name());
-            check_errors.extend_remapped(scratch, |rel| {
-                let mut p = sa_path.clone();
-                p.extend(kind.remap_desugared_path(rel));
-                p
-            });
-        }
-    }
-
-    // The same checks for this step's environments (session scope):
-    // `let` bindings, `variables` values, every action's
-    // `command`/`args`/`timeout`/`cancelation`, embedded-file `data`.
+    check_step_script(
+        st,
+        &step_path,
+        &step_symtab,
+        &step_symtab,
+        None,
+        has_expr,
+        ctx,
+        check_errors,
+    )?;
     if let Some(envs) = &st.step_environments {
         for (j, env) in envs.iter().enumerate() {
-            let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
-            let env_symtab =
-                build_env_check_symtab(env, &step_symtab, has_expr, ctx, &env_path, check_errors)?;
-            crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
+            check_step_environment(
                 env,
-                &env_symtab,
+                &step_path,
+                j,
                 &step_symtab,
+                &step_symtab,
+                None,
+                has_expr,
+                limits,
                 ctx,
-                limits.max_env_var_value_len,
-                &env_path,
                 check_errors,
-            );
+            )?;
         }
     }
 
@@ -192,7 +142,18 @@ pub(super) fn instantiate_step<'a>(
     let parameter_space = st
         .parameter_space
         .as_ref()
-        .map(|ps| ranges::resolve_parameter_space(ps, &step_symtab, template_expr, limits, budgets))
+        .map(|ps| {
+            ranges::resolve_parameter_space(
+                ps,
+                &step_symtab,
+                limits,
+                budgets,
+                ranges::RangeRules {
+                    expr: template_expr,
+                    control_flow: false,
+                },
+            )
+        })
         .transpose()?;
 
     // Validate the resolved parameter space (e.g. association length mismatches)
@@ -200,83 +161,269 @@ pub(super) fn instantiate_step<'a>(
         let _ = crate::job::step_param_space::StepParameterSpaceIterator::new(ps)?;
     }
 
-    // Only Step entries (`dependsOn` and its ENV_PARAMS synonym `step`,
-    // §3.2 item 2) become job dependencies, each written `dependsOn`. An
-    // `environment:` entry (ENV_PARAMS) does not delay scheduling (§3.2
-    // item 3), so it has no place in the Step dependency graph; a list left
-    // empty by the filter becomes `None`, as for a Step with no
-    // dependencies.
-    let dependencies = st
-        .dependencies
-        .as_ref()
-        .map(|deps| {
-            deps.iter()
-                .filter_map(|d| d.step())
-                .map(|name| job::StepDependency {
-                    depends_on: name.to_string(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|deps| !deps.is_empty());
-
     // ENV_PARAMS: `enableIf`, the Job Environments the Step's Sessions
     // enter and its effective values for them, and the entries for
     // external Environments frozen for submission (§3.2.2, §7.4.1).
     let entries = super::env_params::resolve_step_entries(
         st,
         step_index,
+        &step_path,
         &step_symtab,
         job_envs,
         super::env_params::ResolvePolicy::new(ctx),
+        true,
         staged,
     );
 
     // §4 item 6: a Step Environment whose `enableIf` is `false` is not
     // entered by the Step's Sessions, so it is left out of the Job; with
     // none left the Step has none (plan 3 Q7).
-    let step_environments: Option<Vec<job::Environment>> = st
-        .step_environments
-        .as_ref()
-        .map(|envs| {
-            envs.iter()
-                .zip(&entries.step_environments_enabled)
-                .filter(|(_, enabled)| **enabled)
-                .map(|(env, _)| convert_environment(env))
-                .collect::<Vec<_>>()
-        })
-        .filter(|envs| !envs.is_empty() || entries.step_environments_enabled.iter().all(|e| *e));
-
-    let script = script.ok_or_else(|| {
-        ModelError::DecodeValidation("Step must have a script or SimpleAction".to_string())
-    })?;
-    let filtered_symtab = filter_symtab_for_step(
-        &step_symtab,
-        Some(&script),
-        &step_environments,
-        st.let_bindings.as_deref(),
-    );
+    let mut step = step_shell(st)?;
+    step.step_environments =
+        filter_step_environments(step.step_environments, &entries.step_environments_enabled);
+    step.resolved_symtab = Some(openjd_expr::SerializedSymbolTable::from_symtab(
+        &filter_symtab_for_step(
+            &step_symtab,
+            Some(&step.script),
+            &step.step_environments,
+            st.let_bindings.as_deref(),
+        ),
+    ));
+    step.parameter_space = parameter_space;
+    step.host_requirements = host_requirements;
 
     Ok(Some((
-        job::Step {
-            name: step_name,
-            description: st.description.as_ref().map(|d| d.0.clone()),
-            script,
-            step_environments,
-            parameter_space,
-            host_requirements,
-            dependencies,
-            resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(
-                &filtered_symtab,
-            )),
-            // Set by the submission stage, which decides the Environments.
-            environment_parameters: None,
-            environments: None,
-        },
+        step,
         super::env_params::StepSelection {
             discarded_host_requirements,
             ..entries.selection
         },
     )))
+}
+
+/// `envs` without the ones `enabled` (index for index) leaves out: `None`
+/// when that leaves none, as for a Step with no Step Environments.
+pub(super) fn filter_step_environments(
+    envs: Option<Vec<job::Environment>>,
+    enabled: &[bool],
+) -> Option<Vec<job::Environment>> {
+    let envs: Vec<job::Environment> = envs?
+        .into_iter()
+        .zip(enabled.iter().copied().chain(std::iter::repeat(true)))
+        .filter(|(_, enabled)| *enabled)
+        .map(|(env, _)| env)
+        .collect();
+    (!envs.is_empty()).then_some(envs)
+}
+
+/// `steps[i]`.
+pub(super) fn step_path(step_index: usize) -> [PathElement; 2] {
+    [
+        PathElement::Field("steps".to_string()),
+        PathElement::Index(step_index),
+    ]
+}
+
+/// The job form of a Step, before anything of it is evaluated: its script
+/// (desugared from a SimpleAction), Step Environments (enabled),
+/// dependencies, and output variables, with no parameter space, host
+/// requirements, or `resolved_symtab`, and binding [`job::StepBinding::Bound`].
+pub(super) fn step_shell(st: &template::StepTemplate) -> Result<job::Step, ModelError> {
+    let script = st
+        .resolve_syntax_sugar()
+        .as_ref()
+        .map(convert_step_script)
+        .ok_or_else(|| {
+            ModelError::DecodeValidation("Step must have a script or SimpleAction".to_string())
+        })?;
+    Ok(job::Step {
+        name: st.name.clone(),
+        description: st.description.as_ref().map(|d| d.0.clone()),
+        script,
+        step_environments: st
+            .step_environments
+            .as_ref()
+            .map(|envs| envs.iter().map(convert_environment).collect()),
+        parameter_space: None,
+        host_requirements: None,
+        // Only Step entries (`dependsOn` and its ENV_PARAMS synonym `step`,
+        // §3.2 item 2) become job dependencies, each written `dependsOn`. An
+        // `environment:` entry (ENV_PARAMS) does not delay scheduling (§3.2
+        // item 3), so it has no place in the Step dependency graph; a list
+        // left empty by the filter becomes `None`, as for a Step with no
+        // dependencies.
+        dependencies: st
+            .dependencies
+            .as_ref()
+            .map(|deps| {
+                deps.iter()
+                    .filter_map(|d| d.step())
+                    .map(|name| job::StepDependency {
+                        depends_on: name.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|deps| !deps.is_empty()),
+        resolved_symtab: None,
+        // Set by the submission stage, which decides the Environments, or
+        // with CONTROL_FLOW by the Step's Environment selection.
+        environment_parameters: None,
+        environments: None,
+        output_variables: st.output_variables.as_ref().map(|ovs| {
+            ovs.iter()
+                .map(template::OutputVariableDefinition::to_job_output_variable)
+                .collect()
+        }),
+        binding: job::StepBinding::Bound,
+        path_inputs: Vec::new(),
+    })
+}
+
+/// The Step's `resolved_symtab`: the symbols of `step_symtab` that its
+/// worker-resolved fields read (see [`filter_symtab_for_step`]), without any
+/// `Steps.*` value. [`attach_step_inputs`](super::attach_step_inputs) adds
+/// those, so that every `Steps.*` value a Task reads, and every path-typed
+/// one's [`job::PathInput`] record, comes from one place.
+pub(super) fn resolved_step_symtab(
+    step: &job::Step,
+    st: &template::StepTemplate,
+    step_symtab: &SymbolTable,
+) -> openjd_expr::SerializedSymbolTable {
+    let filtered = filter_symtab_for_step(
+        step_symtab,
+        Some(&step.script),
+        &step.step_environments,
+        st.let_bindings.as_deref(),
+    );
+    let filtered = if filtered.get_table("Steps").is_some() {
+        let mut out = SymbolTable::new();
+        for path in filtered.all_paths("") {
+            if path.starts_with("Steps.") {
+                continue;
+            }
+            if let Some(v) = filtered.get_value(&path) {
+                // Re-inserting the leaves of a valid table cannot collide.
+                let _ = out.set(&path, v.clone());
+            }
+        }
+        out
+    } else {
+        filtered
+    };
+    openjd_expr::SerializedSymbolTable::from_symtab(&filtered)
+}
+
+/// Re-run the carried-forward resolved-value checks of a Step's script —
+/// the script's `let` bindings, the `onRun` action's
+/// `command`/`args`/`timeout`/`cancelation`, and each embedded file's
+/// `data` — against check symbol tables where job parameters are bound to
+/// real values. A violation template validation could only lower-bound is
+/// decidable here: fail at submission, not on every worker. These are
+/// exactly the checks pass 8 applies — to the same desugared form for a
+/// SimpleAction step, with the same path remap back onto the authored field.
+///
+/// `step_symtab` is the Step's table (with its step `let` values);
+/// `template_check_symtab` the table for the TEMPLATE-scope `timeout` /
+/// `cancelation` fields. `steps_scope` (`CONTROL_FLOW`) seeds `Steps.*`
+/// placeholders for the symbols that are not concrete in `step_symtab`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_step_script(
+    st: &template::StepTemplate,
+    step_path: &[PathElement],
+    step_symtab: &SymbolTable,
+    template_check_symtab: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
+    has_expr: bool,
+    ctx: &crate::types::ValidationContext,
+    check_errors: &mut ValidationErrors,
+) -> Result<(), ModelError> {
+    let Some(s) = st.resolve_syntax_sugar() else {
+        return Ok(());
+    };
+    // When the script came from a SimpleAction (§8), diagnostics on the
+    // desugared form must point at the field the author wrote.
+    let sugar_kind = if st.script.is_none() {
+        st.simple_actions().next().map(|(kind, _)| kind)
+    } else {
+        None
+    };
+    // A SimpleAction's checks run into a scratch collection rooted at
+    // the desugared `script` node and are re-rooted afterwards.
+    let mut scratch = ValidationErrors::default();
+    let (script_path, target): (Vec<PathElement>, &mut ValidationErrors) = match sugar_kind {
+        Some(_) => (Vec::new(), &mut scratch),
+        None => (path_field(step_path, "script"), &mut *check_errors),
+    };
+    // Check symbol table for the step script's carried-forward
+    // (session/task-scope) format strings: `step_symtab`'s concrete
+    // values plus `Unresolved` placeholders for everything only a
+    // session can bind, with the script-level `let` bindings
+    // evaluated in (reported at `<script> -> let[j]`).
+    let cst = build_task_check_symtab(
+        st,
+        &s,
+        step_symtab,
+        steps_scope,
+        has_expr,
+        ctx,
+        &script_path,
+        target,
+    )?;
+    crate::template::validate_v2023_09::format_strings::check_carried_forward_step_script(
+        &s,
+        &cst,
+        template_check_symtab,
+        ctx,
+        &script_path,
+        target,
+    );
+    if let Some(kind) = sugar_kind {
+        let sa_path = path_field(step_path, kind.field_name());
+        check_errors.extend_remapped(scratch, |rel| {
+            let mut p = sa_path.clone();
+            p.extend(kind.remap_desugared_path(rel));
+            p
+        });
+    }
+    Ok(())
+}
+
+/// The same checks as [`check_step_script`] for Step Environment `j`
+/// (session scope): `let` bindings, `variables` values, every action's
+/// `command`/`args`/`timeout`/`cancelation`, embedded-file `data`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_step_environment(
+    env: &template::Environment,
+    step_path: &[PathElement],
+    j: usize,
+    step_symtab: &SymbolTable,
+    template_check_symtab: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
+    has_expr: bool,
+    limits: &EffectiveLimits,
+    ctx: &crate::types::ValidationContext,
+    check_errors: &mut ValidationErrors,
+) -> Result<(), ModelError> {
+    let env_path = path_index(&path_field(step_path, "stepEnvironments"), j);
+    let env_symtab = build_env_check_symtab(
+        env,
+        step_symtab,
+        steps_scope,
+        has_expr,
+        ctx,
+        &env_path,
+        check_errors,
+    )?;
+    crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
+        env,
+        &env_symtab,
+        template_check_symtab,
+        ctx,
+        limits.max_env_var_value_len,
+        &env_path,
+        check_errors,
+    );
+    Ok(())
 }
 
 /// Add `Unresolved` placeholders for the symbols only a session can
@@ -332,7 +479,10 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 /// bindings) plus `Unresolved` placeholders for `Session.*`, PATH
 /// `Param.*`, `Task.Param.*` / `Task.RawParam.*`, and `Task.File.*` —
 /// the same scope the session runtime binds when it resolves these
-/// format strings at run time.
+/// format strings at run time. With `steps_scope` set (`CONTROL_FLOW`),
+/// also `Unresolved` placeholders for the `Steps.*` symbols of that Step's
+/// direct dependencies, and for a body Step its loop's dependencies and
+/// `Loop.*`, in host scope (see `add_control_flow_scope`).
 ///
 /// Script-level `let` bindings are evaluated into the table with
 /// unresolved host context through pass 8's own evaluation helper
@@ -343,10 +493,12 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 ///
 /// `Err` only for a failed symbol seed — an internal invariant (see
 /// [`add_unresolved_session_symbols`]).
-fn build_task_check_symtab(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_task_check_symtab(
     st: &template::StepTemplate,
     script: &template::StepScript,
     step_symtab: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     script_path: &[PathElement],
@@ -354,6 +506,14 @@ fn build_task_check_symtab(
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
+    if let Some((jt, loc)) = steps_scope {
+        add_control_flow_scope(
+            &mut check_symtab,
+            jt,
+            StepsReader::Step(loc),
+            StepsFieldScope::Host,
+        )?;
+    }
 
     if let Some(ps) = &st.parameter_space {
         for tp in &ps.task_parameter_definitions {
@@ -417,7 +577,10 @@ fn build_task_check_symtab(
 /// `Env.Param.*` / `Env.RawParam.*` (ENV_PARAMS),
 /// and the environment's script-level `let` bindings evaluated in —
 /// mirroring what the session runtime binds when it resolves the
-/// environment at run time.
+/// environment at run time. For a Step Environment, `steps_scope`
+/// (`CONTROL_FLOW`) adds `Unresolved` placeholders for the `Steps.*`
+/// symbols of the Step's direct dependencies, in host scope; it is `None`
+/// for a Job Environment.
 ///
 /// A `let` binding that fails to evaluate is reported into `errors` at
 /// `<env_path> -> script -> let[j]` exactly as for a step script (see
@@ -429,6 +592,7 @@ fn build_task_check_symtab(
 pub(super) fn build_env_check_symtab(
     env: &template::Environment,
     base: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     env_path: &[PathElement],
@@ -439,6 +603,14 @@ pub(super) fn build_env_check_symtab(
     // `Env.Param.*` / `Env.RawParam.*` (ENV_PARAMS) are bound only when a
     // Session enters the Environment, so they stay unresolved here.
     crate::template::validate_v2023_09::format_strings::add_env_param_symbols(&mut symtab, env);
+    if let Some((jt, loc)) = steps_scope {
+        add_control_flow_scope(
+            &mut symtab,
+            jt,
+            StepsReader::Step(loc),
+            StepsFieldScope::Host,
+        )?;
+    }
     if let Some(script) = &env.script {
         if let Some(files) = &script.embedded_files {
             for f in files {
@@ -464,6 +636,53 @@ pub(super) fn build_env_check_symtab(
     Ok(symtab)
 }
 
+/// Every format string of a Task parameter definition that job creation
+/// (or step input binding) evaluates: its `range` (whole or per list item)
+/// and, for `CHUNK[INT]`, its `chunks` fields.
+pub(super) fn task_parameter_format_strings(
+    tp: &template::TaskParameterDefinition,
+) -> Vec<&openjd_expr::FormatString> {
+    use template::{FloatRange, FloatRangeItem, IntOrFormatString, IntRange, StringRange};
+    fn int_range<'a>(range: &'a IntRange, out: &mut Vec<&'a openjd_expr::FormatString>) {
+        match range {
+            IntRange::Expression(fs) => out.push(fs),
+            IntRange::List(items) => out.extend(items.iter().filter_map(|i| match i {
+                IntOrFormatString::FormatString(fs) => Some(fs),
+                IntOrFormatString::Int(_) => None,
+            })),
+        }
+    }
+    let mut out = Vec::new();
+    match tp {
+        template::TaskParameterDefinition::INT(t) => int_range(&t.range, &mut out),
+        template::TaskParameterDefinition::CHUNK_INT(t) => {
+            int_range(&t.range, &mut out);
+            if let IntOrFormatString::FormatString(fs) = &t.chunks.default_task_count {
+                out.push(fs);
+            }
+            if let Some(IntOrFormatString::FormatString(fs)) = &t.chunks.target_runtime_seconds {
+                out.push(fs);
+            }
+        }
+        template::TaskParameterDefinition::FLOAT(t) => match &t.range {
+            FloatRange::List(items) => out.extend(items.iter().filter_map(|i| match i {
+                FloatRangeItem::FormatString(fs) => Some(fs),
+                FloatRangeItem::Float(_) => None,
+            })),
+            FloatRange::Expression(fs) => out.push(fs),
+        },
+        template::TaskParameterDefinition::STRING(t) => match &t.range {
+            StringRange::List(items) => out.extend(items.iter()),
+            StringRange::Expression(fs) => out.push(fs),
+        },
+        template::TaskParameterDefinition::PATH(t) => match &t.range {
+            StringRange::List(items) => out.extend(items.iter()),
+            StringRange::Expression(fs) => out.push(fs),
+        },
+    }
+    out
+}
+
 fn convert_action(a: &template::Action) -> job::Action {
     job::Action {
         command: a.command.clone(),
@@ -487,7 +706,7 @@ fn convert_action(a: &template::Action) -> job::Action {
     }
 }
 
-fn convert_step_script(s: &template::StepScript) -> job::StepScript {
+pub(super) fn convert_step_script(s: &template::StepScript) -> job::StepScript {
     job::StepScript {
         let_bindings: s.let_bindings.clone(),
         actions: job::StepActions {
@@ -625,7 +844,7 @@ pub fn evaluate_let_bindings(
 // Step and Environment have different sets of these format strings:
 //   Step  — step-level let bindings, script (actions, embedded files,
 //           script-level let bindings), and step-scoped environments
-//           (variables, actions, embedded files).
+//           (variables, actions, embedded files, script-level let bindings).
 //   Env   — variables, script (actions, embedded files, script-level
 //           let bindings).
 //
@@ -702,6 +921,12 @@ fn filter_symtab_for_step(
                         }
                     }
                 }
+                // The Session evaluates a Step Environment's script `let`
+                // bindings with the Step's table, so the symbols they read
+                // must be in it, as for a Job Environment.
+                if let Some(bindings) = &es.let_bindings {
+                    collect_let_binding_refs(bindings, full, &mut filtered);
+                }
             }
         }
     }
@@ -738,8 +963,9 @@ fn include_raw_param_fallbacks(
 }
 
 /// Collect all symbol names accessed by format strings in a step's script,
-/// step environments, and let bindings.
-fn collect_all_accessed_symbols(
+/// step environments (including their script `let` bindings), and let
+/// bindings.
+pub(crate) fn collect_all_accessed_symbols(
     script: Option<&job::StepScript>,
     step_environments: &Option<Vec<job::Environment>>,
     step_let_bindings: Option<&[String]>,
@@ -780,15 +1006,19 @@ fn collect_all_accessed_symbols(
         }
     }
 
-    if let Some(bindings) = step_let_bindings {
+    fn collect_from_lets(bindings: &[String], out: &mut std::collections::HashSet<String>) {
         for binding in bindings {
             if let Some(eq_pos) = binding.find('=') {
                 let expr = binding[eq_pos + 1..].trim();
                 if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                    symbols.extend(parsed.accessed_symbols().iter().cloned());
+                    out.extend(parsed.accessed_symbols().iter().cloned());
                 }
             }
         }
+    }
+
+    if let Some(bindings) = step_let_bindings {
+        collect_from_lets(bindings, &mut symbols);
     }
 
     if let Some(s) = script {
@@ -801,14 +1031,7 @@ fn collect_all_accessed_symbols(
             }
         }
         if let Some(bindings) = &s.let_bindings {
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let expr = binding[eq_pos + 1..].trim();
-                    if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                        symbols.extend(parsed.accessed_symbols().iter().cloned());
-                    }
-                }
-            }
+            collect_from_lets(bindings, &mut symbols);
         }
     }
 
@@ -829,6 +1052,9 @@ fn collect_all_accessed_symbols(
                             collect_from_fs(d, &mut symbols);
                         }
                     }
+                }
+                if let Some(bindings) = &es.let_bindings {
+                    collect_from_lets(bindings, &mut symbols);
                 }
             }
         }

@@ -1,0 +1,55 @@
+$ openjd run {T}/progressive_let.yaml
+exit code: 0
+--- stdout
+Session start
+Running job 'Progressive binding with a step let'
+Step 'C' is pending inputs:
+  Enabled: yes
+  Tasks: 3 (known; Step pending inputs for Steps.Q.Output.Label)
+  Host requirements: known
+Running step 'Q'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Label="shot"
+Process exited with code: 0
+Output Label = "shot"
+Step 'C' is ready
+Running step 'C'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+I(INT) = 0
+Output:
+C task shot 0
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+I(INT) = 1
+Output:
+C task shot 1
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+I(INT) = 2
+Output:
+C task shot 2
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Progressive binding with a step let
+Duration: {DURATION}
+Chunks run: 4
+--- stderr

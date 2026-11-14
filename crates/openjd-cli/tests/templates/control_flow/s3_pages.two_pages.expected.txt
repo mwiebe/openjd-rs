@@ -1,0 +1,77 @@
+$ openjd run {T}/s3_pages.yaml -p Bucket=media -p Prefix=shots/ -p WorkDir={W}/work
+$ env OPENJD_GOLDEN_S3_PAGE_SIZE=2
+$ s3 fixtures/s3_two_keys
+exit code: 0
+--- stdout
+Session start
+Running job 'Process s3://media/shots/'
+Step 'ProcessPage' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.ListObjects.RawOutput.Manifests
+  Host requirements: known
+Running loop 'ListObjects'
+Loop 'ListObjects' iteration 0: Token = ""
+Running step 'ListObjects[0].ListPage'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Manifest="{W}/work/pages/page_0000.json"
+openjd_output_var: Count=2
+openjd_output_var: NextToken="2"
+Process exited with code: 0
+Output Manifest = "{W}/work/pages/page_0000.json"
+Output Count = 2
+Output NextToken = "2"
+Loop 'ListObjects' iteration 0 outputs: Manifests = "{W}/work/pages/page_0000.json", PageSizes = 2
+Loop 'ListObjects' iteration 1: Token = "2"
+Running step 'ListObjects[1].ListPage'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Manifest="{W}/work/pages/page_0001.json"
+openjd_output_var: Count=1
+openjd_output_var: NextToken=""
+Process exited with code: 0
+Output Manifest = "{W}/work/pages/page_0001.json"
+Output Count = 1
+Output NextToken = ""
+Loop 'ListObjects' iteration 1 outputs: Manifests = "{W}/work/pages/page_0001.json", PageSizes = 1
+Loop 'ListObjects' succeeded after 2 iterations (while is false)
+Loop 'ListObjects' outputs: Manifests = ["{W}/work/pages/page_0000.json", "{W}/work/pages/page_0001.json"], PageSizes = [2, 1]
+Step 'ProcessPage': Tasks known (2 tasks)
+Step 'ProcessPage' is ready
+Job output ObjectCount = 3
+Running step 'ProcessPage'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Manifest(PATH) = {W}/work/pages/page_0000.json
+Output:
+pipeline stub: processed s3://media/shots/a.mov
+pipeline stub: processed s3://media/shots/b.mov
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Manifest(PATH) = {W}/work/pages/page_0001.json
+Output:
+pipeline stub: processed s3://media/shots/notes.txt
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Process s3://media/shots/
+Duration: {DURATION}
+Chunks run: 4
+Job outputs:
+  ObjectCount = 3
+--- stderr

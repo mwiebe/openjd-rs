@@ -67,13 +67,14 @@ fn get_supported_extensions_returns_full_default_list() {
     // Exactly the six currently-known extensions. If a new one is
     // added upstream, this test will fail and prompt the JS
     // binding author to decide whether to update the default.
-    assert_eq!(exts.len(), 6);
+    assert_eq!(exts.len(), 7);
     assert!(exts.contains(&"TASK_CHUNKING".to_string()));
     assert!(exts.contains(&"REDACTED_ENV_VARS".to_string()));
     assert!(exts.contains(&"FEATURE_BUNDLE_1".to_string()));
     assert!(exts.contains(&"EXPR".to_string()));
     assert!(exts.contains(&"WRAP_ACTIONS".to_string()));
     assert!(exts.contains(&"ENV_PARAMS".to_string()));
+    assert!(exts.contains(&"CONTROL_FLOW".to_string()));
 }
 
 // ── Default behavior (supportedExtensions omitted) ──────────────────

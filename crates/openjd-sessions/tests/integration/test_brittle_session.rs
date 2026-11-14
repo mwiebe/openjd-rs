@@ -109,7 +109,10 @@ async fn run_ending_task(s: &mut Session, ending: Ending) {
             ..action("sleep 30")
         }),
     };
-    let r = s.run_task("t", &script, None, None, None).await.unwrap();
+    let r = s
+        .run_task("t", &script, None, None, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(r.state, ending.action_state());
     assert_eq!(s.state(), SessionState::ReadyEnding);
 }
@@ -118,7 +121,14 @@ async fn run_ending_task(s: &mut Session, ending: Ending) {
 async fn assert_refuses_new_actions(s: &mut Session) {
     let current = s.state();
     match s
-        .run_task("t2", &step("echo again"), None, None, None)
+        .run_task(
+            "t2",
+            &step("echo again"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::InvalidState { .. }) => {}
@@ -130,6 +140,7 @@ async fn assert_refuses_new_actions(s: &mut Session) {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
     {
@@ -137,7 +148,13 @@ async fn assert_refuses_new_actions(s: &mut Session) {
         other => panic!("enter_environment in {current:?} must be refused, got {other:?}"),
     }
     match s
-        .enter_environment(&env("NoAction", None, None), None, None, None)
+        .enter_environment(
+            &env("NoAction", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
     {
         Err(SessionError::InvalidState { .. }) => {}
@@ -160,7 +177,13 @@ async fn check_task_ending_then_exit(ending: Ending, keep_session_running: bool,
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let on_exit = on_exit.then(|| action("echo exited"));
     let id = s
-        .enter_environment(&env("Env", None, on_exit.clone()), None, None, None)
+        .enter_environment(
+            &env("Env", None, on_exit.clone()),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(s.state(), SessionState::Ready);
@@ -169,7 +192,7 @@ async fn check_task_ending_then_exit(ending: Ending, keep_session_running: bool,
     assert_refuses_new_actions(&mut s).await;
 
     let out = s
-        .exit_environment(&id, None, keep_session_running, None)
+        .exit_environment(&id, None, keep_session_running, None, &Default::default())
         .await
         .unwrap();
     if on_exit.is_some() {
@@ -225,20 +248,31 @@ async fn failed_task_then_exit_nested_environments_keep_running() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
     let inner = s
-        .enter_environment(&env("Inner", None, None), None, None, None)
+        .enter_environment(
+            &env("Inner", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     run_ending_task(&mut s, Ending::Failed).await;
 
-    s.exit_environment(&inner, None, true, None).await.unwrap();
+    s.exit_environment(&inner, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 
-    s.exit_environment(&outer, None, true, None).await.unwrap();
+    s.exit_environment(&outer, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -252,7 +286,7 @@ async fn failed_on_enter_then_exit_keep_running() {
     let failing = env("Env", Some(action("exit 3")), None);
     let id = "env-id";
     let err = s
-        .enter_environment(&failing, None, Some(id), None)
+        .enter_environment(&failing, None, Some(id), None, &Default::default())
         .await
         .unwrap_err();
     assert!(
@@ -261,7 +295,7 @@ async fn failed_on_enter_then_exit_keep_running() {
     );
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
-    s.exit_environment(&id.to_string(), None, true, None)
+    s.exit_environment(&id.to_string(), None, true, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
@@ -275,7 +309,13 @@ async fn failed_on_exit_keep_running_then_exit_outer_keep_running() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let outer = s
-        .enter_environment(&env("Outer", None, None), None, None, None)
+        .enter_environment(
+            &env("Outer", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let inner = s
@@ -284,13 +324,19 @@ async fn failed_on_exit_keep_running_then_exit_outer_keep_running() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
-    assert!(s.exit_environment(&inner, None, true, None).await.is_err());
+    assert!(s
+        .exit_environment(&inner, None, true, None, &Default::default())
+        .await
+        .is_err());
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
-    s.exit_environment(&outer, None, true, None).await.unwrap();
+    s.exit_environment(&outer, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -302,7 +348,13 @@ async fn runner_error_then_exit_keep_running() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let script = step_action(Action {
@@ -311,7 +363,9 @@ async fn runner_error_then_exit_keep_running() {
         timeout: None,
         cancelation: None,
     });
-    let result = s.run_task("t", &script, None, None, None).await;
+    let result = s
+        .run_task("t", &script, None, None, None, &Default::default())
+        .await;
     let failed = match result {
         Err(_) => true,
         Ok(r) => r.state == ActionState::Failed,
@@ -319,7 +373,9 @@ async fn runner_error_then_exit_keep_running() {
     assert!(failed, "a missing command must fail the action");
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -332,17 +388,32 @@ async fn unresolvable_arg_then_exit_keep_running() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let result = s
-        .run_task("t", &step("echo {{ No.Such.Symbol }}"), None, None, None)
+        .run_task(
+            "t",
+            &step("echo {{ No.Such.Symbol }}"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await;
     assert!(result.is_err(), "an unresolvable arg must fail the action");
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_eq!(s.action_status().unwrap().state, ActionState::Failed);
 
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -357,20 +428,25 @@ async fn setup_failure_then_exit_keep_running() {
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let mut wrap = env("Wrap", None, None);
     wrap.script.as_mut().unwrap().actions.on_wrap_task_run = Some(action("echo wrapped"));
-    let id = s.enter_environment(&wrap, None, None, None).await.unwrap();
+    let id = s
+        .enter_environment(&wrap, None, None, None, &Default::default())
+        .await
+        .unwrap();
     let script = step_action(Action {
         timeout: Some(fs("{{ Param.Missing }}")),
         ..action("echo inner")
     });
     let err = s
-        .run_task("t", &script, None, None, None)
+        .run_task("t", &script, None, None, None, &Default::default())
         .await
         .unwrap_err();
     assert!(matches!(err, SessionError::FormatString { .. }), "{err:?}");
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_eq!(s.action_status().unwrap().state, ActionState::Failed);
 
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -381,7 +457,13 @@ async fn failed_subprocess_then_exit_keep_running() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let r = s
@@ -398,7 +480,9 @@ async fn failed_subprocess_then_exit_keep_running() {
     assert_eq!(r.state, ActionState::Failed);
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -410,7 +494,13 @@ async fn cancel_marked_failed_then_exit_keep_running() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let handle = s.cancel_handle();
@@ -424,13 +514,22 @@ async fn cancel_marked_failed_then_exit_keep_running() {
         panic!("the task never became cancelable");
     });
     let r = s
-        .run_task("t", &step("sleep 30"), None, None, None)
+        .run_task(
+            "t",
+            &step("sleep 30"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Failed);
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert_refuses_new_actions(&mut s).await;
 }
@@ -451,20 +550,30 @@ async fn successful_actions_keep_running_controls_reopening() {
                 None,
                 None,
                 None,
+                &Default::default(),
             )
             .await
             .unwrap();
         let r = s
-            .run_task("t", &step("echo ok"), None, None, None)
+            .run_task("t", &step("echo ok"), None, None, None, &Default::default())
             .await
             .unwrap();
         assert_eq!(r.state, ActionState::Success);
         assert_eq!(s.state(), SessionState::Ready);
-        s.exit_environment(&id, None, keep, None).await.unwrap();
+        s.exit_environment(&id, None, keep, None, &Default::default())
+            .await
+            .unwrap();
         assert_eq!(s.state(), expected, "keep_session_running = {keep}");
         if expected == SessionState::Ready {
             let r = s
-                .run_task("t2", &step("echo again"), None, None, None)
+                .run_task(
+                    "t2",
+                    &step("echo again"),
+                    None,
+                    None,
+                    None,
+                    &Default::default(),
+                )
                 .await
                 .unwrap();
             assert_eq!(r.state, ActionState::Success);
@@ -512,14 +621,27 @@ async fn refusals_in_ending_only_report_ready_ending() {
     run_ending_task(&mut s, Ending::Failed).await;
 
     assert_refused_in_ready_ending(
-        s.run_task("t2", &step("echo again"), None, None, None)
-            .await,
+        s.run_task(
+            "t2",
+            &step("echo again"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
+        .await,
         SessionState::Ready,
         "run_task",
     );
     assert_refused_in_ready_ending(
-        s.enter_environment(&env("New", None, None), None, None, None)
-            .await,
+        s.enter_environment(
+            &env("New", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
+        .await,
         SessionState::Ready,
         "enter_environment",
     );
@@ -550,7 +672,14 @@ async fn refusals_in_ending_only_report_ready_ending() {
 async fn assert_accepts_new_actions(s: &mut Session) {
     let entered = s.environments_entered().to_vec();
     let r = s
-        .run_task("t2", &step("echo again"), None, None, None)
+        .run_task(
+            "t2",
+            &step("echo again"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -562,6 +691,7 @@ async fn assert_accepts_new_actions(s: &mut Session) {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -570,7 +700,9 @@ async fn assert_accepts_new_actions(s: &mut Session) {
     expected.push(new_id.clone());
     assert_eq!(s.environments_entered(), expected.as_slice());
 
-    s.exit_environment(&new_id, None, true, None).await.unwrap();
+    s.exit_environment(&new_id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::Ready);
     assert_eq!(s.environments_entered(), entered.as_slice());
 }
@@ -596,6 +728,7 @@ async fn assert_task_sees_var(s: &mut Session, value: &str) {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -635,16 +768,24 @@ async fn check_clear_after_task_ending(ending: Ending, exit_inner_first: bool) {
     let mut outer_env = env("Outer", None, Some(action("echo outer-exited")));
     outer_env.variables = env_with_var("Outer", "outer").variables;
     let outer = s
-        .enter_environment(&outer_env, None, None, None)
+        .enter_environment(&outer_env, None, None, None, &Default::default())
         .await
         .unwrap();
     let inner = s
-        .enter_environment(&env_with_var("Inner", "inner"), None, None, None)
+        .enter_environment(
+            &env_with_var("Inner", "inner"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     run_ending_task(&mut s, ending).await;
     if exit_inner_first {
-        s.exit_environment(&inner, None, true, None).await.unwrap();
+        s.exit_environment(&inner, None, true, None, &Default::default())
+            .await
+            .unwrap();
         assert_eq!(
             s.state(),
             SessionState::ReadyEnding,
@@ -667,14 +808,22 @@ async fn check_clear_after_task_ending(ending: Ending, exit_inner_first: bool) {
 
     // An exited environment stays exited, and the rest exit in LIFO order.
     if exit_inner_first {
-        match s.exit_environment(&inner, None, true, None).await {
+        match s
+            .exit_environment(&inner, None, true, None, &Default::default())
+            .await
+        {
             Err(SessionError::UnknownEnvironment { identifier }) => assert_eq!(identifier, inner),
             other => panic!("the exited environment must stay exited, got {other:?}"),
         }
     } else {
-        s.exit_environment(&inner, None, true, None).await.unwrap();
+        s.exit_environment(&inner, None, true, None, &Default::default())
+            .await
+            .unwrap();
     }
-    let out = s.exit_environment(&outer, None, false, None).await.unwrap();
+    let out = s
+        .exit_environment(&outer, None, false, None, &Default::default())
+        .await
+        .unwrap();
     assert!(out.contains("outer-exited"), "{out:?}");
     assert_eq!(s.state(), SessionState::ReadyEnding);
     assert!(s.environments_entered().is_empty());
@@ -707,16 +856,24 @@ async fn clear_ending_only_after_default_exit() {
         let tmp = TempDir::new().unwrap();
         let mut s = Session::new_for_test(tmp.path().to_path_buf());
         let outer = s
-            .enter_environment(&env_with_var("Outer", "outer"), None, None, None)
+            .enter_environment(
+                &env_with_var("Outer", "outer"),
+                None,
+                None,
+                None,
+                &Default::default(),
+            )
             .await
             .unwrap();
         let mut inner_env = env("Inner", None, on_exit.clone());
         inner_env.variables = env_with_var("Inner", "inner").variables;
         let inner = s
-            .enter_environment(&inner_env, None, None, None)
+            .enter_environment(&inner_env, None, None, None, &Default::default())
             .await
             .unwrap();
-        s.exit_environment(&inner, None, false, None).await.unwrap();
+        s.exit_environment(&inner, None, false, None, &Default::default())
+            .await
+            .unwrap();
         assert_eq!(s.state(), SessionState::ReadyEnding);
         assert_refuses_new_actions(&mut s).await;
 
@@ -734,7 +891,13 @@ async fn clear_ending_only_then_fail_again() {
     let tmp = TempDir::new().unwrap();
     let mut s = Session::new_for_test(tmp.path().to_path_buf());
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     run_ending_task(&mut s, Ending::Failed).await;
@@ -742,7 +905,9 @@ async fn clear_ending_only_then_fail_again() {
 
     run_ending_task(&mut s, Ending::Failed).await;
     assert_refuses_new_actions(&mut s).await;
-    s.exit_environment(&id, None, true, None).await.unwrap();
+    s.exit_environment(&id, None, true, None, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
     clear_and_check(&mut s);
@@ -782,11 +947,17 @@ async fn clear_ending_only_refused_in_ready() {
     assert_clear_refused(&mut s);
 
     let _id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     let r = s
-        .run_task("t", &step("echo ok"), None, None, None)
+        .run_task("t", &step("echo ok"), None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Success);
@@ -854,6 +1025,8 @@ fn config_for_test(tmp: &TempDir) -> openjd_sessions::session::SessionConfig {
         debug_collect_stdout: false,
         echo_openjd_directives: false,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+        control_flow: false,
+        output_callback: None,
     }
 }
 
@@ -895,6 +1068,7 @@ async fn clear_ending_only_keeps_action_status_and_redactions() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -908,6 +1082,7 @@ async fn clear_ending_only_keeps_action_status_and_redactions() {
             None,
             None,
             None,
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -923,7 +1098,9 @@ async fn clear_ending_only_keeps_action_status_and_redactions() {
     clear_and_check(&mut s);
     assert_eq!(s.redact("x hunter2-clear y"), "x ******** y");
 
-    s.exit_environment(&id, None, false, None).await.unwrap();
+    s.exit_environment(&id, None, false, None, &Default::default())
+        .await
+        .unwrap();
     let working_dir = s.working_directory().to_path_buf();
     assert!(working_dir.exists());
     s.cleanup();
@@ -947,7 +1124,13 @@ async fn clear_ending_only_refused_after_session_cancel_token() {
     };
     let mut s = Session::with_config(config).unwrap();
     let id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     token.cancel();
@@ -955,7 +1138,14 @@ async fn clear_ending_only_refused_after_session_cancel_token() {
     // The canceled session-wide token makes the next action end Canceled,
     // which leaves the session ending-only.
     let r = s
-        .run_task("t", &step("sleep 30"), None, None, None)
+        .run_task(
+            "t",
+            &step("sleep 30"),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ActionState::Canceled);
@@ -979,7 +1169,10 @@ async fn clear_ending_only_refused_after_session_cancel_token() {
     assert_eq!(s.state(), SessionState::ReadyEnding);
 
     // exit_environment and cleanup still work after the refusal.
-    let out = s.exit_environment(&id, None, false, None).await.unwrap();
+    let out = s
+        .exit_environment(&id, None, false, None, &Default::default())
+        .await
+        .unwrap();
     assert!(out.is_empty(), "no onExit action to run: {out:?}");
     assert_eq!(s.state(), SessionState::ReadyEnding);
     let working_dir = s.working_directory().to_path_buf();
@@ -1005,7 +1198,13 @@ async fn clear_ending_only_with_uncanceled_session_token() {
     };
     let mut s = Session::with_config(config).unwrap();
     let _id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     run_ending_task(&mut s, Ending::Failed).await;
@@ -1032,7 +1231,13 @@ async fn clear_ending_only_after_per_action_cancel_with_session_token() {
     };
     let mut s = Session::with_config(config).unwrap();
     let _id = s
-        .enter_environment(&env("Env", None, None), None, None, None)
+        .enter_environment(
+            &env("Env", None, None),
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     // run_ending_task cancels through a per-action SessionCancelHandle.

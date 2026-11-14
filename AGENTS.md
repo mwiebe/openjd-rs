@@ -81,7 +81,7 @@ Expression language implementation. The most mature crate.
 - **Evaluator** (`src/eval/evaluator.rs`) — Walks the ruff AST with memory-bounded and operation-bounded execution. Implements arithmetic, comparison, logical ops, conditionals, function calls, method calls, list comprehensions, slicing, string operations, path operations, regex, and repr functions.
 - **Format strings** (`src/format_string.rs`) — Parses `{{Param.Name}}` and `{{Expr.Name}}` syntax in template strings.
 - **Range expressions** (`src/range_expr.rs`) — Parses range expressions like `1-10`, `1-100:10`, `1,5,10-20`.
-- **Path mapping** (`src/path_mapping.rs`) — Applies source→destination path mapping rules.
+- **Path mapping** (`src/path_mapping.rs`) — Applies source→destination path mapping rules, and maps worker paths back to the submission path context (`unapply_rules`, `unapply_rules_with_source_format`).
 - **Symbol table** (`src/symbol_table.rs`) — Hierarchical key-value store supporting dotted paths (`Param.Frame`).
 
 Spec entry point: `specs/expr/README.md`
@@ -93,8 +93,9 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Parsing** (`src/parse.rs`) — Serde-based YAML/JSON deserialization with post-deserialization validation.
 - **Template types** (`src/template/`) — All v2023-09 model types including parameters, steps, environments, actions, host requirements.
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
-- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs.
+- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs, CONTROL_FLOW progressive step input binding (`advance_step_binding`, `StepInputs`, `attach_step_inputs`), CONTROL_FLOW job output evaluation (`evaluate_job_output`), and CONTROL_FLOW loops (`job::Loop`, `advance_loop_binding`, `start_iteration`, `advance_body_step_binding`, `evaluate_iteration_boundary`, `end_without_iterations`).
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
+- **Outputs** (`src/outputs/`) — CONTROL_FLOW `openjd_output_var` directive parser and output collector (no I/O).
 
 Spec entry point: `specs/model/README.md`
 
@@ -105,6 +106,7 @@ Local job execution runtime. Manages session lifecycle, runs actions via subproc
 - **Session** (`src/session.rs`) — Session state machine: enter environments, run task actions, cleanup.
 - **Subprocess** (`src/subprocess.rs`) — Process spawning, I/O streaming, signal handling (SIGTERM/SIGKILL), process tree management.
 - **Action filter** (`src/action_filter.rs`) — Real-time stdout/stderr message parsing, redaction, and annotation.
+- **Output variables** (`src/output_vars.rs`) — CONTROL_FLOW `openjd_output_var` treatments (allowed/forbidden/ignored), `@` file reads, and feeding the model's `OutputCollector`.
 - **Cross-user** (`src/cross_user_helper.rs`) — Subprocess execution as a different OS user via an embedded helper binary.
 - **Embedded helper** (`src/helper/`) — **Separate Cargo project** with its own `Cargo.toml` and `Cargo.lock`. Built by `build.rs` and embedded into the sessions binary. CI runs clippy and tests on it independently. Platform-specific runners: `src/helper/src/runner.rs` (Unix) and `runner_win.rs` (Windows).
 - **Platform-specific code** — `win32.rs`, `win32_permissions.rs`, `win32_locate.rs`, `win32_file_locks.rs`, `win32_remove.rs` use `#[cfg(target_os = "windows")]`. Cross-user tests require Docker (Linux) or a test user account (Windows).
@@ -117,7 +119,7 @@ CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
-- **run** (`src/run/`) — Local job execution using the sessions runtime.
+- **run** (`src/run/`) — Local job execution using the sessions runtime, with a CONTROL_FLOW scheduler simulator (`src/run/simulator.rs`) that advances step input binding, runs CONTROL_FLOW loops iteration by iteration, and evaluates job outputs.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`
@@ -270,7 +272,7 @@ PRs run these checks (all must pass):
 | **Clippy** | `cargo clippy` on Linux, Windows, macOS — includes the helper binary |
 | **Build** | Release build on all three platforms |
 | **Test** | `cargo test --workspace` + helper tests on all three platforms |
-| **Conformance** | Full OpenJD conformance suite (1,038 tests) on all three platforms |
+| **Conformance** | Full OpenJD conformance suite (`2023-09/*` from openjd-specifications `mainline`) on all three platforms. `mainline` does not have the draft `CONTROL_FLOW` tests yet; see README.md "Conformance" for the counts with them |
 | **MSRV** | `cargo check --workspace` with Rust 1.97.0 |
 | **Documentation** | `cargo doc --no-deps --workspace` with `-D warnings` |
 | **Compliance** | Copyright header check |

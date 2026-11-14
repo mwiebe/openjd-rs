@@ -48,7 +48,8 @@ openjd_expr                 — crate root; most commonly used items re-exported
 ├── functions               — sub-library modules (module-path-only — see below)
 │   ├── arithmetic, comparison, conversion, list, math, misc, path,
 │   │   path_parse, regex, repr, string
-├── path_mapping            — PathFormat, PathMappingRule, PathMapper, InvalidPathMappingRule, is_uri
+├── path_mapping            — PathFormat, PathMappingRule, PathMapper, InvalidPathMappingRule,
+│                             unapply_rules*, UnmapError, is_uri
 ├── profile                 — ExprProfile, ExprRevision, ExprExtension, HostContext
 ├── range_expr              — RangeExpr, IntRange, RangeExprError
 ├── symbol_table            — SymbolTable, SymbolTableEntry, SymbolTableError,
@@ -1485,6 +1486,45 @@ impl PathMapper {
     pub fn map(&self, path: &str) -> String;
     #[must_use]
     pub fn map_with_format(&self, path: &str, output_format: PathFormat) -> String;
+}
+
+/// Map a path reported on the worker back to the submission path context:
+/// the reference inverse of RFC 0012 §Path values. A URI is returned
+/// unchanged; a path that is not absolute under `worker_format` is
+/// `Relative`; with no rules an absolute path is returned unchanged;
+/// otherwise the first candidate (by decreasing normalized
+/// `destination_path` length, then `mapper.rules()` order) that
+/// `mapper.map_with_format(_, worker_format)` maps back to the reported
+/// path, compared after lexical normalization under `worker_format`, is
+/// returned, or `NoRoundTrip`. A candidate longer than `MAX_PATH_LEN` is
+/// skipped, and if one was and none maps back the result is `TooLong`.
+/// `mapper` MUST be the producing Session's own
+/// `PathMapper`, built from its full, unfiltered rules. The RFC's SHOULD
+/// source-format filter is not implemented. See path-mapping.md § Reverse
+/// mapping.
+pub fn path_mapping::unapply_rules(
+    mapper: &PathMapper, path: &str, worker_format: PathFormat,
+) -> Result<String, path_mapping::UnmapError>;
+
+/// `unapply_rules`, also returning the stored form's path format: `Uri`
+/// for a URI returned unchanged, `worker_format` for an absolute path
+/// returned unchanged with no rules, otherwise the returned candidate's
+/// rule's `source_path_format`.
+pub fn path_mapping::unapply_rules_with_source_format(
+    mapper: &PathMapper, path: &str, worker_format: PathFormat,
+) -> Result<(String, PathFormat), path_mapping::UnmapError>;
+
+/// Why `unapply_rules` or `unapply_rules_with_source_format` failed. `Display` gives a message without the path;
+/// the caller adds the path and output name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum path_mapping::UnmapError {
+    /// Neither a URI nor absolute under the worker's path format.
+    Relative,
+    /// The Session has rules and no candidate maps forward to the path.
+    NoRoundTrip,
+    /// The Session has rules, a candidate was skipped as longer than
+    /// `MAX_PATH_LEN`, and no other candidate maps back.
+    TooLong,
 }
 
 /// True iff `path` has a `scheme://` URI prefix, where the scheme matches

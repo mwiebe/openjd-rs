@@ -113,6 +113,16 @@ Custom deserializers handle:
 - **`EnvironmentParameterValue`** (ENV_PARAMS) — A string containing `{{` is parsed as a
   `FormatString` (a brace mismatch fails decode); anything else is kept as the written JSON
   value, which pass 11 checks against the parameter's type
+- **`StepEntry`** (`CONTROL_FLOW`, RFC 0013) — A `steps` entry with a `loop` key is a
+  `StepLoop`, any other a `StepTemplate`; a loop body entry with a `loop` key fails because
+  loops do not nest (see [template-types.md](template-types.md) § CONTROL_FLOW Loop Types)
+- **`OutputVariableDefinition`, `JobOutputDefinition`, `LoopVariableDefinition`,
+  `LoopOutputVariableDefinition`** (`CONTROL_FLOW`) — Take their own keys out of the
+  mapping and deserialize the rest as a `JobParameterDefinition`
+
+Before deserialization, the decoder records each job and task parameter `type` as written,
+including the task parameters of loop body Steps, for the case-sensitivity check that runs
+once the extensions are known.
 
 ### Pass 4: Extension Resolution
 
@@ -155,7 +165,7 @@ The decode functions accept `serde_yaml::Value` rather than `&str` because:
 1. Callers may need to inspect the raw value tree before decoding (e.g., to read
    `specificationVersion` for routing)
 2. The same value tree can be used for both JSON and YAML sources
-3. It separates syntax parsing (pass 1) from semantic decoding (passes 2–9)
+3. It separates syntax parsing (pass 1) from semantic decoding (passes 2–11)
 
 ### Comparison with Python
 

@@ -10,6 +10,7 @@ use super::env_parameters::EnvironmentParameterValueMap;
 use super::environment::{EmbeddedFile, Environment};
 use super::expr_field::ExprField;
 use super::host_requirements::HostRequirements;
+use super::output_variables::OutputVariableDefinition;
 use super::task_parameters::StepParameterSpaceDefinition;
 use crate::error::PathElement;
 use crate::format_string::FormatString;
@@ -239,12 +240,20 @@ impl SimpleActionKind {
 pub struct StepTemplate {
     pub name: String,
     pub description: Option<Description>,
+    /// Whether the Step runs (`CONTROL_FLOW`, RFC 0011): an expression
+    /// field of type `bool` (RFC 0010's Template Schemas §7.6). A present
+    /// `null` is kept as [`ExprField::Null`] so validation can report it.
+    #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
+    pub enable_if: Option<ExprField>,
     #[serde(rename = "let")]
     pub let_bindings: Option<Vec<String>>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
+    /// The output variables every Task of the Step reports (`CONTROL_FLOW`,
+    /// RFC 0012).
+    pub output_variables: Option<Vec<OutputVariableDefinition>>,
     pub script: Option<StepScript>,
     // SimpleAction syntax sugar (§3.5, FEATURE_BUNDLE_1)
     pub bash: Option<SimpleAction>,

@@ -929,7 +929,12 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#,
     );
-    let deps = jt.steps[1].dependencies.as_ref().unwrap();
+    let deps = jt.steps[1]
+        .as_step()
+        .unwrap()
+        .dependencies
+        .as_ref()
+        .unwrap();
     assert_eq!(
         deps[0].target(),
         Some(DependencyTarget::Step("A", StepKey::DependsOn))
@@ -1771,7 +1776,12 @@ fn a_step_entry_names_a_step_as_depends_on_does() {
         "extensions: [ENV_PARAMS, EXPR]\n",
         "[{step: A}]",
     ));
-    let dep = &jt.steps[1].dependencies.as_ref().unwrap()[0];
+    let dep = &jt.steps[1]
+        .as_step()
+        .unwrap()
+        .dependencies
+        .as_ref()
+        .unwrap()[0];
     assert_eq!(dep.step.as_deref(), Some("A"));
     assert_eq!(dep.depends_on, None);
     assert_eq!(

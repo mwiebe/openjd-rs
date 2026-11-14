@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod job;
+pub mod outputs;
 pub mod template;
 pub use job::create_job;
 pub use job::step_dependency_graph;
@@ -29,14 +30,18 @@ pub use error::ModelError;
 pub use error::{DiagnosticSpan, ErrorDetail};
 pub use error::{PathElement, ValidationError, ValidationErrors};
 pub use job::create_job::{
+    advance_body_step_binding, advance_loop_binding, advance_step_binding, attach_step_inputs,
     build_symbol_table, check_environment_templates, convert_environment,
     convert_environment_with_symtab, create_job, create_job_with_environment_templates,
-    evaluate_let_bindings, merge_job_parameter_definitions, preprocess_job_parameters,
-    AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement, EnvironmentScope,
-    EnvironmentStatus, HostRequirementKind, MergedParameterDefinition, OptionalEntryNotFound,
-    PathParameterOptions, StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses,
-    SubmissionWarning, SupersedingEnvironment,
+    end_without_iterations, evaluate_iteration_boundary, evaluate_job_output,
+    evaluate_let_bindings, job_output_inputs, merge_job_parameter_definitions,
+    preprocess_job_parameters, start_iteration, AttachedEnvironmentTemplate, CreatedJob,
+    DiscardedHostRequirement, EnvironmentScope, EnvironmentStatus, HostRequirementKind,
+    MergedParameterDefinition, OptionalEntryNotFound, PathParameterOptions,
+    StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses, SubmissionWarning,
+    SupersedingEnvironment,
 };
+pub use job::ChunkTaskIndex;
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;
 pub use template::parse::{
@@ -46,8 +51,8 @@ pub use template::parse::{
 pub use types::{
     CallerLimits, DataFlow, EndOfLine, Extensions, FileType, JobParameterInputValues,
     JobParameterType, JobParameterValue, JobParameterValues, ModelExtension, ModelProfile,
-    ObjectType, SpecificationRevision, TaskParameterSet, TaskParameterType, TaskParameterValue,
-    TemplateSpecificationVersion, ValidationContext,
+    ObjectType, OutputCollectMode, SpecificationRevision, TaskParameterSet, TaskParameterType,
+    TaskParameterValue, TemplateSpecificationVersion, ValidationContext,
 };
 
 #[cfg(test)]

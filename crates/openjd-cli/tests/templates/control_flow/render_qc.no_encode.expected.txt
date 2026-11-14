@@ -1,0 +1,76 @@
+$ openjd run {T}/render_qc.yaml -p Frames=1-3 -p EncodeVideo=false -p SceneFile={T}/fixtures/clean.scene -p OutputPattern={W}/out/beauty_####.exr -p OutputVideo={W}/out/beauty.mp4
+exit code: 0
+--- stdout
+Session start
+Running job 'Render clean'
+Step 'Rerender' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.QualityCheck.Output.BadFrames
+  Host requirements: known
+Step 'Denoise' is pending inputs:
+  Enabled: determined at run time from Steps.QualityCheck.Output.MeanNoise
+  Tasks: determined at run time (waiting for enableIf)
+  Host requirements: determined at run time (waiting for enableIf)
+Step 'EncodeVideo' skipped (enableIf is false)
+Running step 'Render'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 1
+Output:
+render stub: frame 1 -> beauty_0001.exr (noise 0.01)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+render stub: frame 2 -> beauty_0002.exr (noise 0.01)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 3
+Output:
+render stub: frame 3 -> beauty_0003.exr (noise 0.01)
+Process exited with code: 0
+Running step 'QualityCheck'
+==============================================
+--------- Running Task
+==============================================
+Output:
+qc stub: noise {1: 0.01, 2: 0.01, 3: 0.01}
+openjd_output_var: BadFrames=[]
+openjd_output_var: MeanNoise=0.01
+Process exited with code: 0
+Output BadFrames = []
+Output MeanNoise = 0.01
+Step 'Rerender': Tasks known (0 tasks)
+Step 'Rerender' is ready
+Step 'Denoise' skipped (enableIf is false)
+Running step 'Rerender'
+Step 'Rerender' has 0 tasks
+Step 'Denoise' is skipped; it runs no Tasks
+Step 'EncodeVideo' is skipped; it runs no Tasks
+Running step 'Publish'
+==============================================
+--------- Running Task
+==============================================
+Output:
+publish stub: beauty_####.exr note: frames only
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Render clean
+Duration: {DURATION}
+Chunks run: 5
+--- stderr

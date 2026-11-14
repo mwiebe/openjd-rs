@@ -7,6 +7,12 @@ steps, task counts, environments, and dependencies. It can summarize the entire 
 single step. The command instantiates the job (resolving parameters and creating the job
 object) to produce accurate task counts that reflect parameter space expansion.
 
+For a `CONTROL_FLOW` Job, `create_job` may leave a Step skipped or pending inputs, and
+`summary` reports what it knows of each (plan C2, RFC 0011 §Implementation strategy), as
+described in [CONTROL_FLOW](#control_flow) below. A job output that fails at creation
+fails `create_job`, so `summary` reports that error. A loop (RFC 0013) is shown with its
+bound and body, as described in [Loops](#loops) below.
+
 ## Interface
 
 ```
@@ -19,7 +25,7 @@ openjd summary <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [--extensions <EXT>]
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `path` | `PathBuf` | Yes | Path to the job template file |
-| `--step` | `Option<String>` | No | Print summary for this step only |
+| `--step` | `Option<String>` | No | Print summary for this Step or loop only (not a loop's body Step) |
 | `-p`, `--parameter` | `Vec<String>` | No | Job parameters (`Key=Value`, `file://path`, or inline JSON) |
 | `--extensions` | `Option<String>` | No | Comma-separated extension names |
 | `--environment` (alias `--env`) | `Vec<PathBuf>` | No | Environment Template files, attached in the order given, as for `openjd run` |
@@ -89,23 +95,31 @@ iterating over `job.parameters` for display.
 
 ## Task Count Calculation
 
-`step_total_tasks()` computes the total number of tasks for a step by constructing a
-`StepParameterSpaceIterator` with a chunk override of 1. The chunk override ensures that
-chunked parameters (CHUNK[INT]) are counted as individual tasks rather than chunks, giving
-the true task count.
+`step_total_tasks()` is `job::Step::tasks_known()`: the number of Tasks with chunking
+disabled (so `CHUNK[INT]` parameters count individual Tasks, not chunks), 1 for a Step
+with no parameter space, 0 for a skipped Step, and `None` for a pending Step whose Tasks
+are determined at run time. When `tasks_known()` has no count for a bound Step, its count
+overflowed, and `step_total_tasks()` reports that error.
 
 ```rust
-fn step_total_tasks(step: &job::Step) -> Result<u64, String> {
-    match &step.parameter_space {
-        None => Ok(1),
-        Some(ps) => StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1))
-            .map(|it| it.len())
-            .map_err(|e| format!("Step '{}': {e}", step.name)),
+fn step_total_tasks(step: &job::Step) -> Result<Option<u64>, String> {
+    if let Some(n) = step.tasks_known() {
+        return Ok(Some(n));
+    }
+    match (&step.binding, &step.parameter_space) {
+        (job::StepBinding::Bound, Some(ps)) => {
+            StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1))
+                .map(|it| Some(it.len()))
+                .map_err(|e| format!("Step '{}': {e}", step.name))
+        }
+        _ => Ok(None),
     }
 }
 ```
 
-Steps with no parameter space have exactly 1 task (the implicit single task).
+The total sums the Steps whose Tasks are known. A loop's Tasks are known only once it ends
+(RFC 0013 §Iterations), so a loop counts as determined at run time, unless it is skipped
+or its first `while` is false at Job creation (0 Tasks).
 
 Task counts are `u64`, the type of `StepParameterSpaceIterator::len`, so they are exact on
 every target, including one where `usize` is 32 bits. The job summary's total is their
@@ -172,6 +186,10 @@ a count.
    omitted when there are none. These are shown when the Job Template or any `--environment` template lists
    `ENV_PARAMS` (an attached Environment's `activation` and `hostRequirements` apply when its own
    document lists it); when no document does, none of them is shown, so such a summary is unchanged.
+   With `CONTROL_FLOW`, they are shown only for a Step whose Environment selection is
+   applied (`environments_decided`): not for a skipped Step, nor for one still pending its
+   `enableIf`, whose Environments are not decided yet (see
+   [../model/job-creation.md](../model/job-creation.md#environment-selection-control_flow)).
 4. **Environments** — Root (job-level) and step-level environments with names and parent
    context.
 
@@ -244,6 +262,11 @@ amounts as numbers, and, when any were discarded, `discarded_host_requirements`,
 `{"kind", "name", "environment"?}` objects (`kind` is `amount` or `attribute`;
 `environment`, `{"name", "source"}`, is absent for the Step's own).
 
+For a `CONTROL_FLOW` template, each step entry also has `state` and, for a pending Step,
+`binding` (see below), and `total_tasks` is `null` for a Step whose Tasks are unknown.
+`tasks_determined_at_run_time: true` is added when any Step's are, and `job_outputs` when
+the template defines any. A disabled Environment's entry has `enabled: false`.
+
 ### YAML Format
 
 The YAML output contains the same structured data as JSON, serialized via
@@ -269,8 +292,104 @@ code, so they are always in sync.
 - Environment parameters (`ENV_PARAMS`), as in the job summary, under an
   `Environment parameters:` heading and in the JSON `environment_parameters` field
 
-The step is looked up by name in `job.steps`. If the step name doesn't match any step,
-an error is returned with the job name for context.
+The step is looked up by name in `job.steps`, and then in `job.loops` (see
+[Loops](#loops)). If the step name doesn't match any step, an error is returned with the
+job name for context.
+
+## CONTROL_FLOW
+
+For a template that lists `CONTROL_FLOW`:
+
+* **Pending Steps.** A Step that is pending inputs is shown as `N. 'C' (pending inputs;
+  Tasks determined at run time)`, or `(240 total Tasks; pending inputs)` once its Tasks are
+  known, followed by one line per group from `common::binding_lines()`, which the run log
+  uses too:
+
+  ```
+  3. 'C' (pending inputs; Tasks determined at run time)
+    Enabled: yes
+    Tasks: determined at run time from Steps.P.Output.N
+    Host requirements: known
+  ```
+
+  `Enabled:` is `yes` or `determined at run time from <symbols>`. `Tasks:` is `<N> (known)`,
+  `<N> (known; Step pending inputs for <symbols>)` when another group still waits (the A11
+  case: a `let` read only by the script waits on an upstream output), `determined at run
+  time from <symbols>` (with ` and enableIf` when the Step's `enableIf` is undecided too),
+  or `determined at run time (waiting for enableIf)`. `Host requirements:` is `known` or
+  as for Tasks. In JSON, `binding` has `enablement`, `tasks`, `host_requirements`, and
+  `remaining`, each `{"known": true}` or `{"known": false, "waits_on": [...],
+  "waits_for_enable_if": bool}`, from `job::Step::binding_report()`.
+* **Skipped Steps** are shown as `N. 'S' (SKIPPED, 0 total Tasks)`, and with `state:
+  "SKIPPED"` in JSON. Every Step has a `state` there: `READY`, `PENDING_INPUTS`, or
+  `SKIPPED`.
+* **Totals.** `Total tasks: N + (determined at run time)` when some Step's Tasks are
+  unknown, where `N` counts every Step whose Tasks are known, pending or not.
+* **Disabled Environments** are listed with `(from 'P', disabled by its enableIf)`.
+* **Job outputs** are listed after the Environments, with their types and units, and
+  either the value `create_job` evaluated or the `Steps.*` symbols each waits on that are
+  not concrete at creation (`common::concrete_at_creation`, decided from the Steps'
+  bindings without building any value), with each description indented under its item:
+
+  ```
+  --- Job outputs in 'Fan' ---
+    - Frames (LIST[INT]): pending; waits for Steps.C.TaskParam.F
+    - Total (INT, px): pending; waits for Steps.C.Output.Done
+      Total pixels
+  ```
+
+  In JSON, `job_outputs` is a list of `{name, type, unit?, description?, state, value?,
+  waits_on?}` with `state` `VALUE`, `NULL`, or `PENDING`.
+
+`--step` reports the same for one Step: `Total tasks: determined at run time` (or `N
+(SKIPPED)`), then the group lines, and `state` and `binding` in JSON.
+
+### Loops
+
+A loop (RFC 0013, plan L8) is listed in template order among the Steps, as `N. 'Refine'
+(loop; Tasks determined at run time)` (`loop; pending inputs; Tasks determined at run
+time`, `loop; SKIPPED, 0 total Tasks`, or `loop; 0 iterations, 0 total Tasks` when its
+first `while` is false), followed by:
+
+```
+1. 'Refine' (loop; Tasks determined at run time)
+  Condition: until
+  maxIterations: 6
+  Loop variables:
+    - Samples (INT)
+    - Frames (LIST[INT])
+  Loop outputs:
+    - FinalSamples (INT, LAST)
+    - NoisyFrameCounts (LIST[INT], APPEND)
+  Body Steps (Tasks determined at run time in each iteration):
+    - 'RenderPass'
+      Task parameters:
+        - Frame (INT)
+    - 'CheckPass'
+      1 dependencies
+```
+
+A pending loop shows its group lines (`common::loop_binding_lines`, as in the run log)
+before `Condition:`, in place of the `maxIterations:` line; a skipped loop shows
+`maxIterations: not evaluated (the loop is skipped)`. Each loop output shows its type,
+`collect`, and unit. A body Step shows its Task parameters, Step Environment count, and
+dependency count, from its template, since no instance exists before the loop runs. Its
+Step Environments are listed under Environments as `Name (from body Step 'S' of loop
+'L')`.
+
+`Total steps` counts each top-level Step and each body Step once (RFC 0013 §Limits item
+3), and `Total loops: N` follows it when the Job has loops (`total_loops` in JSON). In
+JSON, a loop's entry in `steps` is `{name, kind: "loop", description?, total_tasks, state,
+binding?, condition, max_iterations?, variables?, outputs?, body, dependencies?}`, where
+`total_tasks` is `null` unless the loop has 0 Tasks, `binding` has `enablement`, `bound`,
+and `start` as a Step's groups are reported, `outputs` is a list of `{name, type, collect,
+unit?}`, and `body` a list of `{name, parameter_definitions?, environments?,
+dependencies?}`.
+
+`--step L` naming a loop prints `--- Summary for loop 'L' in Job 'J' ---`, `State: READY
+(loop; Tasks determined at run time)`, the same lines, and its dependencies. `--step`
+naming a body Step fails with `Step 'Q' is a body Step of loop 'L'; summarize the loop
+with --step L.`
 
 ## Internal Types
 
@@ -296,7 +415,7 @@ struct DisabledEnvInfo {
 struct StepInfo<'a> {
     name: String,
     description: Option<String>,
-    total_tasks: u64,
+    total_tasks: Option<u64>,            // None while determined at run time
     task_params: Vec<(String, String)>,  // (name, type_name)
     envs: Vec<String>,
     deps: Vec<String>,
@@ -328,6 +447,25 @@ struct EnvParamInfo {
     environment: String,
     document: String,                    // `JobTemplate` or the --environment path
     values: Vec<(String, String, String)>, // (name, TYPE, display value), in name order
+    state: Option<&'static str>,         // CONTROL_FLOW only
+    binding_lines: Vec<String>,          // a pending Step's group lines
+    binding_json: Option<serde_json::Value>,
+    loop_info: Option<LoopInfo>,         // for a loop's entry
+}
+
+struct LoopInfo {                        // see Loops
+    name: String,
+    description: Option<String>,
+    state: &'static str,
+    condition: &'static str,             // "while" or "until"
+    max_iterations: Option<u32>,         // once known
+    zero_iterations: bool,               // the first while is false at Job creation
+    variables: Vec<(String, String)>,    // (name, type)
+    outputs: Vec<LoopOutputInfo>,        // name, type, collect, unit
+    body: Vec<BodyStepInfo>,             // name, task params, Step Environments, deps
+    deps: Vec<String>,
+    binding_lines: Vec<String>,          // a pending loop's group lines
+    binding_json: Option<serde_json::Value>,
 }
 
 struct ParamInfo {
@@ -340,6 +478,17 @@ struct EnvInfo {
     name: String,
     description: Option<String>,
     parent: String,
+    parent_loop: Option<String>,         // a body Step's Step Environment
+    enabled: bool,
+}
+
+struct JobOutputInfo {
+    name: String,
+    output_type: String,
+    unit: Option<String>,
+    description: Option<String>,
+    value: Option<job::JobOutputValue>,  // when create_job evaluated it
+    waits_on: Vec<String>,               // Steps.* symbols not yet concrete
 }
 ```
 
@@ -350,11 +499,13 @@ output.
 
 ## Task Parameter Type Names
 
-`task_param_type_name()` maps `job::TaskParameter` variants to their specification string
-names:
+Task parameter names and types come from the Job Template's step definitions
+(`TaskParameterDefinition::task_param_type().as_spec_str()`), not from the job's
+materialized parameter space, so a `CONTROL_FLOW` Step that is pending inputs still lists
+them. The names are:
 
-| Variant | Display Name |
-|---------|-------------|
+| Type | Display Name |
+|------|-------------|
 | `Int` | `INT` |
 | `Float` | `FLOAT` |
 | `String` | `STRING` |

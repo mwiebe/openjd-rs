@@ -943,7 +943,12 @@ fn may_be_discarded_follows_the_written_form() {
          anyOf: \"{{ None }}\"}, {name: custom:attr.c, anyOf: \"{{ None }}\", allOf: [y]}, {name: \
          custom:attr.d, anyOf: \"{{ None }}\", allOf: \"{{ None }}\"}]}",
     ));
-    let hr = t.steps[0].host_requirements.as_ref().unwrap();
+    let hr = t.steps[0]
+        .as_step()
+        .unwrap()
+        .host_requirements
+        .as_ref()
+        .unwrap();
     let amounts: Vec<bool> = hr
         .amounts
         .iter()

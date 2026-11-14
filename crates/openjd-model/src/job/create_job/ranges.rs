@@ -141,9 +141,90 @@ fn range_too_long(param_name: &str, limits: &EffectiveLimits, count: usize) -> M
     ))
 }
 
-/// The room left in a range list that already holds `len` elements.
-fn room_left(limits: &EffectiveLimits, len: usize) -> usize {
-    limits.max_task_param_range_len.saturating_sub(len)
+/// The range rules that depend on the template's extensions.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RangeRules {
+    /// The template enables `EXPR` (not merely the `create_job` context),
+    /// which decides how a numeric range list element resolves (see
+    /// `TaskParameterType::range_list_item_target`).
+    pub(super) expr: bool,
+    /// `CONTROL_FLOW` is enabled (RFC 0011 §Task parameter ranges).
+    pub(super) control_flow: bool,
+}
+
+impl RangeRules {
+    /// The most values a resolved range may have, or `None` for no cap.
+    ///
+    /// Without `CONTROL_FLOW`, every resolved list range is capped at
+    /// `max_task_param_range_len` (§3.4.1), whether it came from a list
+    /// literal or a format string, and an `<IntRangeExpr>` is not. With
+    /// `CONTROL_FLOW` (RFC 0011 §Range length) the cap applies to a list
+    /// literal's items as written, which the structure pass checks, and not
+    /// to resolved values. The RFC may still key this relaxation on ranges
+    /// that read `Steps.*` (plan ambiguity A3); this is the one place to
+    /// change.
+    fn resolved_cap(self, limits: &EffectiveLimits) -> Option<usize> {
+        (!self.control_flow).then_some(limits.max_task_param_range_len)
+    }
+
+    /// Whether a resolved range of `len` values is over
+    /// [`resolved_cap`](Self::resolved_cap).
+    fn over_cap(self, len: usize, limits: &EffectiveLimits) -> bool {
+        self.resolved_cap(limits).is_some_and(|cap| len > cap)
+    }
+
+    /// Check a resolved range's length against [`resolved_cap`](Self::resolved_cap).
+    fn check_len(
+        self,
+        len: usize,
+        param_name: &str,
+        limits: &EffectiveLimits,
+    ) -> Result<(), ModelError> {
+        if self.over_cap(len, limits) {
+            return Err(range_too_long(param_name, limits, len));
+        }
+        Ok(())
+    }
+
+    /// The room left in a range list that already holds `len` elements:
+    /// unbounded when there is no [`resolved_cap`](Self::resolved_cap).
+    fn room_left(self, limits: &EffectiveLimits, len: usize) -> usize {
+        self.resolved_cap(limits)
+            .map_or(usize::MAX, |cap| cap.saturating_sub(len))
+    }
+
+    /// A whole-field range expression that resolved to `null`. With
+    /// `CONTROL_FLOW` a conditional producer's outputs are `T?`, so a `null`
+    /// range is an ordinary mistake and gets its own message (RFC 0011 §How a
+    /// Step is bound item 3: "a `null` where a value is required"); without
+    /// it the existing messages are kept.
+    fn check_not_null(self, value: &ExprValue, param_name: &str) -> Result<(), ModelError> {
+        if self.control_flow && matches!(value, ExprValue::Null) {
+            return Err(ModelError::DecodeValidation(format!(
+                "Task parameter '{param_name}' range must not resolve to null"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The ≥1-element rule (Template Schemas §3.4.1) is checked on the list
+    /// as written, at decode. A format string element that resolves to
+    /// `null` or to an empty list contributes nothing, so a list can still
+    /// end up empty here. That is an error without `CONTROL_FLOW`; with it,
+    /// the result follows the rules for a format-string range and may be
+    /// empty (RFC 0011 §Empty parameter spaces).
+    fn check_list_literal_not_emptied(
+        self,
+        len: usize,
+        param_name: &str,
+    ) -> Result<(), ModelError> {
+        if len == 0 && !self.control_flow {
+            return Err(ModelError::DecodeValidation(format!(
+                "Task parameter '{param_name}' range has no elements after resolution"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// The text of a resolved string list item value: a string as is, any other
@@ -201,20 +282,55 @@ pub(super) fn resolve_string_list(
 
 /// Resolve a StepParameterSpaceDefinition into a StepParameterSpace with concrete ranges.
 ///
-/// `expr` says whether the template enables the EXPR extension (not whether
-/// the `create_job` context does), which decides how a numeric range list
-/// element resolves (see `TaskParameterType::range_list_item_target`).
+/// `rules.expr` says whether the template enables the EXPR extension (not
+/// whether the `create_job` context does), which decides how a numeric range
+/// list element resolves (see `TaskParameterType::range_list_item_target`).
 pub(super) fn resolve_parameter_space(
     ps: &template::StepParameterSpaceDefinition,
     symtab: &SymbolTable,
-    expr: bool,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
+    rules: RangeRules,
 ) -> Result<job::StepParameterSpace, ModelError> {
+    resolve_parameter_space_by_field(ps, symtab, limits, budgets, rules).map_err(|(_, e)| e.error)
+}
+
+/// The field of a Task parameter whose resolution failed: `range`, or
+/// `chunks` for its `chunks` fields.
+pub(super) struct TaskParamError {
+    pub(super) field: &'static str,
+    pub(super) error: ModelError,
+}
+
+fn on_range(error: ModelError) -> TaskParamError {
+    TaskParamError {
+        field: "range",
+        error,
+    }
+}
+
+fn on_chunks(error: ModelError) -> TaskParamError {
+    TaskParamError {
+        field: "chunks",
+        error,
+    }
+}
+
+/// [`resolve_parameter_space`], with a failure tagged by the index of its
+/// Task parameter and the field that failed, so step input binding can
+/// report it at its path.
+pub(super) fn resolve_parameter_space_by_field(
+    ps: &template::StepParameterSpaceDefinition,
+    symtab: &SymbolTable,
+    limits: &EffectiveLimits,
+    budgets: super::EvalBudgets,
+    rules: RangeRules,
+) -> Result<job::StepParameterSpace, (usize, TaskParamError)> {
     let mut defs = IndexMap::new();
-    for tp in &ps.task_parameter_definitions {
+    for (k, tp) in ps.task_parameter_definitions.iter().enumerate() {
         let name = tp.name().to_string();
-        let param = resolve_task_parameter(tp, symtab, expr, limits, budgets)?;
+        let param =
+            resolve_task_parameter(tp, symtab, limits, budgets, rules).map_err(|e| (k, e))?;
         defs.insert(name, param);
     }
     Ok(job::StepParameterSpace {
@@ -226,13 +342,13 @@ pub(super) fn resolve_parameter_space(
 fn resolve_task_parameter(
     tp: &template::TaskParameterDefinition,
     symtab: &SymbolTable,
-    expr: bool,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
-) -> Result<job::TaskParameter, ModelError> {
+    rules: RangeRules,
+) -> Result<job::TaskParameter, TaskParamError> {
     // The list-item target for this parameter's type (Expression Language
     // §1.3.2), shared with template validation.
-    let item_target = tp.task_param_type().range_list_item_target(expr);
+    let item_target = tp.task_param_type().range_list_item_target(rules.expr);
     let item_target = item_target.as_ref();
     match tp {
         template::TaskParameterDefinition::INT(p) => {
@@ -243,7 +359,9 @@ fn resolve_task_parameter(
                 p.name.as_str(),
                 limits,
                 budgets,
-            )?;
+                rules,
+            )
+            .map_err(on_range)?;
             Ok(job::TaskParameter::Int {
                 range,
                 chunks: None,
@@ -257,7 +375,9 @@ fn resolve_task_parameter(
                 p.name.as_str(),
                 limits,
                 budgets,
-            )?;
+                rules,
+            )
+            .map_err(on_range)?;
             Ok(job::TaskParameter::Float { range })
         }
         template::TaskParameterDefinition::STRING(p) => {
@@ -269,7 +389,9 @@ fn resolve_task_parameter(
                 false,
                 limits,
                 budgets,
-            )?;
+                rules,
+            )
+            .map_err(on_range)?;
             Ok(job::TaskParameter::String { range })
         }
         template::TaskParameterDefinition::PATH(p) => {
@@ -281,7 +403,9 @@ fn resolve_task_parameter(
                 true,
                 limits,
                 budgets,
-            )?;
+                rules,
+            )
+            .map_err(on_range)?;
             Ok(job::TaskParameter::Path { range })
         }
         template::TaskParameterDefinition::CHUNK_INT(p) => {
@@ -292,13 +416,16 @@ fn resolve_task_parameter(
                 p.name.as_str(),
                 limits,
                 budgets,
-            )?;
+                rules,
+            )
+            .map_err(on_range)?;
             // CHUNK[INT] chunking bounds values to |v| < 2^62, below what
             // list and range-expression ranges accept, so reject
             // out-of-bound values here — at job creation, with a
             // path-annotated error — rather than overflowing when a chunk
             // is built during iteration.
-            crate::job::step_param_space::check_chunk_int_value_bound(p.name.as_str(), &range)?;
+            crate::job::step_param_space::check_chunk_int_value_bound(p.name.as_str(), &range)
+                .map_err(on_range)?;
             // Chunks fields are `<integer> | <intstring>`: a single
             // whole-field expression resolves with target type `int`
             // (Expression Language §1.2.3 — every field gives its
@@ -336,15 +463,17 @@ fn resolve_task_parameter(
                 // Non-negative after `max`, so `as u64` is exact.
                 template::IntOrFormatString::Int(n) => (*n).max(1) as u64,
                 template::IntOrFormatString::FormatString(fs) => {
-                    let count = resolve_chunk_int(fs, "defaultTaskCount")?;
+                    let count = resolve_chunk_int(fs, "defaultTaskCount").map_err(on_chunks)?;
                     // §3.4.1.5 sets a minimum of 1. The bound cannot be applied
                     // at decode when the value is a format string, so it is
                     // applied here. Rejecting rather than clamping: a resolved 0
                     // silently became 1, which ran the job with a chunk shape the
                     // author never asked for.
                     if count < 1 {
-                        return Err(ModelError::Expression(ExpressionError::new(format!(
-                            "chunks.defaultTaskCount: resolved to {count}, but must be >= 1"
+                        return Err(on_chunks(ModelError::Expression(ExpressionError::new(
+                            format!(
+                                "chunks.defaultTaskCount: resolved to {count}, but must be >= 1"
+                            ),
                         ))));
                     }
                     // `count >= 1`, so `as u64` is exact.
@@ -398,7 +527,8 @@ fn resolve_task_parameter(
                         Ok(Some(seconds as u64))
                     }
                 })
-                .transpose()?
+                .transpose()
+                .map_err(on_chunks)?
                 .flatten();
             let chunks = job::ResolvedChunks {
                 default_task_count,
@@ -417,6 +547,7 @@ fn resolve_int_range(
     param_name: &str,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
+    rules: RangeRules,
 ) -> Result<job::TaskParamRange<i64>, ModelError> {
     match range {
         template::IntRange::List(items) => {
@@ -432,7 +563,7 @@ fn resolve_int_range(
                             symtab,
                             param_name,
                             budgets,
-                            room_left(limits, ints.len()),
+                            rules.room_left(limits, ints.len()),
                         )
                         .map_err(|e| match e {
                             IntElementError::Model(e) => e,
@@ -443,11 +574,9 @@ fn resolve_int_range(
                         ints.extend(values);
                     }
                 }
-                if ints.len() > limits.max_task_param_range_len {
-                    return Err(range_too_long(param_name, limits, ints.len()));
-                }
+                rules.check_len(ints.len(), param_name, limits)?;
             }
-            check_range_not_emptied(ints.len(), param_name)?;
+            rules.check_list_literal_not_emptied(ints.len(), param_name)?;
             Ok(job::TaskParamRange::List(ints))
         }
         template::IntRange::Expression(expr) => {
@@ -458,6 +587,7 @@ fn resolve_int_range(
             // Any real evaluation errors (division by zero, type errors) will be
             // caught by the string resolution fallback path.
             if let Ok(val) = expr.resolve_with(symtab, &budgets.fs_options()) {
+                rules.check_not_null(&val, param_name)?;
                 match val {
                     // Range expressions are not length-capped; only the list
                     // forms are. See `EffectiveLimits::max_task_param_range_len`.
@@ -476,14 +606,7 @@ fn resolve_int_range(
                             })
                             .collect();
                         let ints = ints?;
-                        if ints.len() > limits.max_task_param_range_len {
-                            return Err(ModelError::DecodeValidation(format!(
-                                "Task parameter '{}' range exceeds {} elements ({} elements)",
-                                param_name,
-                                limits.max_task_param_range_len,
-                                ints.len()
-                            )));
-                        }
+                        rules.check_len(ints.len(), param_name, limits)?;
                         return Ok(job::TaskParamRange::List(ints));
                     }
                     _ => {}
@@ -492,12 +615,54 @@ fn resolve_int_range(
             let resolved = expr
                 .resolve_string_with(symtab, &budgets.fs_options())
                 .map_err(ModelError::Expression)?;
-            let range_expr: RangeExpr = resolved
-                .parse()
-                .map_err(|e: openjd_expr::ExpressionError| ModelError::Expression(e))?;
+            let range_expr: RangeExpr =
+                resolved
+                    .parse()
+                    .map_err(|e: openjd_expr::ExpressionError| {
+                        if rules.control_flow {
+                            range_string_error(expr, &resolved, symtab, &e)
+                        } else {
+                            ModelError::Expression(e)
+                        }
+                    })?;
             Ok(job::TaskParamRange::RangeExpr(range_expr))
         }
     }
+}
+
+/// A range string that does not parse once its expressions are evaluated,
+/// under `CONTROL_FLOW`: the message names the expression as written and the
+/// text it resolved to (RFC 0011 §How a Step is bound item 3), and each
+/// symbol it reads whose value is `null`, such as a skipped producer's output
+/// in `"1-{{Steps.P.Output.N}}"`.
+fn range_string_error(
+    expr: &openjd_expr::FormatString,
+    resolved: &str,
+    symtab: &SymbolTable,
+    e: &openjd_expr::ExpressionError,
+) -> ModelError {
+    let mut nulls: Vec<String> = expr
+        .accessed_symbols()
+        .into_iter()
+        .filter(|s| matches!(symtab.get_value(s), Some(ExprValue::Null)))
+        .collect();
+    nulls.sort();
+    nulls.dedup();
+    let hint = match nulls.as_slice() {
+        [] => String::new(),
+        [one] => format!(" ('{one}' is null)"),
+        many => format!(
+            " ({} are null)",
+            many.iter()
+                .map(|s| format!("'{s}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    ModelError::DecodeValidation(format!(
+        "'{}' resolved to '{resolved}'{hint}, which is not a range expression: {e}",
+        expr.raw()
+    ))
 }
 
 /// Resolve element `k` of an `<IntRangeList>`, a `<TaskParameterStringValue>`
@@ -554,18 +719,6 @@ enum IntElementError {
     /// The element flattened past the room left in the list; the caller
     /// reports it with the list's count.
     TooMany { len: usize },
-}
-
-/// The ≥1-element rule (Template Schemas §3.4.1) is checked on the list as
-/// written, at decode. A format string element that resolves to `null`
-/// contributes nothing, so a list can still end up empty here.
-fn check_range_not_emptied(len: usize, param_name: &str) -> Result<(), ModelError> {
-    if len == 0 {
-        return Err(ModelError::DecodeValidation(format!(
-            "Task parameter '{param_name}' range has no elements after resolution"
-        )));
-    }
-    Ok(())
 }
 
 /// A `Float64` with no preserved spelling — a `<float>` literal, or a value whose
@@ -655,6 +808,7 @@ fn resolve_float_range(
     param_name: &str,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
+    rules: RangeRules,
 ) -> Result<Vec<Float64>, ModelError> {
     let floats: Vec<Float64> = match range {
         template::FloatRange::List(items) => {
@@ -673,7 +827,7 @@ fn resolve_float_range(
                                 "Task parameter '{param_name}' range[{k}]: {detail}"
                             )))
                         };
-                        let room = room_left(limits, floats.len());
+                        let room = rules.room_left(limits, floats.len());
                         let values = match resolve_list_item(fs, item_target, symtab, budgets, room)
                         {
                             Ok(values) => values,
@@ -692,11 +846,9 @@ fn resolve_float_range(
                         }
                     }
                 }
-                if floats.len() > limits.max_task_param_range_len {
-                    return Err(range_too_long(param_name, limits, floats.len()));
-                }
+                rules.check_len(floats.len(), param_name, limits)?;
             }
-            check_range_not_emptied(floats.len(), param_name)?;
+            rules.check_list_literal_not_emptied(floats.len(), param_name)?;
             floats
         }
         template::FloatRange::Expression(expr) => {
@@ -719,7 +871,8 @@ fn resolve_float_range(
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 }
-                Ok(_) => {
+                Ok(val) => {
+                    rules.check_not_null(&val, param_name)?;
                     return Err(ModelError::Expression(ExpressionError::new(
                         "Float range expression must evaluate to a list",
                     )));
@@ -732,12 +885,11 @@ fn resolve_float_range(
             }
         }
     };
-    if floats.len() > limits.max_task_param_range_len {
-        return Err(range_too_long(param_name, limits, floats.len()));
-    }
+    rules.check_len(floats.len(), param_name, limits)?;
     Ok(floats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_string_range(
     range: &template::StringRange,
     item_target: Option<&openjd_expr::ExprType>,
@@ -746,6 +898,7 @@ fn resolve_string_range(
     is_path: bool,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
+    rules: RangeRules,
 ) -> Result<Vec<String>, ModelError> {
     let resolved: Vec<String> = match range {
         // Each range element is a list item, so per Expression Language
@@ -760,7 +913,7 @@ fn resolve_string_range(
         template::StringRange::List(items) => {
             let mut out = Vec::new();
             for fs in items {
-                let room = room_left(limits, out.len());
+                let room = rules.room_left(limits, out.len());
                 let values = match resolve_list_item(fs, item_target, symtab, budgets, room) {
                     Ok(values) => values,
                     Err(ListItemError::Expression(e)) => return Err(ModelError::Expression(e)),
@@ -769,11 +922,9 @@ fn resolve_string_range(
                     }
                 };
                 out.extend(values.into_iter().map(list_item_text));
-                if out.len() > limits.max_task_param_range_len {
-                    return Err(range_too_long(param_name, limits, out.len()));
-                }
+                rules.check_len(out.len(), param_name, limits)?;
             }
-            check_range_not_emptied(out.len(), param_name)?;
+            rules.check_list_literal_not_emptied(out.len(), param_name)?;
             out
         }
         template::StringRange::Expression(expr) => {
@@ -784,7 +935,8 @@ fn resolve_string_range(
                     let elements = val.list_elements().unwrap();
                     elements.iter().map(|e| e.to_display_string()).collect()
                 }
-                Ok(_) => {
+                Ok(val) => {
+                    rules.check_not_null(&val, param_name)?;
                     return Err(ModelError::Expression(ExpressionError::new(
                         "String range expression must evaluate to a list",
                     )));
@@ -797,9 +949,7 @@ fn resolve_string_range(
             }
         }
     };
-    if resolved.len() > limits.max_task_param_range_len {
-        return Err(range_too_long(param_name, limits, resolved.len()));
-    }
+    rules.check_len(resolved.len(), param_name, limits)?;
     for (i, s) in resolved.iter().enumerate() {
         let char_count = s.chars().count();
         if char_count > limits.max_task_param_string_len {
@@ -836,6 +986,12 @@ mod tests {
     }
 
     use super::strip_redundant_leading_zeros as strip;
+
+    /// The rules of a template with EXPR and without CONTROL_FLOW.
+    const BASE_RULES: super::RangeRules = super::RangeRules {
+        expr: true,
+        control_flow: false,
+    };
 
     /// §7.5 rule 1. openjd-model-for-python asserts the same cases against its
     /// regex form, `^([+-]?)0+(?=[0-9])`.
@@ -943,8 +1099,16 @@ mod tests {
         ]);
         let target = TaskParameterType::Int.range_list_item_target(true);
         LAST_ROOM.with(|last| last.set(None));
-        super::resolve_int_range(&int, target.as_ref(), &symtab, "X", &limits, no_budgets())
-            .unwrap();
+        super::resolve_int_range(
+            &int,
+            target.as_ref(),
+            &symtab,
+            "X",
+            &limits,
+            no_budgets(),
+            BASE_RULES,
+        )
+        .unwrap();
         assert_eq!(LAST_ROOM.with(|last| last.get()), expected, "INT");
 
         let float = FloatRange::List(vec![
@@ -954,8 +1118,16 @@ mod tests {
         ]);
         let target = TaskParameterType::Float.range_list_item_target(true);
         LAST_ROOM.with(|last| last.set(None));
-        super::resolve_float_range(&float, target.as_ref(), &symtab, "X", &limits, no_budgets())
-            .unwrap();
+        super::resolve_float_range(
+            &float,
+            target.as_ref(),
+            &symtab,
+            "X",
+            &limits,
+            no_budgets(),
+            BASE_RULES,
+        )
+        .unwrap();
         assert_eq!(LAST_ROOM.with(|last| last.get()), expected, "FLOAT");
 
         let string = StringRange::List(vec![fs("a"), fs("{{ ['b', 'c'] }}"), fs("{{ ['d'] }}")]);
@@ -969,6 +1141,7 @@ mod tests {
             false,
             &limits,
             no_budgets(),
+            BASE_RULES,
         )
         .unwrap();
         assert_eq!(LAST_ROOM.with(|last| last.get()), expected, "STRING");

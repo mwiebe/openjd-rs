@@ -1240,25 +1240,35 @@ fn resolve_enable_if(
 /// format strings and `enableIf` (§7.3.2). Both resolve in it as it is,
 /// with POSIX paths: they are TEMPLATE-scope fields, not host context
 /// (Expression Language §1.2.1, §7.6).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_step_entries<'a>(
     st: &template::StepTemplate,
     step_index: usize,
+    step_path: &[PathElement],
     step_symtab: &SymbolTable,
     job_envs: &JobEnvironments<'a>,
     policy: ResolvePolicy<'_>,
+    decide_step_environments: bool,
     staged: &mut StagedErrors,
 ) -> StepEntries<'a> {
-    let step_path = path_index(&path_field(&[], "steps"), step_index);
-    let deps_path = path_field(&step_path, "dependencies");
+    let deps_path = path_field(step_path, "dependencies");
     let empty = BTreeMap::new();
     // §4 item 6: each Step Environment's own `enableIf`, in the Step's
     // template scope, the scope of an entry's `enableIf` (§7.3.2).
     // It reads no effective values, so it is decided here, with the
-    // entries (plan 3 Q7).
+    // entries (plan 3 Q7). With CONTROL_FLOW it may read `Steps.*`, so it
+    // is decided in the Step's remaining group instead
+    // (`decide_step_environments` false; RFC 0011 `<Environment>` item 4),
+    // and is taken as `true` here.
     let mut step_environments_enabled = Vec::new();
     let mut step_environments = Vec::new();
     for (j, env) in st.step_environments.iter().flatten().enumerate() {
-        let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
+        if !decide_step_environments {
+            step_environments.push((env.name.clone(), true));
+            step_environments_enabled.push(true);
+            continue;
+        }
+        let env_path = path_index(&path_field(step_path, "stepEnvironments"), j);
         let enabled = resolve_enable_if(
             env.enable_if.as_ref(),
             step_symtab,

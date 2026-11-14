@@ -48,6 +48,16 @@ pub enum ModelError {
     #[error("Expression error: {0}")]
     Expression(#[source] openjd_expr::ExpressionError),
 
+    /// The inputs do not fit together: a context that does not cover the
+    /// template (`create_job`), incompatible environment-template parameter
+    /// merges (§1.2.1), or, with `CONTROL_FLOW`, a step input binding call
+    /// whose arguments do not match the Job (`advance_step_binding`,
+    /// `StepInputs::add_producer`, `attach_step_inputs`) or a loop function
+    /// call whose arguments do not match the Job or loop
+    /// (`advance_loop_binding`, `start_iteration`, `advance_body_step_binding`,
+    /// `evaluate_iteration_boundary`, `end_without_iterations`,
+    /// `StepInputs::add_loop_producer`, `Loop::expression_inputs`): a caller
+    /// error, not a failed Step or loop.
     #[error("Compatibility error: {0}")]
     Compatibility(String),
 
@@ -88,7 +98,7 @@ impl From<openjd_expr::FormatStringValidationError> for ModelError {
 }
 
 /// An element in a validation error path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[allow(
     missing_docs,
     reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
@@ -268,6 +278,13 @@ impl ValidationErrors {
     }
 }
 
+/// `path` as `field[index] -> nested -> leaf`, as validation errors print it.
+pub(crate) fn path_to_string(path: &[PathElement]) -> String {
+    let mut out = String::new();
+    format_path(path, &mut out);
+    out
+}
+
 /// Format a path as `field[index] -> nested -> leaf`.
 fn format_path(path: &[PathElement], out: &mut String) {
     let mut first = true;
@@ -285,14 +302,6 @@ fn format_path(path: &[PathElement], out: &mut String) {
             }
         }
     }
-}
-
-/// Format a path as `field[index] -> nested -> leaf`, as error messages
-/// write it.
-pub(crate) fn path_to_string(path: &[PathElement]) -> String {
-    let mut out = String::new();
-    format_path(path, &mut out);
-    out
 }
 
 /// Helper: extend a path with a field name.

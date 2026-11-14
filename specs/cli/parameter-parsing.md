@@ -190,12 +190,43 @@ Path mapping rules are JSON-only (no YAML support) because the `pathmapping-1.0`
 is defined as a JSON format in the OpenJD specification. The Python CLI also only accepts
 JSON for path mapping rules.
 
+## Step Inputs (`--step-inputs`, CONTROL_FLOW)
+
+`parse_step_inputs()` reads the `Steps.*` output values that a Step or loop run alone
+reads (see [run.md](run.md) § CONTROL_FLOW and § CONTROL_FLOW: loops for how they are
+checked and used). It accepts:
+
+- `file://path`: JSON when the file name ends in `.json`, YAML otherwise, read with the
+  same `MAX_FILE_INPUT_SIZE` cap as the other `file://` inputs;
+- inline JSON otherwise.
+
+The decoded value must be a map from `Steps.<Step>.Output.<Name>` to a value. Errors:
+
+- not valid inline JSON: `--step-inputs argument must be a JSON encoded map or a string
+  with the file:// prefix.`
+- decodes to something other than a map: `--step-inputs argument must be a map from
+  Steps.<Step>.Output.<Name> to a value when decoded.`
+- a missing or unreadable file: `Provided step inputs file '<path>' does not exist.` or
+  `Cannot read step inputs file '<path>': <error>`;
+- a file that does not parse: `Cannot parse step inputs file '<path>': <error>`.
+
 ## Extension Parsing
 
-The three commands that accept `--extensions` (`check`, `summary`, `run`) share one parser,
-`common::parse_extensions(&Option<String>) -> Result<Vec<String>, String>`. It trims and
-uppercases each comma-separated name, drops empty ones, and rejects any name not in
-`ModelExtension::ALL` with `Unsupported Open Job Description extension(s): <names>`.
+The commands that accept `--extensions` share `common::parse_extensions()`, which
+resolves the argument against `common::supported_extensions()`, the names of every
+`openjd_model::ModelExtension::ALL` entry (including the draft `ENV_PARAMS` and
+`CONTROL_FLOW`):
+
+```rust
+pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
+    let supported = supported_extensions();
+    match arg {
+        Some(ext_str) if ext_str.is_empty() => Ok(vec![]),
+        Some(ext_str) => { /* split on ',', trim, upper-case, reject unsupported names */ }
+        None => Ok(supported.iter().map(|s| s.to_string()).collect()),
+    }
+}
+```
 
 Three cases:
 - `--extensions ""` → No extensions (strict base spec)

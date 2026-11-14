@@ -123,7 +123,7 @@ async fn baseline_task_runs_unwrapped_when_no_wrap_env() {
     let cmd = format!("echo task-direct >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &cmd]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -176,14 +176,14 @@ async fn task_run_wrapped_by_active_wrap_env() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let task_cmd = format!("echo task-inner >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &task_cmd]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -231,7 +231,7 @@ async fn wrap_env_enter_intercepts_inner_on_enter() {
         None,
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -243,7 +243,7 @@ async fn wrap_env_enter_intercepts_inner_on_enter() {
         None,
     );
     session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -289,7 +289,7 @@ async fn wrap_env_enter_does_not_wrap_outer_env_itself() {
         None,
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -331,7 +331,7 @@ async fn wrap_env_exit_intercepts_inner_on_exit() {
         Some(wrap_env_exit),
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -342,12 +342,12 @@ async fn wrap_env_exit_intercepts_inner_on_exit() {
         Some(action_with_command("sh", vec!["-c", &inner_exit_cmd])),
     );
     let inner_id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
     session
-        .exit_environment(&inner_id, None, true, None)
+        .exit_environment(&inner_id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -410,7 +410,7 @@ async fn full_cycle_wraps_every_inner_action() {
         Some(wrap_env_exit),
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -427,19 +427,26 @@ async fn full_cycle_wraps_every_inner_action() {
         )),
     );
     let id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Run a wrapped task.
     let task_script = step("bash", vec!["-c", &mark("task-body")]);
     session
-        .run_task("test_step", &task_script, None, None, None)
+        .run_task(
+            "test_step",
+            &task_script,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
 
     session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -514,7 +521,7 @@ async fn wrapped_action_visible_in_wrap_env_enter_and_wrap_env_exit() {
         Some(wrap_env_exit),
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -527,11 +534,11 @@ async fn wrapped_action_visible_in_wrap_env_enter_and_wrap_env_exit() {
         Some(action_with_command("inner-exit-cmd", vec![])),
     );
     let id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
     session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -589,7 +596,7 @@ async fn wrap_task_run_forwards_cancelation_mode_terminate() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -597,7 +604,14 @@ async fn wrap_task_run_forwards_cancelation_mode_terminate() {
     inner_step.actions.on_run.cancelation = Some(openjd_model::job::CancelationMode::Terminate);
 
     let result = session
-        .run_task("test_step", &inner_step, None, None, None)
+        .run_task(
+            "test_step",
+            &inner_step,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -629,7 +643,7 @@ async fn wrap_task_run_forwards_cancelation_mode_notify_then_terminate_with_peri
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -640,7 +654,14 @@ async fn wrap_task_run_forwards_cancelation_mode_notify_then_terminate_with_peri
         });
 
     let result = session
-        .run_task("test_step", &inner_step, None, None, None)
+        .run_task(
+            "test_step",
+            &inner_step,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -677,7 +698,7 @@ async fn wrap_task_run_cancelation_null_when_no_cancelation() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -686,7 +707,14 @@ async fn wrap_task_run_cancelation_null_when_no_cancelation() {
     assert!(inner_step.actions.on_run.cancelation.is_none());
 
     let result = session
-        .run_task("test_step", &inner_step, None, None, None)
+        .run_task(
+            "test_step",
+            &inner_step,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -725,7 +753,7 @@ async fn wrap_task_run_notify_period_defaults_to_120_when_task_omits_period() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -736,7 +764,14 @@ async fn wrap_task_run_notify_period_defaults_to_120_when_task_omits_period() {
         });
 
     let result = session
-        .run_task("test_step", &inner_step, None, None, None)
+        .run_task(
+            "test_step",
+            &inner_step,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -774,7 +809,7 @@ async fn wrap_env_enter_notify_period_defaults_to_30_when_env_omits_period() {
         Some(action_with_command("true", vec![])),
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -790,7 +825,7 @@ async fn wrap_env_enter_notify_period_defaults_to_30_when_env_omits_period() {
     let inner_env = plain_env("InnerEnv", Some(inner_on_enter), None);
 
     session
-        .enter_environment(&inner_env, None, None, None)
+        .enter_environment(&inner_env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -841,7 +876,7 @@ async fn entering_second_wrap_env_rejected_and_session_stays_usable() {
         Some(wrap_task("[a-exit]")),
     );
     let a_id = session
-        .enter_environment(&wrap_a, None, None, None)
+        .enter_environment(&wrap_a, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -853,7 +888,7 @@ async fn entering_second_wrap_env_rejected_and_session_stays_usable() {
         Some(wrap_task("[b-exit]")),
     );
     let err = session
-        .enter_environment(&wrap_b, None, None, None)
+        .enter_environment(&wrap_b, None, None, None, &Default::default())
         .await
         .expect_err("entering a second wrap-defining environment must be rejected");
     let msg = err.to_string();
@@ -872,12 +907,12 @@ async fn entering_second_wrap_env_rejected_and_session_stays_usable() {
     assert_eq!(session.environments_entered().len(), 1);
     let task = step("bash", vec!["-c", &mark("task-body")]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
     session
-        .exit_environment(&a_id, None, true, None)
+        .exit_environment(&a_id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -915,7 +950,7 @@ async fn wrap_env_resolved_symtab_params_available_in_wrap_hooks() {
     env.resolved_symtab = Some(prefix_symtab("FROM_ENV_PARAM"));
 
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -923,7 +958,7 @@ async fn wrap_env_resolved_symtab_params_available_in_wrap_hooks() {
     // no task parameters and no resolved symtab, mirroring a plain job.
     let task = step("true", vec![]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -987,13 +1022,19 @@ async fn wrap_env_argument_symtab_params_available_in_wrap_hooks() {
     assert!(env.resolved_symtab.is_none());
 
     session
-        .enter_environment(&env, Some(&prefix_symtab("FROM_ENV_PARAM")), None, None)
+        .enter_environment(
+            &env,
+            Some(&prefix_symtab("FROM_ENV_PARAM")),
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
 
     let task = step("true", vec![]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1020,13 +1061,19 @@ async fn wrap_env_argument_symtab_takes_precedence_over_the_field() {
     env.resolved_symtab = Some(prefix_symtab("FROM_THE_FIELD"));
 
     session
-        .enter_environment(&env, Some(&prefix_symtab("FROM_THE_ARGUMENT")), None, None)
+        .enter_environment(
+            &env,
+            Some(&prefix_symtab("FROM_THE_ARGUMENT")),
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
 
     let task = step("true", vec![]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1070,13 +1117,13 @@ async fn wrap_env_let_bindings_available_in_wrap_hooks() {
     env.script.as_mut().unwrap().let_bindings = Some(vec!["greeting = 'FROM_ENV_LET'".to_string()]);
 
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let task = step("true", vec![]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1120,7 +1167,7 @@ async fn wrapper_and_wrapped_let_scopes_are_separate() {
     );
     env.script.as_mut().unwrap().let_bindings = Some(vec!["who = 'WRAPPER'".to_string()]);
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1128,7 +1175,7 @@ async fn wrapper_and_wrapped_let_scopes_are_separate() {
     let mut task = step("echo", vec!["{{who}}"]);
     task.let_bindings = Some(vec!["who = 'STEP'".to_string()]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1171,7 +1218,7 @@ async fn wrapped_action_environment_includes_variables_map_and_openjd_env() {
         None,
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1186,13 +1233,13 @@ async fn wrapped_action_environment_includes_variables_map_and_openjd_env() {
     );
     inner.variables = Some(fs_map(&[("STATIC_VAR", "hello")]));
     session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let task = step("true", vec![]);
     let result = session
-        .run_task("test_step", &task, None, None, None)
+        .run_task("test_step", &task, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1245,7 +1292,7 @@ async fn exited_env_vars_absent_from_later_wrapped_action_environment() {
         None,
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1260,14 +1307,21 @@ async fn exited_env_vars_absent_from_later_wrapped_action_environment() {
     );
     inner.variables = Some(fs_map(&[("STATIC_SECRET", "static_canary")]));
     let inner_id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Run a task while SecretEnv is live — both vars should appear.
     let task1 = step("true", vec![]);
     let result1 = session
-        .run_task("step_with_env", &task1, None, None, None)
+        .run_task(
+            "step_with_env",
+            &task1,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result1.state, ActionState::Success);
@@ -1284,7 +1338,7 @@ async fn exited_env_vars_absent_from_later_wrapped_action_environment() {
 
     // Exit SecretEnv.
     session
-        .exit_environment(&inner_id, None, true, None)
+        .exit_environment(&inner_id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -1294,7 +1348,14 @@ async fn exited_env_vars_absent_from_later_wrapped_action_environment() {
     // Run another task — SecretEnv's variables must NOT appear.
     let task2 = step("true", vec![]);
     let result2 = session
-        .run_task("step_after_exit", &task2, None, None, None)
+        .run_task(
+            "step_after_exit",
+            &task2,
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(result2.state, ActionState::Success);
@@ -1427,14 +1488,14 @@ async fn wrap_task_run_resolves_env_file_without_on_enter() {
     };
     let env = wrap_env_with_files("Wrapper", None, None, Some(wrap_task), None, vec![embedded]);
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let task_cmd = format!("echo task-ran >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &task_cmd]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1489,14 +1550,14 @@ async fn wrap_task_run_resolves_env_file_with_on_enter() {
         vec![embedded],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let task_cmd = format!("echo task-ran >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &task_cmd]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1558,7 +1619,7 @@ async fn env_file_resolves_in_wrap_env_enter_and_exit() {
         vec![embedded],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1569,12 +1630,12 @@ async fn env_file_resolves_in_wrap_env_enter_and_exit() {
         Some(action_with_command("true", vec![])),
     );
     let inner_id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
     // Exit the inner env so onWrapEnvExit fires
     session
-        .exit_environment(&inner_id, None, true, None)
+        .exit_environment(&inner_id, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -1629,18 +1690,18 @@ async fn env_file_path_stable_across_task_invocations() {
         vec![embedded],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Run two tasks
     let s = step("true", vec![]);
     session
-        .run_task("step1", &s, None, None, None)
+        .run_task("step1", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     session
-        .run_task("step2", &s, None, None, None)
+        .run_task("step2", &s, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1701,13 +1762,13 @@ async fn wrap_env_let_can_reference_env_file() {
     // file paths are registered BEFORE let evaluation in the seed call.
     env.script.as_mut().unwrap().let_bindings = Some(vec!["mypath = Env.File.script".to_string()]);
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let s = step("true", vec![]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1762,18 +1823,18 @@ async fn unnamed_env_file_path_stable_across_task_invocations() {
         vec![embedded],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Run two tasks under the same wrap env
     let s = step("true", vec![]);
     session
-        .run_task("step1", &s, None, None, None)
+        .run_task("step1", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     session
-        .run_task("step2", &s, None, None, None)
+        .run_task("step2", &s, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -1849,13 +1910,13 @@ echo "UNNAMED={{{{Env.File.unnamed_scratch}}}}" >> '{path}'"#,
         vec![named_file, unnamed_file],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let s = step("true", vec![]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1925,13 +1986,13 @@ async fn wrap_hook_succeeds_when_embedded_files_not_referenced() {
         vec![embedded],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let s = step("true", vec![]);
     let result = session
-        .run_task("test_step", &s, None, None, None)
+        .run_task("test_step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(result.state, ActionState::Success);
@@ -1992,17 +2053,17 @@ echo "U={{{{Env.File.unnamed_f}}}}" >> '{path}'"#,
         vec![named_file, unnamed_file],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let s = step("true", vec![]);
     session
-        .run_task("step1", &s, None, None, None)
+        .run_task("step1", &s, None, None, None, &Default::default())
         .await
         .unwrap();
     session
-        .run_task("step2", &s, None, None, None)
+        .run_task("step2", &s, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2081,7 +2142,7 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
         vec![wrap_embedded],
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2120,7 +2181,7 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
         resolved_symtab: None,
     };
     session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2178,7 +2239,7 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
         vec![wrap_embedded],
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2208,7 +2269,9 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
         variables: None,
         resolved_symtab: None,
     };
-    let result = session.enter_environment(&inner, None, None, None).await;
+    let result = session
+        .enter_environment(&inner, None, None, None, &Default::default())
+        .await;
     assert!(
         result.is_err(),
         "referencing Env.File.wrapper_only from the inner env must fail; \
@@ -2264,26 +2327,26 @@ async fn wrap_env_file_eviction_on_exit_gives_fresh_path() {
     // First enter + task → record path. Use a stable identifier so both
     // enters share the same cache key — without this, the test is vacuous.
     let env_id = session
-        .enter_environment(&env, None, Some("env-1"), None)
+        .enter_environment(&env, None, Some("env-1"), None, &Default::default())
         .await
         .unwrap();
     let task_cmd = format!("echo first >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &task_cmd]);
     session
-        .run_task("step1", &s, None, None, None)
+        .run_task("step1", &s, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Exit evicts the cache.
     session
-        .exit_environment(&env_id, None, true, None)
+        .exit_environment(&env_id, None, true, None, &Default::default())
         .await
         .unwrap();
 
     // Re-enter the same wrap env with the same identifier → new allocation
     // because exit evicted the cached paths.
     let env_id2 = session
-        .enter_environment(&env, None, Some("env-1"), None)
+        .enter_environment(&env, None, Some("env-1"), None, &Default::default())
         .await
         .unwrap();
     // The returned ids must be equal — proving the same cache key was used.
@@ -2294,13 +2357,13 @@ async fn wrap_env_file_eviction_on_exit_gives_fresh_path() {
     let task_cmd2 = format!("echo second >> '{}'", trace.display());
     let s2 = step("sh", vec!["-c", &task_cmd2]);
     session
-        .run_task("step2", &s2, None, None, None)
+        .run_task("step2", &s2, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Cleanup.
     session
-        .exit_environment(&env_id2, None, true, None)
+        .exit_environment(&env_id2, None, true, None, &Default::default())
         .await
         .unwrap();
 
@@ -2367,7 +2430,7 @@ async fn wrap_hook_reads_authored_file_content() {
         vec![named, unnamed],
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2375,7 +2438,7 @@ async fn wrap_hook_reads_authored_file_content() {
     let task_cmd = format!("echo task >> '{}'", trace.display());
     let s = step("sh", vec!["-c", &task_cmd]);
     session
-        .run_task("step", &s, None, None, None)
+        .run_task("step", &s, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2428,13 +2491,15 @@ async fn wrap_env_file_does_not_leak_into_wrapped_step_scope() {
         vec![wrap_embedded],
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
     // Step whose onRun references the wrapper's embedded file — must fail.
     let s = step("bash", vec!["-c", "cat {{Env.File.wrapper_only}}"]);
-    let result = session.run_task("step", &s, None, None, None).await;
+    let result = session
+        .run_task("step", &s, None, None, None, &Default::default())
+        .await;
     assert!(
         result.is_err(),
         "referencing Env.File.wrapper_only from the step must fail; \
@@ -2486,7 +2551,7 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
         vec![wrap_embedded],
     );
     session
-        .enter_environment(&outer, None, None, None)
+        .enter_environment(&outer, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -2515,11 +2580,13 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
         resolved_symtab: None,
     };
     let inner_id = session
-        .enter_environment(&inner, None, None, None)
+        .enter_environment(&inner, None, None, None, &Default::default())
         .await
         .unwrap();
 
-    let result = session.exit_environment(&inner_id, None, true, None).await;
+    let result = session
+        .exit_environment(&inner_id, None, true, None, &Default::default())
+        .await;
     assert!(
         result.is_err(),
         "referencing Env.File.wrapper_only from the inner env's onExit must fail; \

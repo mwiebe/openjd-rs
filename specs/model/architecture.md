@@ -22,6 +22,11 @@ src/
 ├── error.rs                  # ModelError, ValidationErrors, PathElement
 ├── types.rs                  # Shared types: ValidationContext, parameter types, limits, rules
 ├── capabilities.rs           # Standard capability constants and validation functions
+├── outputs/                  # CONTROL_FLOW output values (no I/O)
+│   ├── mod.rs                # OutputError, OutputErrorKind, MIN_OUTPUT_BYTES_LIMIT
+│   ├── directive.rs          # parse_output_directive, OutputDirective
+│   ├── convert.rs            # JSON → typed ExprValue (private)
+│   └── collector.rs          # OutputCollector
 ├── template/                 # Unresolved template types (phase 1)
 │   ├── mod.rs
 │   ├── parse.rs              # YAML/JSON decoding, version dispatch
@@ -31,6 +36,9 @@ src/
 │   ├── expr_parameters.rs    # EXPR extension parameter types (§2.9-2.16)
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
 │   ├── step.rs               # StepTemplate, StepDependency, SimpleAction (§3)
+│   ├── output_variables.rs   # OutputVariableDefinition, JobOutputDefinition, LoopVariableDefinition, LoopOutputVariableDefinition (CONTROL_FLOW)
+│   ├── expr_field.rs         # ExprField: expression fields (Template Schemas §7.6), for every enableIf and a loop's while and until
+│   ├── step_loop.rs          # StepEntry, StepLoop, LoopDefinition, StepTemplateRef (CONTROL_FLOW, RFC 0013)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
 │   ├── env_parameters.rs     # EnvironmentParameterDefinition / Value (§4.5, ENV_PARAMS)
 │   ├── actions.rs            # Action, CancelationMode (§5)
@@ -38,15 +46,23 @@ src/
 │   ├── constrained_strings.rs # Identifier, Description, ExtensionName (§7)
 │   └── validate_v2023_09/    # Validation pipeline for 2023-09 revision
 │       ├── mod.rs            # Orchestrator
-│       ├── limits.rs         # Pass 2: EffectiveLimits enforcement
-│       ├── structure.rs      # Pass 3: Structural validation via EffectiveRules
-│       ├── feature_bundle_1.rs # Pass 4: FEATURE_BUNDLE_1 gating
-│       ├── format_strings.rs # Pass 5: Format string reference validation
-│       ├── task_chunking.rs  # Pass 6: TASK_CHUNKING gating
+│       ├── limits.rs         # Pass 5: EffectiveLimits enforcement
+│       ├── structure.rs      # Pass 6: Structural validation via EffectiveRules
+│       ├── feature_bundle_1.rs # Pass 7: FEATURE_BUNDLE_1 gating
+│       ├── format_strings.rs # Pass 8: Format string reference validation
+│       ├── task_chunking.rs  # Pass 9: TASK_CHUNKING gating
+│       ├── wrap_actions.rs   # Pass 10: WRAP_ACTIONS gating
 │       ├── env_params.rs     # Pass 11: ENV_PARAMS gating and structural checks
+│       ├── control_flow.rs   # Pass 12: CONTROL_FLOW gating, prerequisites, and structure
+│       ├── steps_scope.rs    # CONTROL_FLOW Steps.* and Loop.* seeding and reference checks (pass 8, create_job)
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.
+    ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PendingBinding, GroupState, PathInput
+    ├── binding.rs            # CONTROL_FLOW StepInputs, ProducerState, BindingError, BindingReport, Step::tasks_known
+    ├── job_output.rs         # CONTROL_FLOW JobOutput, JobOutputValue
+    ├── step_loop.rs          # CONTROL_FLOW (RFC 0013) Loop, LoopBinding, LoopProgress, LoopIteration, BoundaryOutcome, LoopError
+    ├── chunk_task_index.rs   # CONTROL_FLOW ChunkTaskIndex: per-Task indices of an Action's Tasks
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job(), create_job_with_environment_templates() entry points
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table
@@ -55,6 +71,9 @@ src/
     │   ├── external.rs       # ENV_PARAMS submission stage, check_environment_templates
     │   ├── host_requirements.rs # Host requirement resolution; ENV_PARAMS combined host requirements
     │   ├── staged.rs         # Job-creation errors filed by §7.4.1 step, Step and position
+    │   ├── binding.rs        # CONTROL_FLOW progressive step input binding: group inputs, the core, advance_step_binding, attach_step_inputs
+    │   ├── job_outputs.rs    # CONTROL_FLOW job output evaluation: at creation, job_output_inputs, evaluate_job_output
+    │   ├── loops.rs          # CONTROL_FLOW (RFC 0013) loop binding, iterations, the iteration boundary
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph
@@ -72,17 +91,18 @@ The crate re-exports a curated public API from `lib.rs`:
   parameter values against them, and fix each Step's Environment set
 - `check_environment_templates` — the submission-stage checks that need no Job
   Parameter values, on a Job Template (`openjd check --environment`)
+- `advance_step_binding`, `attach_step_inputs` — `CONTROL_FLOW` step input binding after job creation
+- `job_output_inputs`, `evaluate_job_output` — `CONTROL_FLOW` job output evaluation after job creation
 - `preprocess_job_parameters` — Parameter validation and coercion
 - `merge_job_parameter_definitions` — Cross-template parameter merging
 - `build_symbol_table` — Symbol table construction from parameter values
-- `convert_environment` — Template environment to resolved environment
+- `convert_environment`, `convert_environment_with_symtab` — Template environment to resolved environment
 - `evaluate_let_bindings` — Let binding expression evaluation
 
 **Types:**
 - `DecodedTemplate`, `DocumentType` — Parse output types
 - `StepParameterSpaceIterator` — Lazy parameter space iteration
 - `StepDependencyGraph` — Step dependency graph
-- `TaskParameterDefinition` — Task parameter definition (from template module)
 - `MergedParameterDefinition` — Merged parameter from multiple templates
 - `PathParameterOptions` — Options for PATH parameter resolution
 - `AttachedEnvironmentTemplate`, `CreatedJob`, `StepDisabledEnvironments`,
@@ -92,14 +112,20 @@ The crate re-exports a curated public API from `lib.rs`:
   `create_job_with_environment_templates`
 - `FormatString`, `SymbolTable` — Re-exported from `openjd-expr`
 - `format_string`, `symbol_table` — Modules re-exported wholesale from `openjd-expr`
-- From `types` module: `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
+- From `types` module: `CallerLimits`, `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
   `JobParameterInputValues`, `JobParameterType`, `JobParameterValue`, `JobParameterValues`,
-  `KnownExtension`, `ObjectType`, `SpecificationRevision`, `TaskParameterSet`,
+  `ModelExtension`, `ObjectType`, `OutputCollectMode`, `SpecificationRevision`, `TaskParameterSet`,
   `TaskParameterType`, `TaskParameterValue`, `TemplateSpecificationVersion`,
-  `ValidationContext`
+  `ModelProfile`, `ValidationContext`
 
 **Error types:**
 - `ModelError` — Primary error enum
+- `ValidationErrors`, `ValidationError`, `PathElement`, `ErrorDetail`, `DiagnosticSpan` — Structured validation errors
+
+Template types such as `TaskParameterDefinition` are reached through the `template`
+module (`openjd_model::template::TaskParameterDefinition`), not the crate root.
+Likewise the `CONTROL_FLOW` output types (`OutputCollector`, `parse_output_directive`,
+`OutputError`, ...) are reached through the `outputs` module; see [outputs.md](outputs.md).
 
 ## Key Dependencies
 

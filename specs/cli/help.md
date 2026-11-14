@@ -51,11 +51,15 @@ invalid), it calls `std::process::exit(1)` with an error message.
 2. Checks `args[1] == "run"`
 3. Checks any arg is `-h` or `--help`
 4. Finds the template path: first arg after "run" that doesn't start with `-`
-5. Finds `--extensions` value if present (looks for `--extensions` followed by a value)
+5. Finds the `--extensions` value if present, written `--extensions X` or
+   `--extensions=X`, and resolves it with `common::parse_extensions`, as `check`,
+   `run`, and `summary` do: every `ModelExtension::ALL` name by default, and an unknown
+   name is an error
 
-This is intentionally simple — it doesn't try to fully parse the argument list. Edge cases
-(e.g., `--extensions` as the last arg with no value) are handled by falling through to
-clap's normal error reporting.
+This is intentionally simple — it doesn't try to fully parse the argument list. A
+trailing `--extensions` with no value is ignored, so the defaults apply. Because step 4
+takes the first non-flag argument, `openjd run --extensions EXPR t.yaml --help` treats
+`EXPR` as the template path; put options after the template path.
 
 ## Help Generation Pipeline
 
@@ -78,7 +82,9 @@ try_context_aware_help(&args)
           ├── Job description (if present)
           ├── Parameter definitions (if any)
           │   └── For each parameter: format_parameter()
-          └── Standard options list (static)
+          ├── Job outputs (CONTROL_FLOW, if any): "Name (TYPE, unit)" and description
+          ├── Loops (CONTROL_FLOW, if any): "Name: body Steps A, B"
+          └── Standard options list (plus --step-inputs for a CONTROL_FLOW template)
 ```
 
 ## Parameter Formatting
@@ -144,11 +150,20 @@ The hint on `--help` tells users how to see the full option list:
 
 ```
 Standard Options:
-  -p, --parameter <KEY=VALUE> Job parameters (Key=Value, file://path, or inline JSON)
+  -p, --job-param <KEY=VALUE>  Job parameters (Key=Value, file://path, or inline JSON)
   --environment <PATH>       Environment template files
+  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step or loop reads
   --verbose                  Enable verbose logging
   -h, --help                 Print help (leave out template to list all options)
 ```
+
+The `--step-inputs` line appears only for a template that lists `CONTROL_FLOW` (see
+[run.md](run.md) § CONTROL_FLOW). Before the options, a template with
+`jobOutputDefinitions` gets a `Job Outputs:` list, one `Name (TYPE, unit)` line per
+output followed by its description, so the user can see what the Job reports back.
+A template with loops (RFC 0013) then gets a `Loops (--step <Loop> runs the whole loop;
+its body Steps run only within it):` list, one `Name: body Steps A, B` line per loop, since
+`--step` can name a loop but not a body Step.
 
 Running `openjd run --help` (without a template path) bypasses the context-aware
 interception and falls through to clap's standard help, which lists every option with

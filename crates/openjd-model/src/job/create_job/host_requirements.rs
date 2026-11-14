@@ -55,12 +55,20 @@ pub(super) struct Site {
 impl Site {
     /// The own `hostRequirements` of Step `step_name`, at `step_index`.
     pub(super) fn step(step_index: usize, step_name: &str) -> Self {
-        Self {
-            path: vec![
+        Self::step_at(
+            &[
                 PathElement::Field("steps".to_string()),
                 PathElement::Index(step_index),
-                PathElement::Field("hostRequirements".to_string()),
             ],
+            step_name,
+        )
+    }
+
+    /// The own `hostRequirements` of Step `step_name`, at `step_path`
+    /// (`steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step).
+    pub(super) fn step_at(step_path: &[PathElement], step_name: &str) -> Self {
+        Self {
+            path: path_field(step_path, "hostRequirements"),
             owner: format!("Step '{step_name}'"),
             resolved_for: None,
         }
@@ -714,7 +722,9 @@ struct Source {
 /// `entered` says of a Step stopped after §7.4.1 step 4, is left alone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn combine_step_host_requirements(
-    job: &mut job::Job,
+    job_steps: &mut [job::Step],
+    paths: &[Vec<PathElement>],
+    job_name: &str,
     environments: &[EnvironmentSource<'_>],
     entered: &[Vec<bool>],
     job_path: &[PathElement],
@@ -723,12 +733,13 @@ pub(super) fn combine_step_host_requirements(
     budgets: super::EvalBudgets,
     discarded: &mut [Vec<super::DiscardedHostRequirement>],
     staged: &mut super::staged::StagedErrors,
+    mut kept: Option<&mut Vec<Vec<job::EnvironmentHostRequirements>>>,
 ) {
     use super::staged::{Stage, ANY};
     // resolved[s][e]: Environment e's requirements for Step s, when Step s
     // enters it, it has requirements, and they resolved.
     let mut resolved: Vec<Vec<Option<job::HostRequirements>>> =
-        vec![vec![None; environments.len()]; job.steps.len()];
+        vec![vec![None; environments.len()]; job_steps.len()];
     for (e, source) in environments.iter().enumerate() {
         let Some(hr) = &source.environment.host_requirements else {
             continue;
@@ -745,7 +756,7 @@ pub(super) fn combine_step_host_requirements(
         // stored in canonical form, so equal values have one transport form.
         let mut groups: Vec<(Option<&job::EnvironmentParameterValues>, Vec<usize>)> = Vec::new();
         let mut group_of: HashMap<Option<String>, usize> = HashMap::new();
-        for (s, step) in job.steps.iter().enumerate() {
+        for (s, step) in job_steps.iter().enumerate() {
             if !entered
                 .get(s)
                 .and_then(|v| v.get(e))
@@ -777,7 +788,7 @@ pub(super) fn combine_step_host_requirements(
         for (values, steps) in groups {
             let step_names: Vec<String> = steps
                 .iter()
-                .map(|s| format!("'{}'", job.steps[*s].name))
+                .map(|s| format!("'{}'", job_steps[*s].name))
                 .collect();
             let noun = if steps.len() == 1 { "Step" } else { "Steps" };
             let site = Site::environment(
@@ -788,7 +799,7 @@ pub(super) fn combine_step_host_requirements(
                     name_list(&step_names.iter().map(String::as_str).collect::<Vec<_>>())
                 ),
             );
-            let result = environment_symtab(source, values, default_symtab, &job.name, env_names)
+            let result = environment_symtab(source, values, default_symtab, job_name, env_names)
                 .and_then(|symtab| {
                     resolve_host_requirements(hr, &symtab, source.ctx, &site, budgets, true)
                 });
@@ -823,17 +834,28 @@ pub(super) fn combine_step_host_requirements(
         }
     }
 
-    for (s, step) in job.steps.iter_mut().enumerate() {
+    for (s, step) in job_steps.iter_mut().enumerate() {
         let mut sources = Vec::new();
         for (e, requirements) in resolved[s].iter_mut().enumerate() {
             if let Some(requirements) = requirements.take() {
                 sources.push(environment_source(&environments[e], requirements));
             }
         }
+        if let Some(kept) = kept.as_deref_mut() {
+            kept.push(
+                sources
+                    .iter()
+                    .map(|source| job::EnvironmentHostRequirements {
+                        label: source.label.clone(),
+                        requirements: source.requirements.clone(),
+                    })
+                    .collect(),
+            );
+        }
         if sources.is_empty() {
             continue;
         }
-        let step_path = path_index(&path_field(job_path, "steps"), s);
+        let step_path: Vec<PathElement> = job_path.iter().chain(&paths[s]).cloned().collect();
         if let Some(own) = step.host_requirements.take() {
             sources.insert(0, step_source(&step_path, own));
         }
@@ -844,6 +866,34 @@ pub(super) fn combine_step_host_requirements(
             staged.at(Stage::Step8, s, ANY),
         ));
     }
+}
+
+/// A Step's combined host requirements (§3.3.3) from its own resolved
+/// requirements `own` and its entered Environments' `environments`, which
+/// its Environment selection resolved (`CONTROL_FLOW`, RFC 0011
+/// `<Environment>` item 5): `own` unchanged when no Environment has
+/// requirements. A conflict is added to `errors` at `step_path`.
+pub(super) fn combine_with_environments(
+    step_name: &str,
+    step_path: &[PathElement],
+    own: Option<job::HostRequirements>,
+    environments: &[job::EnvironmentHostRequirements],
+    errors: &mut ValidationErrors,
+) -> Option<job::HostRequirements> {
+    if environments.is_empty() {
+        return own;
+    }
+    let mut sources: Vec<Source> = environments
+        .iter()
+        .map(|e| Source {
+            label: e.label.clone(),
+            requirements: e.requirements.clone(),
+        })
+        .collect();
+    if let Some(own) = own {
+        sources.insert(0, step_source(step_path, own));
+    }
+    Some(combine(step_name, step_path, &sources, errors))
 }
 
 /// An Environment's resolved requirements as a source of a combination.
@@ -935,6 +985,7 @@ pub(super) fn check_literal_combinations(
     job_template: &template::JobTemplate,
     environments: &[EnvironmentSource<'_>],
     entered: &[Vec<bool>],
+    checked: &[bool],
     job_path: &[PathElement],
     step_ctx: &ValidationContext,
     budgets: super::EvalBudgets,
@@ -956,7 +1007,14 @@ pub(super) fn check_literal_combinations(
                 .and_then(|r| r.requirements)
         })
         .collect();
-    for (s, step) in job_template.steps.iter().enumerate() {
+    for (s, st) in job_template.step_templates().enumerate() {
+        // CONTROL_FLOW: a conflict in a Step's combined host requirements
+        // is checked here only for a Step known to be enabled (RFC 0011
+        // `<Environment>` item 3).
+        if !checked.get(s).copied().unwrap_or(true) {
+            continue;
+        }
+        let step = st.step;
         let mut sources: Vec<Source> = environments
             .iter()
             .zip(&env_requirements)
@@ -967,7 +1025,7 @@ pub(super) fn check_literal_combinations(
         if sources.is_empty() {
             continue;
         }
-        let step_path = path_index(&path_field(job_path, "steps"), s);
+        let step_path: Vec<PathElement> = job_path.iter().cloned().chain(st.path()).collect();
         if let Some(own) = step.host_requirements.as_ref().and_then(literal_part) {
             let lists_env_params = job_template
                 .profile()
@@ -976,7 +1034,7 @@ pub(super) fn check_literal_combinations(
                 &own,
                 &no_symbols,
                 step_ctx,
-                &Site::step(s, &step.name),
+                &Site::step_at(&st.path(), &step.name),
                 budgets,
                 lists_env_params,
             )

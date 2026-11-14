@@ -190,5 +190,7 @@ fn session_config(root: &Path, id: &str) -> SessionConfig {
         debug_collect_stdout: false,
         echo_openjd_directives: true,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+        control_flow: false,
+        output_callback: None,
     }
 }

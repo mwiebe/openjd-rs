@@ -21,17 +21,28 @@ session management logic lives in the CLI crate itself.
 src/
 ├── main.rs       # Entry point: Cli/Commands structs, SessionLogger, tokio::main
 ├── check.rs      # CheckArgs + execute(): template validation
+├── common.rs     # Shared helpers: file reads, extensions, output, CONTROL_FLOW reports
 ├── summary.rs    # SummaryArgs + execute(): job/step summary output
 ├── run/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives
 │   ├── execution.rs # Preflight, step/task execution, reporting phases
-│   ├── params.rs # Job/task parameter and path mapping parsing
-│   └── result.rs # Structured run result
+│   ├── params.rs # Job/task parameter, --step-inputs, and path mapping parsing
+│   ├── result.rs # Structured run result
+│   └── simulator.rs # CONTROL_FLOW scheduler simulator: Step states, binding, job outputs
 └── help.rs       # Context-aware help: template-driven --help for run command
 ```
 
 Each command module exports an `Args` struct (clap derive) and an `execute()` function.
 `main.rs` dispatches to the appropriate `execute()` based on the parsed subcommand.
+
+Integration tests live in `tests/cli_tests.rs` and run the `openjd` binary on the templates
+in `tests/templates/`. Its `control_flow_golden` module (`tests/control_flow_golden/`,
+Linux only) holds golden-file tests: each runs one of the RFC 0011, RFC 0012, and RFC 0013 sample templates, or
+one of the CONTROL_FLOW plan's progressive binding templates, in
+`tests/templates/control_flow/` with deterministic stubs for their application commands,
+normalizes timestamps and temporary paths, and compares the output with a
+`<case>.expected.txt` file. `OPENJD_UPDATE_GOLDEN=1` rewrites the expected files (see that
+directory's `README.md`).
 
 ## Dependencies
 
@@ -155,11 +166,14 @@ This is deferred until there's demand for it.
 
 ### Extension Default List
 
-All commands that accept `--extensions` default to enabling all supported extensions,
+All commands that accept `--extensions` default to enabling every extension in
 `openjd_model::ModelExtension::ALL`: `TASK_CHUNKING`, `REDACTED_ENV_VARS`,
-`FEATURE_BUNDLE_1`, `EXPR`, `WRAP_ACTIONS`, and the draft `ENV_PARAMS`. The first four match
-the Python CLI's `SUPPORTED_EXTENSIONS` list. `common::parse_extensions` and the context
-help in `help.rs` both read `ALL`, so the list is not duplicated.
+`FEATURE_BUNDLE_1`, `EXPR`, `WRAP_ACTIONS`, the draft `ENV_PARAMS`, and the draft
+`CONTROL_FLOW`. The first four match the Python CLI's `SUPPORTED_EXTENSIONS` list. The list
+comes from `common::supported_extensions()`, and `common::parse_extensions()` resolves the
+`--extensions` argument against it, so a new model extension is enabled by default without a
+CLI change. The template-specific help (`openjd run <template> --help`, in `help.rs`)
+resolves `--extensions X` and `--extensions=X` through the same function.
 
 An empty string (`--extensions ""`) disables all extensions, which is useful for testing
 strict base-spec compliance.

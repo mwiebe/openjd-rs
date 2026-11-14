@@ -30,7 +30,7 @@ use openjd_model::{
 };
 use openjd_sessions::error::SessionError;
 use openjd_sessions::path_mapping::{PathFormat, PathMappingRule};
-use openjd_sessions::session::{Session, SessionState};
+use openjd_sessions::session::{EnvironmentOptions, RunTaskOptions, Session, SessionState};
 use tempfile::TempDir;
 
 // ────────────────────────────────────────────────────────────────────
@@ -154,7 +154,14 @@ async fn run_step(sub: &Submitted, step_name: &str, rules: Vec<PathMappingRule>)
     {
         let values = values_for(step, doc, &env.name);
         let (id, stdout) = session
-            .enter_environment_with_parameters(env, None, values, None, None)
+            .enter_environment_with_parameters(
+                env,
+                None,
+                values,
+                None,
+                None,
+                &EnvironmentOptions::default(),
+            )
             .await
             .unwrap_or_else(|e| panic!("entering '{}' failed: {e}", env.name));
         assert_eq!(session.environment_parameters(&id), values);
@@ -168,6 +175,7 @@ async fn run_step(sub: &Submitted, step_name: &str, rules: Vec<PathMappingRule>)
             None,
             step.resolved_symtab.as_ref(),
             None,
+            &RunTaskOptions::default(),
         )
         .await
         .unwrap();
@@ -175,7 +183,7 @@ async fn run_step(sub: &Submitted, step_name: &str, rules: Vec<PathMappingRule>)
     for id in ids.iter().rev() {
         out.push(
             session
-                .exit_environment(id, None, false, None)
+                .exit_environment(id, None, false, None, &EnvironmentOptions::default())
                 .await
                 .unwrap(),
         );
@@ -273,13 +281,20 @@ async fn on_exit_reuses_the_values_stored_at_entry() {
         "License",
     );
     let (id, _) = session
-        .enter_environment_with_parameters(env, None, values, Some("lic"), None)
+        .enter_environment_with_parameters(
+            env,
+            None,
+            values,
+            Some("lic"),
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(id, "lic");
     assert_eq!(session.environment_parameters("lic"), values);
     let out = session
-        .exit_environment(&id, None, false, None)
+        .exit_environment(&id, None, false, None, &EnvironmentOptions::default())
         .await
         .unwrap();
     assert_eq!(out.trim(), "exit count=9 server=other.example.com");
@@ -550,7 +565,14 @@ async fn neither_a_task_nor_another_environment_sees_an_environments_values() {
     let a = env("A", on_enter(echo("A={{Env.Param.Tag}}")));
     let values = string_values("A", "Tag", "a");
     let (_, out) = session
-        .enter_environment_with_parameters(&a, None, Some(&values), None, None)
+        .enter_environment_with_parameters(
+            &a,
+            None,
+            Some(&values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "A=a");
@@ -563,7 +585,7 @@ async fn neither_a_task_nor_another_environment_sees_an_environments_values() {
         embedded_files: None,
     };
     let err = session
-        .run_task("S", &task, None, None, None)
+        .run_task("S", &task, None, None, None, &RunTaskOptions::default())
         .await
         .expect_err("a Task must not see Env.Param.*");
     assert_eq!(
@@ -574,7 +596,14 @@ async fn neither_a_task_nor_another_environment_sees_an_environments_values() {
 
     let b = env("B", on_enter(echo("{{Env.RawParam.Tag}}")));
     let err = session
-        .enter_environment_with_parameters(&b, None, None, None, None)
+        .enter_environment_with_parameters(
+            &b,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("another Environment must not see A's Env.RawParam.*");
     assert_eq!(
@@ -659,13 +688,27 @@ async fn a_wrap_hook_does_not_see_the_wrapped_environments_values() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let wrap = env("Wrap", wrap_env_enter_hook(echo("hook {{Env.Param.Tag}}")));
     session
-        .enter_environment_with_parameters(&wrap, None, None, None, None)
+        .enter_environment_with_parameters(
+            &wrap,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     let inner = env("Inner", on_enter(echo("inner {{Env.Param.Tag}}")));
     let values = string_values("Inner", "Tag", "t");
     let err = session
-        .enter_environment_with_parameters(&inner, None, Some(&values), None, None)
+        .enter_environment_with_parameters(
+            &inner,
+            None,
+            Some(&values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("the hook must not see Inner's Env.Param.Tag");
     assert_eq!(
@@ -686,12 +729,19 @@ async fn entering_without_values_binds_no_env_param_symbols() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let plain = env("Plain", on_enter(echo("plain")));
     let id = session
-        .enter_environment(&plain, None, None, None)
+        .enter_environment(&plain, None, None, None, &EnvironmentOptions::default())
         .await
         .unwrap();
     assert_eq!(session.environment_parameters(&id), None);
     let (id2, out) = session
-        .enter_environment_with_parameters(&plain, None, None, None, None)
+        .enter_environment_with_parameters(
+            &plain,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "plain");
@@ -699,7 +749,7 @@ async fn entering_without_values_binds_no_env_param_symbols() {
 
     let uses = env("Uses", on_enter(echo("{{Env.Param.X}}")));
     let err = session
-        .enter_environment(&uses, None, None, None)
+        .enter_environment(&uses, None, None, None, &EnvironmentOptions::default())
         .await
         .expect_err("Env.Param.X is unbound without values");
     assert_eq!(
@@ -713,7 +763,14 @@ async fn enter_err(values: EnvironmentParameterValues) -> String {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let e = env("E", on_enter(echo("x")));
     let err = session
-        .enter_environment_with_parameters(&e, None, Some(&values), Some("e"), None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values),
+            Some("e"),
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("expected the values to be rejected");
     // Rejected before any state is recorded.
@@ -803,7 +860,14 @@ async fn a_windows_submitted_path_is_mapped_by_a_windows_rule() {
         ])),
     };
     let (_, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&values), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), r"/mnt/src/data C:\src\data");
@@ -924,14 +988,28 @@ async fn the_task_and_exit_wrap_hooks_do_not_see_the_wrapped_environments_values
         ),
     );
     session
-        .enter_environment_with_parameters(&wrap, None, None, None, None)
+        .enter_environment_with_parameters(
+            &wrap,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     let mut inner = env("Inner", on_enter(echo("inner {{Env.Param.Tag}}")));
     inner.script.as_mut().unwrap().actions.on_exit = Some(echo("inner-exit {{Env.Param.Tag}}"));
     let values = string_values("Inner", "Tag", "t");
     let (inner_id, out) = session
-        .enter_environment_with_parameters(&inner, None, Some(&values), None, None)
+        .enter_environment_with_parameters(
+            &inner,
+            None,
+            Some(&values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "inner t");
@@ -944,7 +1022,7 @@ async fn the_task_and_exit_wrap_hooks_do_not_see_the_wrapped_environments_values
         embedded_files: None,
     };
     let err = session
-        .run_task("S", &task, None, None, None)
+        .run_task("S", &task, None, None, None, &RunTaskOptions::default())
         .await
         .expect_err("onWrapTaskRun must not see Inner's Env.Param.Tag");
     assert_eq!(
@@ -954,7 +1032,7 @@ async fn the_task_and_exit_wrap_hooks_do_not_see_the_wrapped_environments_values
     session.clear_ending_only().unwrap();
 
     let err = session
-        .exit_environment(&inner_id, None, true, None)
+        .exit_environment(&inner_id, None, true, None, &EnvironmentOptions::default())
         .await
         .expect_err("onWrapEnvExit must not see Inner's Env.Param.Tag");
     assert_eq!(
@@ -984,7 +1062,14 @@ async fn path_mapping_uses_the_rules_current_at_each_use() {
         ])),
     };
     let (id, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&values), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "enter /src/x /src/x");
@@ -992,7 +1077,7 @@ async fn path_mapping_uses_the_rules_current_at_each_use() {
         .extend_path_mapping_rules(vec![rule("/src", "/dst")])
         .unwrap();
     let out = session
-        .exit_environment(&id, None, false, None)
+        .exit_environment(&id, None, false, None, &EnvironmentOptions::default())
         .await
         .unwrap();
     assert_eq!(out.trim(), "exit /dst/x /src/x");
@@ -1081,6 +1166,7 @@ async fn names_with_underscores_and_digits_are_accepted() {
                 Some(&string_values("E", name, "u")),
                 None,
                 None,
+                &EnvironmentOptions::default(),
             )
             .await
             .unwrap();
@@ -1138,7 +1224,14 @@ async fn a_table_over_the_entry_cap_is_rejected() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let e = env("E", on_enter(echo("{{Env.Param.p0}}")));
     let (_, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&values("E", table(max))), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values("E", table(max))),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "v");
@@ -1159,12 +1252,20 @@ async fn a_wrap_environments_let_bindings_read_its_values_in_its_hooks() {
             Some(&string_values("W", "Mode", "w")),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .unwrap();
     let inner = env("Inner", on_enter(echo("inner")));
     let (_, out) = session
-        .enter_environment_with_parameters(&inner, None, None, None, None)
+        .enter_environment_with_parameters(
+            &inner,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "hook w");
@@ -1195,6 +1296,7 @@ async fn enter_wrapper(session: &mut Session, hooks: EnvironmentActions) {
             Some(&string_values("W", "Mode", "w")),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .unwrap();
@@ -1237,7 +1339,14 @@ async fn a_task_does_not_see_an_active_wrappers_values() {
         let mut session = Session::new_for_test(tmp.path().to_path_buf());
         enter_wrapper(&mut session, hooks).await;
         let err = session
-            .run_task("S", &task("{{Env.Param.Mode}}"), None, None, None)
+            .run_task(
+                "S",
+                &task("{{Env.Param.Mode}}"),
+                None,
+                None,
+                None,
+                &RunTaskOptions::default(),
+            )
             .await
             .expect_err("a Task must not see W's Env.Param.Mode");
         assert_eq!(err.to_string(), format!("{prefix}{MODE_UNDEFINED}"));
@@ -1274,7 +1383,14 @@ async fn an_inner_environment_does_not_see_an_active_wrappers_values() {
         enter_wrapper(&mut session, hooks).await;
         let inner = env("Inner", on_enter(reads_mode.clone()));
         let err = session
-            .enter_environment_with_parameters(&inner, None, Some(&inner_values), None, None)
+            .enter_environment_with_parameters(
+                &inner,
+                None,
+                Some(&inner_values),
+                None,
+                None,
+                &EnvironmentOptions::default(),
+            )
             .await
             .expect_err("an inner onEnter must not see W's values");
         assert_eq!(err.to_string(), format!("{prefix}{MODE_UNDEFINED_TAG}"));
@@ -1305,11 +1421,18 @@ async fn an_inner_environment_does_not_see_an_active_wrappers_values() {
             actions(Some(echo("in")), None, None, None, Some(reads_mode.clone())),
         );
         let (id, _) = session
-            .enter_environment_with_parameters(&inner, None, Some(&inner_values), None, None)
+            .enter_environment_with_parameters(
+                &inner,
+                None,
+                Some(&inner_values),
+                None,
+                None,
+                &EnvironmentOptions::default(),
+            )
             .await
             .unwrap();
         let err = session
-            .exit_environment(&id, None, false, None)
+            .exit_environment(&id, None, false, None, &EnvironmentOptions::default())
             .await
             .expect_err("an inner onExit must not see W's values");
         assert_eq!(err.to_string(), format!("{prefix}{MODE_UNDEFINED_TAG}"));
@@ -1329,7 +1452,14 @@ async fn an_inner_environment_does_not_see_an_active_wrappers_values() {
         fs("{{Env.Param.Mode}}"),
     )]));
     let err = session
-        .enter_environment_with_parameters(&inner, None, Some(&inner_values), None, None)
+        .enter_environment_with_parameters(
+            &inner,
+            None,
+            Some(&inner_values),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("inner variables must not see W's values");
     assert_eq!(
@@ -1361,7 +1491,14 @@ async fn after_a_failed_on_enter_the_on_exit_still_binds_the_values() {
     );
     let values = string_values("E", "Tag", "t");
     let err = session
-        .enter_environment_with_parameters(&e, None, Some(&values), Some("e"), None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values),
+            Some("e"),
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("onEnter fails");
     assert!(
@@ -1370,7 +1507,13 @@ async fn after_a_failed_on_enter_the_on_exit_still_binds_the_values() {
     );
     assert_eq!(session.environment_parameters("e"), Some(&values));
     let out = session
-        .exit_environment(&"e".to_string(), None, false, None)
+        .exit_environment(
+            &"e".to_string(),
+            None,
+            false,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "exit t");
@@ -1401,6 +1544,7 @@ async fn wrap_hooks_bind_the_wrappers_values_past_an_intermediate_environment() 
             Some(&string_values("W", "Tag", "w")),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .unwrap();
@@ -1412,6 +1556,7 @@ async fn wrap_hooks_bind_the_wrappers_values_past_an_intermediate_environment() 
             Some(&string_values("A", "Tag", "a")),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .unwrap();
@@ -1421,12 +1566,19 @@ async fn wrap_hooks_bind_the_wrappers_values_past_an_intermediate_environment() 
         actions(Some(echo("b")), None, None, None, Some(echo("b-exit"))),
     );
     let (b_id, out) = session
-        .enter_environment_with_parameters(&b, None, None, None, None)
+        .enter_environment_with_parameters(
+            &b,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "enter-hook w");
     let out = session
-        .exit_environment(&b_id, None, true, None)
+        .exit_environment(&b_id, None, true, None, &EnvironmentOptions::default())
         .await
         .unwrap();
     assert_eq!(out.trim(), "exit-hook w");
@@ -1434,7 +1586,8 @@ async fn wrap_hooks_bind_the_wrappers_values_past_an_intermediate_environment() 
 
 /// Stored values are dropped when the Environment is exited, even when its
 /// onExit fails; a failure resolving `variables` after the Environment is
-/// recorded leaves it entered, with its values, for the caller to exit.
+/// recorded fails the action, so the Session is ending-only, and leaves the
+/// Environment entered, with its values, for the caller to exit.
 #[tokio::test]
 async fn stored_values_follow_the_environment_through_failures() {
     let tmp = TempDir::new().unwrap();
@@ -1448,11 +1601,24 @@ async fn stored_values_follow_the_environment_through_failures() {
     let e = env("E", actions(Some(echo("in")), None, None, None, Some(fail)));
     let values = string_values("E", "Tag", "t");
     session
-        .enter_environment_with_parameters(&e, None, Some(&values), Some("e"), None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&values),
+            Some("e"),
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     session
-        .exit_environment(&"e".to_string(), None, true, None)
+        .exit_environment(
+            &"e".to_string(),
+            None,
+            true,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("onExit fails");
     assert_eq!(session.environment_parameters("e"), None);
@@ -1467,7 +1633,14 @@ async fn stored_values_follow_the_environment_through_failures() {
     )]));
     let values = string_values("V", "Tag", "t");
     let err = session
-        .enter_environment_with_parameters(&v, None, Some(&values), Some("v"), None)
+        .enter_environment_with_parameters(
+            &v,
+            None,
+            Some(&values),
+            Some("v"),
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .expect_err("variables fail");
     assert_eq!(
@@ -1475,7 +1648,7 @@ async fn stored_values_follow_the_environment_through_failures() {
         "Failed to resolve env var 'X': Undefined variable: 'Env.Param.Missing'.\n  \
          Env.Param.Missing\n  ~~~~~~~~~~^~~~~~~"
     );
-    assert_eq!(session.state(), SessionState::Ready);
+    assert_eq!(session.state(), SessionState::ReadyEnding);
     assert_eq!(session.environments_entered(), ["v".to_string()]);
     assert_eq!(session.environment_parameters("v"), Some(&values));
 }
@@ -1504,7 +1677,14 @@ async fn every_list_path_element_is_mapped() {
         }]),
     );
     let (_, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&v), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&v),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "/dst/a /dst/b /dst/c /mnt/src/b /mnt/src/c");
@@ -1538,7 +1718,14 @@ async fn an_unmatched_value_with_a_backslash_is_bound_as_given() {
         ]),
     );
     let (_, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&v), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&v),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "2 0 2 2 /dst/a rel/z");
@@ -1569,7 +1756,14 @@ async fn a_wrapped_environments_let_and_embedded_files_read_its_values() {
         ),
     );
     session
-        .enter_environment_with_parameters(&wrap, None, None, None, None)
+        .enter_environment_with_parameters(
+            &wrap,
+            None,
+            None,
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     let mut inner = env(
@@ -1597,12 +1791,19 @@ async fn a_wrapped_environments_let_and_embedded_files_read_its_values() {
         serde_json::json!([{"name": "N", "type": "int", "value": "21"}]),
     );
     let (id, out) = session
-        .enter_environment_with_parameters(&inner, None, Some(&n), None, None)
+        .enter_environment_with_parameters(
+            &inner,
+            None,
+            Some(&n),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(out.trim(), "enter file=21 let=42");
     let out = session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &EnvironmentOptions::default())
         .await
         .unwrap();
     assert_eq!(out.trim(), "exit file=21 let=42");
@@ -1641,7 +1842,14 @@ async fn a_join_onto_an_empty_or_relative_value_follows_pathlib() {
         ]),
     );
     let (_, out) = session
-        .enter_environment_with_parameters(&e, None, Some(&v), None, None)
+        .enter_environment_with_parameters(
+            &e,
+            None,
+            Some(&v),
+            None,
+            None,
+            &EnvironmentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(

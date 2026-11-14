@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use openjd_expr::format_string::FormatString;
 use openjd_expr::SerializedSymbolTable;
 use openjd_model::job::{Document, Environment, EnvironmentParameterValues};
-use openjd_sessions::session::Session;
+use openjd_sessions::session::{EnvironmentOptions, Session};
 use tempfile::TempDir;
 
 /// An Environment with no script whose `variables` are `vars`.
@@ -47,6 +47,7 @@ async fn variables(table: serde_json::Value, vars: &[(&str, &str)]) -> HashMap<S
             Some(&values),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .unwrap();
@@ -102,6 +103,7 @@ async fn an_empty_list_path_keeps_its_element_types() {
             Some(&values),
             None,
             None,
+            &EnvironmentOptions::default(),
         )
         .await
         .expect_err("path() takes no list[path]");

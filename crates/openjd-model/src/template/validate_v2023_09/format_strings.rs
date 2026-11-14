@@ -25,6 +25,10 @@ use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
 use super::helpers;
+use super::steps_scope::{
+    add_control_flow_scope, add_job_output_steps_scope, control_flow_ref_errors, LoopField,
+    StepLocation, StepsFieldScope, StepsReader, StepsRefContext,
+};
 
 /// Maximum length of a `let` binding's `<UserIdentifier>` (§3.6.1).
 ///
@@ -282,15 +286,32 @@ pub(crate) struct KnownEnableIfs {
     entries: Vec<Vec<Option<bool>>>,
     /// Per Step, per `stepEnvironments` entry.
     step_environments: Vec<Vec<Option<bool>>>,
+    /// Per Step: whether it is known to be enabled (`CONTROL_FLOW`, RFC
+    /// 0011 `<Environment>` item 3, "Known to be enabled"): its `enableIf`
+    /// is absent or known to be `true` by §7.6 rule 5, with `Steps.*`,
+    /// `Loop.*`, and `RawLoop.*` not yet known, and for a body Step its
+    /// loop's `enableIf` is too and the loop has no `while` or one known to
+    /// be `true`. `true` for every Step without `CONTROL_FLOW`.
+    steps_known_enabled: Vec<bool>,
 }
 
 impl KnownEnableIfs {
+    /// Whether Step `i` (its index in [`JobTemplate::step_templates`]) is
+    /// known to be enabled before Job creation. The checks of RFC 0010
+    /// whose outcome depends on whether a Step runs or on which
+    /// Environments its Sessions enter are made before Job creation only
+    /// for such a Step (RFC 0011 `<Environment>` item 3).
+    pub(crate) fn step_known_enabled(&self, i: usize) -> bool {
+        self.steps_known_enabled.get(i).copied().unwrap_or(true)
+    }
+
     /// The `enableIf` of `jobEnvironments[k]`.
     pub(crate) fn job_environment(&self, k: usize) -> Option<bool> {
         self.job_environments.get(k).copied().unwrap_or(Some(true))
     }
 
-    /// The `enableIf` of `steps[i] -> dependencies[j]`.
+    /// The `enableIf` of Step `i`'s `dependencies[j]` (`i` is its index in
+    /// [`JobTemplate::step_templates`]).
     pub(crate) fn entry(&self, i: usize, j: usize) -> Option<bool> {
         self.entries
             .get(i)
@@ -299,7 +320,7 @@ impl KnownEnableIfs {
             .unwrap_or(Some(true))
     }
 
-    /// The `enableIf` of `steps[i] -> stepEnvironments[j]`.
+    /// The `enableIf` of Step `i`'s `stepEnvironments[j]`.
     pub(crate) fn step_environment(&self, i: usize, j: usize) -> Option<bool> {
         self.step_environments
             .get(i)
@@ -348,9 +369,12 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
             ),
         })
         .collect();
-    let mut entries = Vec::with_capacity(jt.steps.len());
-    let mut step_environments = Vec::with_capacity(jt.steps.len());
-    for step in &jt.steps {
+    let control_flow = ctx.profile.has_extension(ModelExtension::ControlFlow);
+    let mut entries = Vec::new();
+    let mut step_environments = Vec::new();
+    let mut steps_known_enabled = Vec::new();
+    for st in jt.step_templates() {
+        let step = st.step;
         let has_expression = step
             .dependencies
             .iter()
@@ -360,9 +384,19 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
                 .step_environments
                 .iter()
                 .flatten()
-                .any(|e| matches!(e.enable_if, Some(ExprField::Expression(_))));
+                .any(|e| matches!(e.enable_if, Some(ExprField::Expression(_))))
+            || matches!(step.enable_if, Some(ExprField::Expression(_)))
+            || st.step_loop.is_some_and(|l| {
+                matches!(l.enable_if, Some(ExprField::Expression(_)))
+                    || matches!(
+                        l.loop_definition.while_condition,
+                        Some(ExprField::Expression(_))
+                    )
+            });
         // The Step's template scope, built only when an expression needs
-        // it.
+        // it. With CONTROL_FLOW, the `Steps.*`, `Loop.*`, and `RawLoop.*`
+        // symbols its fields may read are not yet known, so they are
+        // `unresolved` of their types (§7.6 rule 5).
         let symtab = has_expression.then(|| {
             let mut symtab = build_template_scope_symtab(params);
             if expr_active {
@@ -370,6 +404,15 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
                 symtab
                     .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                     .expect("symtab");
+                if control_flow {
+                    add_control_flow_scope(
+                        &mut symtab,
+                        jt,
+                        StepsReader::Step(StepLocation::of(&st)),
+                        StepsFieldScope::Template,
+                    )
+                    .expect("symtab");
+                }
                 let mut scratch = ValidationErrors::default();
                 for binding in step.let_bindings.iter().flatten() {
                     if let Some(eq_pos) = binding.find('=') {
@@ -413,11 +456,23 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
                 .map(|e| known(e.enable_if.as_ref()))
                 .collect(),
         );
+        // RFC 0011 `<Environment>` item 3: a Step's own `enableIf` (which
+        // reads no `let`), and a body Step's loop's `enableIf` and
+        // `while`, read in the same scope with `Loop.*` not yet known.
+        steps_known_enabled.push(
+            !control_flow
+                || (known(step.enable_if.as_ref()) == Some(true)
+                    && st.step_loop.is_none_or(|l| {
+                        known(l.enable_if.as_ref()) == Some(true)
+                            && known(l.loop_definition.while_condition.as_ref()) == Some(true)
+                    })),
+        );
     }
     KnownEnableIfs {
         job_environments,
         entries,
         step_environments,
+        steps_known_enabled,
     }
 }
 
@@ -521,12 +576,18 @@ fn validate_env_entry_values(
     step: &StepTemplate,
     step_index: usize,
     known: &KnownEnableIfs,
-    symtab: &SymbolTable,
+    scope: &EntryScope,
     ev: &FsEval<'_>,
     ctx: &ValidationContext,
     step_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
+    let symtab = &scope.symtab;
+    // CONTROL_FLOW: a value that fails to resolve or convert is a
+    // constraint 6 error of the Step's Environment selection, made here
+    // only for a Step known to be enabled (RFC 0011 `<Environment>` item
+    // 3). For any other Step only the scope is checked here.
+    let step_runs = known.step_known_enabled(step_index);
     let Some(deps) = &step.dependencies else {
         return;
     };
@@ -566,14 +627,23 @@ fn validate_env_entry_values(
             let target = job_env
                 .and_then(|types| types.get(key.as_str()))
                 .map(|pt| pt.expr_type());
-            validate_env_param_value_fs(
-                fs,
-                target.as_ref(),
-                symtab,
-                ev,
-                &path_field(&params_path, key),
-                errors,
-            );
+            let value_path = path_field(&params_path, key);
+            let run_time = scope.run_time_references(fs.accessed_symbols().into_iter());
+            if !run_time.is_empty() {
+                for message in run_time {
+                    errors.add(&value_path, message);
+                }
+                continue;
+            }
+            if !step_runs {
+                for sym in fs.accessed_symbols() {
+                    if !symtab.contains(&sym) {
+                        errors.add(&value_path, format!("Undefined variable: '{sym}'."));
+                    }
+                }
+                continue;
+            }
+            validate_env_param_value_fs(fs, target.as_ref(), symtab, ev, &value_path, errors);
         }
     }
 }
@@ -588,7 +658,7 @@ fn validate_env_entry_values(
 /// `environment:` entry is reported by pass 6 and not checked here.
 fn validate_enable_if(
     step: &StepTemplate,
-    symtab: &SymbolTable,
+    scope: &EntryScope,
     ev: &FsEval<'_>,
     profile: &openjd_expr::ExprProfile,
     step_path: &[PathElement],
@@ -600,10 +670,132 @@ fn validate_enable_if(
         let (Some(_), Some(enable_if)) = (dep.environment(), &dep.enable_if) else {
             continue;
         };
-        if let Err(msg) = expr_field::validate(enable_if, &ExprType::BOOL, symtab, &field_ev) {
-            errors.add(&path_field(&path_index(&deps_path, j), "enableIf"), msg);
+        let path = path_field(&path_index(&deps_path, j), "enableIf");
+        let run_time = scope.run_time_references(
+            expr_field::accessed_symbols_with_profile(enable_if, profile).into_iter(),
+        );
+        if !run_time.is_empty() {
+            for message in run_time {
+                errors.add(&path, message);
+            }
+            continue;
+        }
+        if let Err(msg) = expr_field::validate(enable_if, &ExprType::BOOL, &scope.symtab, &field_ev)
+        {
+            errors.add(&path, msg);
         }
     }
+}
+
+/// The scope of a Step's `environment:` entries' values and `enableIf` at
+/// template validation (§7.3.2): the Step's template scope (`RawParam.*`,
+/// non-PATH `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the
+/// Step's `let` names). With `CONTROL_FLOW` an entry may not read
+/// `Steps.*`, `Loop.*`, or `RawLoop.*`, directly or through a `let` binding
+/// (RFC 0011 `<Environment>` item 2), so those symbols are not in it, and
+/// neither are the bindings that read them, however indirectly
+/// (`run_time_lets`).
+struct EntryScope {
+    symtab: SymbolTable,
+    run_time_lets: HashSet<String>,
+}
+
+impl EntryScope {
+    fn of(
+        jt: &JobTemplate,
+        step: &StepTemplate,
+        cf_active: bool,
+        expr_active: bool,
+        env_names_active: bool,
+        ev: &FsEval<'_>,
+        profile: &openjd_expr::ExprProfile,
+    ) -> Self {
+        let mut symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        let mut run_time_lets = HashSet::new();
+        if !expr_active {
+            return Self {
+                symtab,
+                run_time_lets,
+            };
+        }
+        add_job_symbols(&mut symtab, env_names_active);
+        symtab
+            .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
+            .expect("symtab");
+        let mut scratch = ValidationErrors::default();
+        for binding in step.let_bindings.iter().flatten() {
+            let Some(eq_pos) = binding.find('=') else {
+                continue;
+            };
+            let name = binding[..eq_pos].trim();
+            if cf_active {
+                let reads_run_time = ParsedExpression::new(binding[eq_pos + 1..].trim())
+                    .map(|p| {
+                        p.accessed_symbols().iter().any(|s| {
+                            is_run_time_symbol(s)
+                                || run_time_lets.contains(s.split('.').next().unwrap_or(s))
+                        })
+                    })
+                    .unwrap_or(false);
+                if reads_run_time {
+                    run_time_lets.insert(name.to_string());
+                    continue;
+                }
+            }
+            evaluate_let_binding(
+                binding,
+                eq_pos,
+                &[],
+                false,
+                &mut symtab,
+                ev,
+                profile,
+                &mut scratch,
+            );
+        }
+        Self {
+            symtab,
+            run_time_lets,
+        }
+    }
+
+    /// The errors for the `symbols` an entry's field reads that it may not:
+    /// a `Steps.*`, `Loop.*`, or `RawLoop.*` symbol, or a `let` binding that
+    /// reads one.
+    fn run_time_references(&self, symbols: impl Iterator<Item = String>) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for sym in symbols {
+            if !seen.insert(sym.clone()) {
+                continue;
+            }
+            if is_run_time_symbol(&sym) {
+                out.push(format!(
+                    "'{sym}': an environment entry may not read Steps.*, Loop.*, or RawLoop.* \
+                     (RFC 0011 <Environment> item 2): which Environments a Step's Sessions \
+                     enter, and its Environment parameter values, depend only on values known \
+                     when the Job is created."
+                ));
+            } else if self
+                .run_time_lets
+                .contains(sym.split('.').next().unwrap_or(&sym))
+            {
+                out.push(format!(
+                    "'{sym}' is a let binding that reads Steps.*, Loop.*, or RawLoop.*, which an \
+                     environment entry may not read, directly or through a let binding (RFC 0011 \
+                     <Environment> item 2)."
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// Whether `sym` is a `Steps.*`, `Loop.*`, or `RawLoop.*` symbol.
+fn is_run_time_symbol(sym: &str) -> bool {
+    ["Steps.", "Loop.", "RawLoop."]
+        .iter()
+        .any(|p| sym.starts_with(p))
 }
 
 /// Pass-8 check of an Environment's own `enableIf` (`ENV_PARAMS`, §4 item
@@ -626,13 +818,26 @@ fn validate_env_enable_if(
     let Some(enable_if) = &env.enable_if else {
         return;
     };
+    let path = path_field(env_path, "enableIf");
+    // CONTROL_FLOW (RFC 0011 <Environment> item 1): a `Steps.*`,
+    // `Loop.*`, or `RawLoop.*` reference this Environment may not read is
+    // explained one by one, as for a format string.
+    let steps_errors = ev.steps_errors(&expr_field::accessed_symbols_with_profile(
+        enable_if, profile,
+    ));
+    if !steps_errors.is_empty() {
+        for message in steps_errors {
+            errors.add(&path, message);
+        }
+        return;
+    }
     if let Err(msg) = expr_field::validate(
         enable_if,
         &ExprType::BOOL,
         symtab,
         &ev.expr_field_eval(profile),
     ) {
-        errors.add(&path_field(env_path, "enableIf"), msg);
+        errors.add(&path, msg);
     }
 }
 
@@ -940,6 +1145,15 @@ enum ResolvedConstraint<'a> {
     /// resulting entry, with the same certainly-a-string gating as
     /// [`Self::TextListItem`].
     ArgListItem { max_len: usize },
+    /// RFC 0011 `<JobOutputDefinition>` `value`: target type `ty` made
+    /// optional, since a `null` result means the output has no value. A
+    /// fully static multi-segment string must convert to `ty`.
+    JobOutputValue { ty: &'a ExprType },
+    /// RFC 0013 loop `initial`, `next`, and loop output `value`: target
+    /// type `ty`, not made optional, since a `null` result is an error. A
+    /// fully static multi-segment string must convert to `ty`, as for
+    /// [`Self::JobOutputValue`].
+    LoopValue { ty: &'a ExprType },
 }
 
 impl ResolvedConstraint<'_> {
@@ -982,6 +1196,10 @@ impl ResolvedConstraint<'_> {
                 Some(ExprType::union(vec![ExprType::STRING, ExprType::NULLTYPE]))
             }
             Self::ResolvedString { .. } | Self::ArgListItem { .. } => None,
+            Self::JobOutputValue { ty } => {
+                Some(ExprType::union(vec![(*ty).clone(), ExprType::NULLTYPE]))
+            }
+            Self::LoopValue { ty } => Some((*ty).clone()),
         }
     }
 }
@@ -1366,6 +1584,31 @@ fn check_resolved_constraint(
                 }
             }
         }
+        // A whole-field expression was already resolved
+        // with the target type; a multi-segment string resolves to text,
+        // which is then converted. When the text is fully static it is
+        // converted here; otherwise its type must be one that a string can
+        // convert to (not a list), decided on the type alone.
+        ResolvedConstraint::JobOutputValue { ty } | ResolvedConstraint::LoopValue { ty } => {
+            match &sr.resolved_value {
+                Some(ExprValue::String(text)) => {
+                    if **ty != ExprType::STRING {
+                        check_string_converts(text, ty, path, errors);
+                    }
+                }
+                None if sr.resolved_type == ExprType::STRING => {
+                    if let Err(message) =
+                        ExprValue::unresolved(ExprType::STRING).coerce(ty, PathFormat::Posix)
+                    {
+                        errors.add(
+                            path,
+                            format!("resolves to text, which must convert to {ty}: {message}."),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
         ResolvedConstraint::CancelationMode => {
             if sr.min_resolved_string_len > MODE_MAX_LEN {
                 errors.add(
@@ -1413,10 +1656,18 @@ fn check_resolved_constraint(
 /// with each other and with the POSIX-format values `create_job` seeds
 /// into its check symbol tables, and makes validation outcomes
 /// independent of the OS running them.
+#[derive(Clone, Copy)]
 struct FsEval<'a> {
     lib: &'a FunctionLibrary,
     memory_limit: Option<usize>,
     operation_limit: Option<usize>,
+    /// With `CONTROL_FLOW`, where the format strings this evaluates sit, so
+    /// that a `Steps.*`, `Loop.*`, or `RawLoop.*` reference that is not
+    /// available gets a specific message (see [`control_flow_ref_errors`])
+    /// instead of EXPR's generic one.
+    /// `None` without `CONTROL_FLOW`, and in the job-creation re-checks,
+    /// which only see templates that passed this check.
+    steps: Option<StepsRefContext<'a>>,
 }
 
 impl<'a> FsEval<'a> {
@@ -1425,6 +1676,20 @@ impl<'a> FsEval<'a> {
             lib,
             memory_limit: caller_limits.max_eval_memory_bytes,
             operation_limit: caller_limits.max_eval_operations,
+            steps: None,
+        }
+    }
+
+    /// This evaluator, checking `Steps.*` references against `steps`.
+    fn with_steps(&self, steps: Option<StepsRefContext<'a>>) -> Self {
+        Self { steps, ..*self }
+    }
+
+    /// The `Steps.*` errors for `symbols`, empty when no check applies.
+    fn steps_errors<'s>(&self, symbols: impl IntoIterator<Item = &'s String>) -> Vec<String> {
+        match &self.steps {
+            Some(ctx) => control_flow_ref_errors(symbols, ctx),
+            None => Vec::new(),
         }
     }
 
@@ -1682,6 +1947,16 @@ fn validate_fs_with(
         }
         return None;
     }
+    // `Steps.*` references that are not available are explained one by
+    // one, and the field is not evaluated: evaluating it would only add
+    // EXPR's generic "Undefined variable" for the same reference.
+    let steps_errors = ev.steps_errors(&fs.accessed_symbols());
+    if !steps_errors.is_empty() {
+        for message in steps_errors {
+            errors.add(path, message);
+        }
+        return None;
+    }
     let target = constraint.and_then(ResolvedConstraint::target_type);
     match fs.validate_expressions(symtab, &ev.options(target.as_ref())) {
         Ok(sr) => {
@@ -1926,6 +2201,311 @@ fn validate_step_script_format_strings(
             }
         }
     }
+}
+
+/// Report the unavailable `Steps.*` references of a format string that
+/// pass 8 does not otherwise evaluate: a whole-field expression `range` of a
+/// `STRING`, `PATH`, or `FLOAT` Task parameter. Those fields are checked only when job creation
+/// resolves them, a gap that predates `CONTROL_FLOW`; RFC 0011's `Steps.*`
+/// scope rules are still enforced on them here.
+fn check_steps_refs_only(
+    fs: &FormatString,
+    ev: &FsEval<'_>,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    for message in ev.steps_errors(&fs.accessed_symbols()) {
+        errors.add(path, message);
+    }
+}
+
+/// Validate a condition: a Step's or a loop's `enableIf` (RFC 0011
+/// §Validation item 6), or a loop's `while` or `until` (RFC 0013
+/// §Validation item 10). Each is an expression field of type `bool` (RFC
+/// 0010's Template Schemas §7.6 rules 1, 2, and 4), checked against
+/// `symtab`, the restricted scope its location allows, under `profile`,
+/// the template-scope profile.
+///
+/// A boolean scalar needs no check, and any other scalar or a `null` is
+/// an error. An expression must parse (a value written as a format string
+/// does not), and its static type must fit `bool`: `bool?` is accepted,
+/// its `null` failing the Step or loop when it is evaluated. A `Steps.*`,
+/// `Loop.*`, or `RawLoop.*` reference that the field may not read is
+/// explained one by one, as for a format string, and the field is not
+/// evaluated.
+fn validate_condition(
+    field: Option<&ExprField>,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let Some(field) = field else {
+        return;
+    };
+    let steps_errors = ev.steps_errors(&expr_field::accessed_symbols_with_profile(field, profile));
+    if !steps_errors.is_empty() {
+        for message in steps_errors {
+            errors.add(path, message);
+        }
+        return;
+    }
+    if let Err(message) =
+        expr_field::validate(field, &ExprType::BOOL, symtab, &ev.expr_field_eval(profile))
+    {
+        errors.add(path, expr_field::with_source(message, field));
+    }
+}
+
+/// EXPR's implicit `string` → `ty` coercion (§1.2.3) applied to the text a
+/// job output `value` resolves to, reporting a failure at `path`.
+fn check_string_converts(
+    text: &str,
+    ty: &ExprType,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if let Err(message) = ExprValue::String(text.to_string()).coerce(ty, PathFormat::Posix) {
+        errors.add(path, format!("must convert to {ty}: {message}."));
+    }
+}
+
+/// Validate each `<JobOutputDefinition>` `value` (RFC 0011 §Validation item
+/// 9) against the job output scope: `Param.*` (minus `PATH` types),
+/// `RawParam.*`, `Job.Name`, and the TEMPLATE-scope `Steps.*` symbols of
+/// every Step with an `<Identifier>` name, with no dependency required. No
+/// `Step.Name`, `Task.*`, `Session.*`, or `let` names. The target type is
+/// the declared type's expression type, made optional; a literal value is
+/// converted to it here, as a static multi-segment string is.
+fn validate_job_output_values(
+    jt: &JobTemplate,
+    expr_active: bool,
+    template_ev: &FsEval<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let outputs = jt.job_output_definitions_list();
+    if outputs.is_empty() {
+        return;
+    }
+    let mut symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+    if expr_active {
+        // `Job.EnvNames` with ENV_PARAMS, which CONTROL_FLOW requires (RFC
+        // 0011 `<Environment>`, after item 8).
+        add_job_symbols(
+            &mut symtab,
+            jt.profile().has_extension(ModelExtension::EnvParams),
+        );
+    }
+    add_job_output_steps_scope(&mut symtab, jt).expect("symtab");
+    let ev = template_ev.with_steps(Some(StepsRefContext {
+        jt,
+        reader: StepsReader::JobOutput,
+        scope: StepsFieldScope::Template,
+    }));
+    let list_path = path_field(&[], "jobOutputDefinitions");
+    for (i, def) in outputs.iter().enumerate() {
+        let path = path_field(&path_index(&list_path, i), "value");
+        let ty = def.job_param_type().expr_type();
+        let value = def.value();
+        if value.is_literal() {
+            if ty != ExprType::STRING {
+                check_string_converts(value.raw(), &ty, &path, errors);
+            }
+            continue;
+        }
+        validate_fs_with(
+            value,
+            &symtab,
+            &ev,
+            &path,
+            Some(&ResolvedConstraint::JobOutputValue { ty: &ty }),
+            errors,
+        );
+    }
+}
+
+/// RFC 0013 §`<LoopDefinition>` item 4: `maxIterations`, as a format
+/// string, has type `int` and resolves to 1 to 1,000.
+const MAX_ITERATIONS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 1,
+    min_msg: "maxIterations must be from 1 to 1000.",
+    max: Some((
+        super::control_flow::MAX_ITERATIONS,
+        "maxIterations must be from 1 to 1000.",
+    )),
+    parse_msg: "maxIterations must be an integer.",
+    nullable: false,
+};
+
+/// Validate a loop's own expressions (RFC 0013 §Validation items 7, 8, 9,
+/// and 10), each in the scope RFC 0013 gives it, all resolved before a
+/// Session exists (TEMPLATE scope: a path-typed value only through its
+/// `Raw` form):
+///
+/// | Field | Target type | Reads, besides `Param.*` (minus `PATH`), `RawParam.*`, and `Job.Name` |
+/// |---|---|---|
+/// | `enableIf` | `bool` | `Step.Name`, the loop's dependencies |
+/// | `maxIterations` | `int`, 1 to 1,000 | nothing else |
+/// | each `initial` | the variable's type | the loop's dependencies |
+/// | `while` | `bool` | the loop's dependencies, `Loop.*` |
+/// | `until` | `bool` | the loop's dependencies, its body Steps, `Loop.*` |
+/// | each `next` | the variable's type | as `until` |
+/// | each output `value` | the output's type, or under `APPEND` its element type | as `until` |
+///
+/// None of them may read `Task.*`, `Session.*`, or `let` names, and only
+/// `enableIf` reads `Step.Name` (the loop's name). Each target type is not
+/// made optional, so a `null` result is an error. `enableIf`, `while`, and
+/// `until` are expression fields (RFC 0010's Template Schemas §7.6), checked
+/// by [`validate_condition`] under `profile`, the template-scope profile;
+/// the others are format strings.
+fn validate_loop_expressions(
+    jt: &JobTemplate,
+    entry: usize,
+    l: &StepLoop,
+    expr_active: bool,
+    template_ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
+    errors: &mut ValidationErrors,
+) {
+    let entry_path = path_index(&path_field(&[], "steps"), entry);
+    let loop_path = path_field(&entry_path, "loop");
+    let def = &l.loop_definition;
+    // The symbols of `field`'s scope, with the evaluator that explains a
+    // `Steps.*` or `Loop.*` reference it may not read.
+    let scope_of = |field: LoopField| {
+        let reader = StepsReader::Loop { entry, field };
+        let mut symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        if expr_active {
+            add_job_symbols(
+                &mut symtab,
+                jt.profile().has_extension(ModelExtension::EnvParams),
+            );
+            if field == LoopField::EnableIf {
+                symtab
+                    .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
+                    .expect("symtab");
+            }
+        }
+        add_control_flow_scope(&mut symtab, jt, reader, StepsFieldScope::Template).expect("symtab");
+        let ev = template_ev.with_steps(Some(StepsRefContext {
+            jt,
+            reader,
+            scope: StepsFieldScope::Template,
+        }));
+        (symtab, ev)
+    };
+
+    let (symtab, ev) = scope_of(LoopField::EnableIf);
+    validate_condition(
+        l.enable_if.as_ref(),
+        &symtab,
+        &ev,
+        profile,
+        &path_field(&entry_path, "enableIf"),
+        errors,
+    );
+
+    if let IntOrFormatString::FormatString(fs) = &def.max_iterations {
+        let (symtab, ev) = scope_of(LoopField::MaxIterations);
+        validate_fs_with(
+            fs,
+            &symtab,
+            &ev,
+            &path_field(&loop_path, "maxIterations"),
+            Some(&MAX_ITERATIONS_CONSTRAINT),
+            errors,
+        );
+    }
+
+    let vars_path = path_field(&loop_path, "variables");
+    let (initial_symtab, initial_ev) = scope_of(LoopField::Initial);
+    let (next_symtab, next_ev) = scope_of(LoopField::Next);
+    for (k, var) in l.variables().iter().enumerate() {
+        let var_path = path_index(&vars_path, k);
+        let ty = var.job_param_type().expr_type();
+        validate_loop_value(
+            var.initial(),
+            &ty,
+            &initial_symtab,
+            &initial_ev,
+            &path_field(&var_path, "initial"),
+            errors,
+        );
+        validate_loop_value(
+            var.next(),
+            &ty,
+            &next_symtab,
+            &next_ev,
+            &path_field(&var_path, "next"),
+            errors,
+        );
+    }
+
+    for (cond, field, key) in [
+        (&def.while_condition, LoopField::While, "while"),
+        (&def.until_condition, LoopField::Until, "until"),
+    ] {
+        if cond.is_some() {
+            let (symtab, ev) = scope_of(field);
+            validate_condition(
+                cond.as_ref(),
+                &symtab,
+                &ev,
+                profile,
+                &path_field(&loop_path, key),
+                errors,
+            );
+        }
+    }
+
+    let outputs_path = path_field(&entry_path, "outputVariables");
+    let (value_symtab, value_ev) = scope_of(LoopField::OutputValue);
+    for (k, ov) in l.output_variables_list().iter().enumerate() {
+        let declared = ov.job_param_type().expr_type();
+        let ty = if ov.collect() == Some(crate::types::OutputCollectMode::Append) {
+            // A non-list APPEND output is reported by pass 11; check its
+            // value against the declared type.
+            declared.list_element_type().cloned().unwrap_or(declared)
+        } else {
+            declared
+        };
+        validate_loop_value(
+            ov.value(),
+            &ty,
+            &value_symtab,
+            &value_ev,
+            &path_field(&path_index(&outputs_path, k), "value"),
+            errors,
+        );
+    }
+}
+
+/// Validate a loop `initial`, `next`, or output `value` against target type
+/// `ty` (see [`ResolvedConstraint::LoopValue`]). A literal value is converted
+/// to `ty` here, as a static multi-segment string is.
+fn validate_loop_value(
+    fs: &FormatString,
+    ty: &ExprType,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if fs.is_literal() {
+        if *ty != ExprType::STRING {
+            check_string_converts(fs.raw(), ty, path, errors);
+        }
+        return;
+    }
+    validate_fs_with(
+        fs,
+        symtab,
+        ev,
+        path,
+        Some(&ResolvedConstraint::LoopValue { ty }),
+        errors,
+    );
 }
 
 /// Validate an action's template-scope numeric/enum fields: `timeout`
@@ -2607,6 +3187,39 @@ pub fn validate_format_strings(
     } else {
         JobEnvParamTypes::new()
     };
+    // CONTROL_FLOW (RFC 0011): each Step's fields see the `Steps.*` symbols
+    // of its direct dependencies, and a reference that is not available is
+    // explained (see `steps_scope`). The job name and `jobEnvironments`
+    // allow no `Steps.*` at all.
+    let cf_active = ctx.profile.has_extension(ModelExtension::ControlFlow);
+    let no_steps = cf_active.then_some(StepsRefContext {
+        jt,
+        reader: StepsReader::None,
+        scope: StepsFieldScope::Template,
+    });
+    let step_refs = |reader: StepsReader, scope: StepsFieldScope| {
+        cf_active.then_some(StepsRefContext { jt, reader, scope })
+    };
+    let seed_steps = |symtab: &mut SymbolTable, reader: StepsReader, scope: StepsFieldScope| {
+        if cf_active {
+            add_control_flow_scope(symtab, jt, reader, scope).expect("symtab");
+        }
+    };
+    // The scope of Step `i`'s `enableIf`: Param.* (minus PATH), RawParam.*,
+    // Job.Name, Job.EnvNames, Step.Name, and the Steps.* of the direct
+    // dependencies. No `let` names, no Task.*, no Session.*: it is evaluated
+    // before anything else of the Step.
+    let step_enable_if_symtab = |reader: StepsReader| {
+        let mut symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        if expr_active {
+            add_job_symbols(&mut symtab, env_names_active);
+            symtab
+                .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
+                .expect("symtab");
+        }
+        seed_steps(&mut symtab, reader, StepsFieldScope::Template);
+        symtab
+    };
     // Template/task-range validation uses HostContext::None (host functions
     // are not available in those scopes). Session/task scopes use
     // HostContext::Unresolved so apply_path_mapping type-checks.
@@ -2640,7 +3253,7 @@ pub fn validate_format_strings(
     validate_fs_with(
         &jt.name,
         &template_symtab,
-        &template_ev,
+        &template_ev.with_steps(no_steps),
         &path_field(&[], "name"),
         Some(&ResolvedConstraint::Text {
             max_len: limits.max_job_name_len,
@@ -2650,12 +3263,22 @@ pub fn validate_format_strings(
         errors,
     );
 
+    // ── Job outputs (CONTROL_FLOW): their own scope ──
+    // Pass 11 rejects `jobOutputDefinitions` without the extension.
+    if cf_active {
+        validate_job_output_values(jt, expr_active, &template_ev, errors);
+    }
+
     // ── Host requirements: template scope + step let bindings ──
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+    for st in jt.step_templates() {
+        let step = st.step;
+        let step_path = st.path();
+        let reader = StepsReader::Step(StepLocation::of(&st));
         if let Some(hr) = &step.host_requirements {
             // Build a symtab with Param/RawParam + step let bindings
             let mut hr_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+            seed_steps(&mut hr_symtab, reader, StepsFieldScope::Template);
+            let hr_ev = template_ev.with_steps(step_refs(reader, StepsFieldScope::Template));
             if expr_active {
                 add_job_symbols(&mut hr_symtab, env_names_active);
                 hr_symtab
@@ -2670,7 +3293,7 @@ pub fn validate_format_strings(
                         &HashSet::new(),
                         &mut hr_let_names,
                         &mut hr_symtab,
-                        &template_ev,
+                        &hr_ev,
                         &template_profile,
                         errors,
                     );
@@ -2680,7 +3303,7 @@ pub fn validate_format_strings(
             validate_host_requirements_fs(
                 hr,
                 &hr_symtab,
-                &template_ev,
+                &hr_ev,
                 &hr_path,
                 &HostRequirementsStandards {
                     amounts: standard_amounts,
@@ -2696,6 +3319,8 @@ pub fn validate_format_strings(
     // ── Job environments: session scope (timeouts: template scope) ──
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&[], "jobEnvironments");
+        let env_host_ev = host_ev.with_steps(no_steps);
+        let env_template_ev = template_ev.with_steps(no_steps);
         // Job-creation-scope symtab for env `timeout`/`notifyPeriodInSeconds`:
         // Param.* (non-PATH), RawParam.*, and Job.Name with EXPR. No
         // Step.Name (job envs are not attached to a step) and no env-script
@@ -2715,7 +3340,7 @@ pub fn validate_format_strings(
                 validate_env_enable_if(
                     env,
                     &build_env_host_requirements_symtab(jt.parameter_definitions.as_deref(), env),
-                    &template_ev,
+                    &env_template_ev,
                     &template_profile,
                     &path_index(&envs_path, i),
                     errors,
@@ -2727,7 +3352,7 @@ pub fn validate_format_strings(
                 validate_host_requirements_fs(
                     hr,
                     &hr_symtab,
-                    &template_ev,
+                    &env_template_ev,
                     &path_field(&path_index(&envs_path, i), "hostRequirements"),
                     &HostRequirementsStandards {
                         amounts: standard_amounts,
@@ -2770,7 +3395,7 @@ pub fn validate_format_strings(
                             &HashSet::new(),
                             &mut env_let_names,
                             &mut env_symtab,
-                            &host_ev,
+                            &env_host_ev,
                             &host_profile,
                             errors,
                         );
@@ -2780,9 +3405,9 @@ pub fn validate_format_strings(
             validate_env_format_strings(
                 env,
                 &env_symtab,
-                &host_ev,
+                &env_host_ev,
                 &env_template_symtab,
-                &template_ev,
+                &env_template_ev,
                 &path_index(&envs_path, i),
                 expr_active,
                 limits.max_env_var_value_len,
@@ -2794,14 +3419,32 @@ pub fn validate_format_strings(
     }
 
     // ── Steps ──
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+    for (i, st) in jt.step_templates().enumerate() {
+        let step = st.step;
+        let step_path = st.path();
+        let reader = StepsReader::Step(StepLocation::of(&st));
+        let step_template_ev = template_ev.with_steps(step_refs(reader, StepsFieldScope::Template));
+        let step_host_ev = host_ev.with_steps(step_refs(reader, StepsFieldScope::Host));
+
+        // RFC 0011 <StepTemplate> enableIf: an expression field of type
+        // `bool`, in the restricted scope of `step_enable_if_symtab`.
+        if cf_active {
+            validate_condition(
+                step.enable_if.as_ref(),
+                &step_enable_if_symtab(reader),
+                &step_template_ev,
+                &template_profile,
+                &path_field(&step_path, "enableIf"),
+                errors,
+            );
+        }
 
         // Task parameter ranges use TEMPLATE scope (no PATH Param.*)
         if let Some(ps) = &step.parameter_space {
             let ps_path = path_field(&step_path, "parameterSpace");
             let tpd_path = path_field(&ps_path, "taskParameterDefinitions");
             let mut range_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+            seed_steps(&mut range_symtab, reader, StepsFieldScope::Template);
             if expr_active {
                 add_job_symbols(&mut range_symtab, env_names_active);
                 range_symtab
@@ -2819,9 +3462,21 @@ pub fn validate_format_strings(
                                     expr_str,
                                     &template_profile,
                                 ) {
+                                    // A binding with an unavailable
+                                    // Steps.* reference is reported by
+                                    // the `let` check below; bind it
+                                    // unresolved here, as that check does.
+                                    Ok(parsed)
+                                        if !step_template_ev
+                                            .steps_errors(parsed.accessed_symbols())
+                                            .is_empty() =>
+                                    {
+                                        let _ = range_symtab
+                                            .set(name, ExprValue::unresolved(ExprType::ANY));
+                                    }
                                     Ok(parsed) => {
-                                        match template_ev
-                                            .budgeted(parsed.with_library(template_ev.lib))
+                                        match step_template_ev
+                                            .budgeted(parsed.with_library(step_template_ev.lib))
                                             .evaluate(&[&range_symtab as &SymbolTable])
                                         {
                                             Ok(val) => {
@@ -2876,22 +3531,64 @@ pub fn validate_format_strings(
                             &t.range,
                             numeric_item_constraint,
                             &range_symtab,
-                            &template_ev,
+                            &step_template_ev,
                             &path_field(&p_path, "range"),
                             errors,
                         );
                     }
-                    TaskParameterDefinition::FLOAT(t) => {
+                    TaskParameterDefinition::STRING(t) => match &t.range {
+                        crate::template::StringRange::List(items) => {
+                            for (k, item) in items.iter().enumerate() {
+                                validate_fs_with(
+                                    item,
+                                    &range_symtab,
+                                    &step_template_ev,
+                                    &path_index(&path_field(&p_path, "range"), k),
+                                    Some(&string_range_item_constraint),
+                                    errors,
+                                );
+                            }
+                        }
+                        // Pass 8 does not evaluate a whole-field expression
+                        // range (see `check_steps_refs_only`).
+                        crate::template::StringRange::Expression(expr) => check_steps_refs_only(
+                            expr,
+                            &step_template_ev,
+                            &path_field(&p_path, "range"),
+                            errors,
+                        ),
+                    },
+                    TaskParameterDefinition::PATH(t) => match &t.range {
+                        crate::template::StringRange::List(items) => {
+                            for (k, item) in items.iter().enumerate() {
+                                validate_fs_with(
+                                    item,
+                                    &range_symtab,
+                                    &step_template_ev,
+                                    &path_index(&path_field(&p_path, "range"), k),
+                                    Some(&path_range_item_constraint),
+                                    errors,
+                                );
+                            }
+                        }
+                        crate::template::StringRange::Expression(expr) => check_steps_refs_only(
+                            expr,
+                            &step_template_ev,
+                            &path_field(&p_path, "range"),
+                            errors,
+                        ),
+                    },
+                    TaskParameterDefinition::FLOAT(t) => match &t.range {
                         // §3.4.1.2: a format string element is checked with
                         // the target `resolve_float_range` resolves it with.
                         // Literal elements are skipped by `validate_fs_with`.
-                        if let crate::template::FloatRange::List(items) = &t.range {
+                        crate::template::FloatRange::List(items) => {
                             for (k, item) in items.iter().enumerate() {
                                 if let crate::template::FloatRangeItem::FormatString(fs) = item {
                                     validate_fs_with(
                                         fs,
                                         &range_symtab,
-                                        &template_ev,
+                                        &step_template_ev,
                                         &path_index(&path_field(&p_path, "range"), k),
                                         numeric_item_constraint,
                                         errors,
@@ -2899,41 +3596,21 @@ pub fn validate_format_strings(
                                 }
                             }
                         }
-                    }
-                    TaskParameterDefinition::STRING(t) => {
-                        if let crate::template::StringRange::List(items) = &t.range {
-                            for (k, item) in items.iter().enumerate() {
-                                validate_fs_with(
-                                    item,
-                                    &range_symtab,
-                                    &template_ev,
-                                    &path_index(&path_field(&p_path, "range"), k),
-                                    Some(&string_range_item_constraint),
-                                    errors,
-                                );
-                            }
-                        }
-                    }
-                    TaskParameterDefinition::PATH(t) => {
-                        if let crate::template::StringRange::List(items) = &t.range {
-                            for (k, item) in items.iter().enumerate() {
-                                validate_fs_with(
-                                    item,
-                                    &range_symtab,
-                                    &template_ev,
-                                    &path_index(&path_field(&p_path, "range"), k),
-                                    Some(&path_range_item_constraint),
-                                    errors,
-                                );
-                            }
-                        }
-                    }
+                        // Pass 8 does not evaluate a whole-field expression
+                        // range (see `check_steps_refs_only`).
+                        crate::template::FloatRange::Expression(expr) => check_steps_refs_only(
+                            expr,
+                            &step_template_ev,
+                            &path_field(&p_path, "range"),
+                            errors,
+                        ),
+                    },
                     TaskParameterDefinition::CHUNK_INT(t) => {
                         validate_int_range_fs(
                             &t.range,
                             numeric_item_constraint,
                             &range_symtab,
-                            &template_ev,
+                            &step_template_ev,
                             &path_field(&p_path, "range"),
                             errors,
                         );
@@ -2948,7 +3625,7 @@ pub fn validate_format_strings(
                             validate_fs_with(
                                 fs,
                                 &range_symtab,
-                                &template_ev,
+                                &step_template_ev,
                                 &path_field(&chunks_path, "defaultTaskCount"),
                                 Some(&ResolvedConstraint::Int {
                                     min: 1,
@@ -2966,7 +3643,7 @@ pub fn validate_format_strings(
                             validate_fs_with(
                                 fs,
                                 &range_symtab,
-                                &template_ev,
+                                &step_template_ev,
                                 &path_field(&chunks_path, "targetRuntimeSeconds"),
                                 Some(&ResolvedConstraint::Int {
                                     min: 0,
@@ -2984,6 +3661,7 @@ pub fn validate_format_strings(
         }
 
         let mut task_symtab = build_task_scope_symtab(jt, step, expr_active, env_names_active);
+        seed_steps(&mut task_symtab, reader, StepsFieldScope::Host);
 
         // Template-scope symtab for the step's job-creation-stage fields:
         // Param.* (non-PATH), RawParam.*, and with EXPR Job.Name, Step.Name,
@@ -2999,6 +3677,7 @@ pub fn validate_format_strings(
                 .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                 .expect("symtab");
         }
+        seed_steps(&mut step_template_symtab, reader, StepsFieldScope::Template);
 
         // Let bindings: validate and evaluate into symtab if EXPR, reject if not.
         // Step-level let bindings are TEMPLATE scope (template_lib, no Session.*, no PATH Param.*).
@@ -3015,7 +3694,7 @@ pub fn validate_format_strings(
                     &HashSet::new(),
                     &mut step_let_names,
                     &mut step_template_symtab,
-                    &template_ev,
+                    &step_template_ev,
                     &template_profile,
                     errors,
                 );
@@ -3032,13 +3711,27 @@ pub fn validate_format_strings(
         // creation in the step's template scope — `RawParam.*`, non-PATH
         // `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the step's
         // `let` names — which is exactly `step_template_symtab`.
+        //
+        // CONTROL_FLOW (RFC 0011 `<Environment>` item 2): an entry may not
+        // read `Steps.*`, `Loop.*`, or `RawLoop.*`, directly or through a
+        // `let` binding, so its scope is the Step's template scope without
+        // them, and the bindings that read them are not in it.
         if env_params_active {
+            let entry_scope = EntryScope::of(
+                jt,
+                step,
+                cf_active,
+                expr_active,
+                env_names_active,
+                &template_ev,
+                &template_profile,
+            );
             validate_env_entry_values(
                 &job_env_types,
                 step,
                 i,
                 known,
-                &step_template_symtab,
+                &entry_scope,
                 &template_ev,
                 ctx,
                 &step_path,
@@ -3047,7 +3740,7 @@ pub fn validate_format_strings(
             // `enableIf` has the same scope (§7.3.2).
             validate_enable_if(
                 step,
-                &step_template_symtab,
+                &entry_scope,
                 &template_ev,
                 &template_profile,
                 &step_path,
@@ -3062,9 +3755,9 @@ pub fn validate_format_strings(
                 step,
                 &mut task_symtab,
                 &step_template_symtab,
-                &host_ev,
+                &step_host_ev,
                 &host_profile,
-                &template_ev,
+                &step_template_ev,
                 ctx,
                 expr_active,
                 errors,
@@ -3094,9 +3787,9 @@ pub fn validate_format_strings(
                     step,
                     &mut sa_symtab,
                     &step_template_symtab,
-                    &host_ev,
+                    &step_host_ev,
                     &host_profile,
-                    &template_ev,
+                    &step_template_ev,
                     ctx,
                     expr_active,
                     &mut scratch,
@@ -3121,7 +3814,7 @@ pub fn validate_format_strings(
                     validate_env_enable_if(
                         env,
                         &step_template_symtab,
-                        &template_ev,
+                        &step_template_ev,
                         &template_profile,
                         &path_index(&envs_path, j),
                         errors,
@@ -3134,6 +3827,7 @@ pub fn validate_format_strings(
                     expr_active,
                     env_names_active,
                 );
+                seed_steps(&mut env_symtab, reader, StepsFieldScope::Host);
                 // Copy step-level let binding values (already evaluated with inferred types)
                 if expr_active {
                     if let Some(bindings) = &step.let_bindings {
@@ -3179,7 +3873,7 @@ pub fn validate_format_strings(
                                 &enclosing,
                                 &mut env_let_names,
                                 &mut env_symtab,
-                                &host_ev,
+                                &step_host_ev,
                                 &host_profile,
                                 errors,
                             );
@@ -3192,9 +3886,9 @@ pub fn validate_format_strings(
                 validate_env_format_strings(
                     env,
                     &env_symtab,
-                    &host_ev,
+                    &step_host_ev,
                     &step_template_symtab,
-                    &template_ev,
+                    &step_template_ev,
                     &path_index(&envs_path, j),
                     expr_active,
                     limits.max_env_var_value_len,
@@ -3206,11 +3900,29 @@ pub fn validate_format_strings(
         }
     }
 
+    // ── Loops (CONTROL_FLOW, RFC 0013): the loop's own expressions ──
+    // Pass 11 rejects `loop` without the extension.
+    if cf_active {
+        for (i, entry) in jt.steps.iter().enumerate() {
+            if let StepEntry::Loop(l) = entry {
+                validate_loop_expressions(
+                    jt,
+                    i,
+                    l,
+                    expr_active,
+                    &template_ev,
+                    &template_profile,
+                    errors,
+                );
+            }
+        }
+    }
+
     // Environment script comprehension validation (EXPR only)
     if expr_active {
         validate_env_comprehensions(&jt.job_environments, errors);
-        for step in &jt.steps {
-            validate_env_comprehensions(&step.step_environments, errors);
+        for st in jt.step_templates() {
+            validate_env_comprehensions(&st.step.step_environments, errors);
         }
     }
 }
@@ -3719,6 +4431,17 @@ fn evaluate_let_binding(
             if check_self_reference && parsed.accessed_symbols().contains(name) {
                 errors.add(b_path, format!("'{name}' references itself."));
             }
+            let steps_errors = ev.steps_errors(parsed.accessed_symbols());
+            if !steps_errors.is_empty() {
+                for message in steps_errors {
+                    errors.add(
+                        b_path,
+                        format!("Invalid expression in let binding '{name}': {message}"),
+                    );
+                }
+                let _ = symtab.set(name, ExprValue::unresolved(ExprType::ANY));
+                return;
+            }
             match ev
                 .budgeted(parsed.with_library(ev.lib))
                 .evaluate(&[symtab as &SymbolTable])
@@ -3769,10 +4492,37 @@ pub(crate) fn check_carried_forward_let_bindings(
     host_context: openjd_expr::HostContext,
     errors: &mut ValidationErrors,
 ) {
+    check_carried_forward_let_bindings_where(
+        bindings,
+        let_path,
+        symtab,
+        ctx,
+        host_context,
+        errors,
+        |_| true,
+    );
+}
+
+/// [`check_carried_forward_let_bindings`] for only the bindings whose index
+/// `include` accepts, in declaration order, each still reported at its own
+/// `let[j]`. Step input binding uses it to evaluate the bindings one
+/// materialization group uses.
+pub(crate) fn check_carried_forward_let_bindings_where(
+    bindings: &[String],
+    let_path: &[PathElement],
+    symtab: &mut SymbolTable,
+    ctx: &ValidationContext,
+    host_context: openjd_expr::HostContext,
+    errors: &mut ValidationErrors,
+    include: impl Fn(usize) -> bool,
+) {
     let profile = ctx.profile.to_expr_profile(host_context);
     let lib = FunctionLibrary::for_profile(&profile);
     let ev = FsEval::new(&lib, &ctx.caller_limits);
     for (j, binding) in bindings.iter().enumerate() {
+        if !include(j) {
+            continue;
+        }
         let Some(eq_pos) = binding.find('=') else {
             continue;
         };

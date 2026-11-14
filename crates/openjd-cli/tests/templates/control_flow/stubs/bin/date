@@ -1,0 +1,24 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic `date +%s.%N` stub for the chunked render sample.
+
+Each call returns a time 1.25 seconds after the previous call in the same
+working directory, so the sample's render time per frame is always 1.250.
+The state lives in a file in the Session working directory, where an Action
+starts, so separate runs don't share it.
+"""
+import sys
+
+if sys.argv[1:] != ["+%s.%N"]:
+    sys.exit(f"date stub: unsupported arguments {sys.argv[1:]}")
+STATE = ".date_stub_calls"
+try:
+    with open(STATE, encoding="utf-8") as f:
+        calls = int(f.read())
+except FileNotFoundError:
+    calls = 0
+with open(STATE, "w", encoding="utf-8") as f:
+    f.write(str(calls + 1))
+print(f"{1000 + 1.25 * calls:.9f}")

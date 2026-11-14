@@ -359,8 +359,14 @@ pub fn validate_env_params_job_template(
             .or_insert_with(|| JobEnvIndex::new(env, known.job_environment(k)));
     }
 
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = path_index(&path_field(&root, "steps"), i);
+    for (i, st) in jt.step_templates().enumerate() {
+        let step = st.step;
+        let step_path = st.path();
+        // CONTROL_FLOW (RFC 0011 `<Environment>` item 3): the checks whose
+        // outcome depends on whether the Step runs are made here only for a
+        // Step known to be enabled, and otherwise in its Environment
+        // selection.
+        let step_runs = known.step_known_enabled(i);
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
@@ -425,6 +431,7 @@ pub fn validate_env_params_job_template(
             check_environment_entry(
                 dep,
                 known.entry(i, j),
+                step_runs,
                 env_name,
                 &step.name,
                 &dep_path,
@@ -684,6 +691,7 @@ fn check_definition(
 fn check_environment_entry<'a>(
     dep: &'a StepDependency,
     known: Option<bool>,
+    step_runs: bool,
     env_name: &'a str,
     step_name: &str,
     dep_path: &[PathElement],
@@ -716,6 +724,7 @@ fn check_environment_entry<'a>(
     // error, known here for an entry known to be disabled that names a Job
     // Environment (§7.6 rule 5); job creation reports the others.
     if known == Some(false)
+        && step_runs
         && job_env.is_some_and(|e| e.activation == EnvironmentActivation::Always)
     {
         errors.add(
@@ -757,7 +766,7 @@ fn check_environment_entry<'a>(
     // `enableIf` is not known may be disabled, so they are checked for it
     // only when the Job is created (§7.6 rule 5). Constraints 2–4 and 8,
     // above, apply to entries as written.
-    let job_env = job_env.filter(|_| known == Some(true));
+    let job_env = job_env.filter(|_| known == Some(true) && step_runs);
     // Constraint 6 applies to the values of an Environment that is not
     // disabled for the Step (§3.2.2): one known not to be, or whose
     // `enableIf` reads a literal of this entry's that does not convert, so
@@ -925,7 +934,13 @@ fn check_required_parameters_supplied(
         .filter(|r| r.activation != EnvironmentActivation::OnRequest)
         .map(|r| r.names.len())
         .sum();
-    for (i, step) in jt.steps.iter().enumerate() {
+    for (i, st) in jt.step_templates().enumerate() {
+        let step = st.step;
+        // Constraint 7 is checked here only for a Step known to be enabled
+        // (CONTROL_FLOW, RFC 0011 `<Environment>` item 3).
+        if !known.step_known_enabled(i) {
+            continue;
+        }
         // The first entry for each Job Environment with required
         // parameters, matched on the `environment` key as written, so an
         // entry that also has `dependsOn` (reported by pass 6) does not add
@@ -1009,7 +1024,7 @@ fn check_required_parameters_supplied(
                 .map(move |n| (r.label.as_str(), *n))
         });
         errors.add(
-            &path_index(&path_field(&[], "steps"), i),
+            &st.path(),
             missing_parameters_message(missing_pairs, missing, EVERY_JOB_ENVIRONMENT, &disabled),
         );
     }

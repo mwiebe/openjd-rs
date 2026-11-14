@@ -18,6 +18,8 @@ but redesigned for Rust's type system and performance characteristics.
 | [public-api.txt](public-api.txt) | Generated listing of every public item and signature, checked by CI (`scripts/check_public_api.sh`) |
 | [template-types.md](template-types.md) | Unresolved template types (deserialized from YAML, format strings unevaluated) |
 | [job-types.md](job-types.md) | Instantiated job types (fully resolved, output of `create_job`) |
+| [outputs.md](outputs.md) | `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and the output collector |
+| [job-outputs.md](job-outputs.md) | `CONTROL_FLOW` job outputs: `jobOutputDefinitions`, their scope, evaluation at job creation, `job_output_inputs` and `evaluate_job_output` |
 | [parameters.md](parameters.md) | Job and task parameter type systems, value coercion, constraint checking |
 | [parsing.md](parsing.md) | Template decoding pipeline: YAML/JSON → version dispatch → serde → validation |
 | [validation.md](validation.md) | Multi-pass validation pipeline: limits, structure, extensions, format strings |
@@ -156,3 +158,32 @@ Currently implements `2023-09` with extensions:
   8–10, after *exclusiveGroup* as item 7; each plan cites the numbering of the spec it targets. Not yet implemented
   in the Python reference (`openjd-model-for-python`), so there is no Python behavior to
   match.
+- `CONTROL_FLOW` (RFC 0011, RFC 0012, RFC 0013) — prototype, in progress, stacked on the
+  `ENV_PARAMS` prototype: a template that lists `CONTROL_FLOW` must also list `ENV_PARAMS` and
+  `EXPR` (validation pass 12). Each Step's Environment selection (RFC 0011 `<Environment>`
+  item 3) is worked out at job creation and applied once the Step's `enableIf` is `true`, a
+  Step Environment's `enableIf` is decided in the Step's remaining group, and the checks whose
+  outcome depends on whether a Step runs are made before job creation only for a Step known to
+  be enabled ([job-creation.md](job-creation.md) § Environment selection (CONTROL_FLOW),
+  [validation.md](validation.md) § Known to be enabled). RFC 0013 loops are
+  parsed (`template::StepEntry`, `StepLoop`, [template-types.md](template-types.md)) and
+  validated by every template-validation rule of RFC 0013 ([validation.md](validation.md)
+  § Loops). `create_job` binds each loop into `job::Job::loops`, and
+  `advance_loop_binding`, `start_iteration`, `advance_body_step_binding`,
+  `evaluate_iteration_boundary`, and `end_without_iterations` run one
+  ([job-creation.md](job-creation.md) § Loops). The `outputVariables` and
+  `enableIf` schema, the extension gate, and the structural rules (validation pass 12);
+  `job::Step` carries the output declarations. Validation pass 8 seeds and checks the
+  `Steps.*` scope and types `enableIf` as `bool`. The `outputs` module parses
+  `openjd_output_var` directives and collects a Task's values ([outputs.md](outputs.md)).
+  Step input binding is progressive: `create_job` decides each `enableIf` and evaluates
+  each materialization group whose inputs are concrete, and `advance_step_binding`,
+  `StepInputs`, and `attach_step_inputs` finish a pending Step as upstream values arrive
+  ([job-creation.md](job-creation.md) § Step input binding). `jobOutputDefinitions` are
+  validated, `create_job` evaluates those whose inputs are concrete, and
+  `evaluate_job_output` evaluates the rest ([job-outputs.md](job-outputs.md)).
+  `ChunkTaskIndex` places the outputs of a chunked Step's Tasks in per-Task
+  iteration order ([public-api.md](public-api.md) § `ChunkTaskIndex`). Sessions
+  recognize the directive ([../sessions/README.md](../sessions/README.md)), and
+  `openjd run` simulates binding and job output evaluation
+  ([../cli/run.md](../cli/run.md) § CONTROL_FLOW).

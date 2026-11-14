@@ -1,0 +1,127 @@
+$ openjd run {T}/solver.yaml -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p Tolerance=0.01
+exit code: 0
+--- stdout
+Session start
+Running job 'Relax mesh'
+Loop 'Relax' is pending inputs:
+  Enabled: yes
+  maxIterations: 200
+  Start (initial values and first while): determined at run time from Steps.Prepare.Output.Residual
+Running step 'Prepare'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: prepared, residual 1.0
+openjd_output_var: Residual=1.0
+Process exited with code: 0
+Output Residual = 1.0
+Loop 'Relax' is ready
+Running loop 'Relax'
+Loop 'Relax' iteration 0: Residual = 1.0, Damping = 0.8
+Running step 'Relax[0].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 0, damping 0.8, residual 0.2
+openjd_output_var: Residual=0.2
+Process exited with code: 0
+Output Residual = 0.2
+Loop 'Relax' iteration 0 outputs: FinalResidual = 0.2, ResidualHistory = 0.2
+Loop 'Relax' iteration 1: Residual = 0.2, Damping = 0.8
+Running step 'Relax[1].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 1, damping 0.8, residual 0.3
+openjd_output_var: Residual=0.3
+Process exited with code: 0
+Output Residual = 0.3
+Loop 'Relax' iteration 1 outputs: FinalResidual = 0.3, ResidualHistory = 0.3
+Loop 'Relax' iteration 2: Residual = 0.2, Damping = 0.4
+Running step 'Relax[2].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 2, damping 0.4, residual 0.12
+openjd_output_var: Residual=0.12
+Process exited with code: 0
+Output Residual = 0.12
+Loop 'Relax' iteration 2 outputs: FinalResidual = 0.12, ResidualHistory = 0.12
+Loop 'Relax' iteration 3: Residual = 0.12, Damping = 0.4
+Running step 'Relax[3].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 3, damping 0.4, residual 0.072
+openjd_output_var: Residual=0.072
+Process exited with code: 0
+Output Residual = 0.072
+Loop 'Relax' iteration 3 outputs: FinalResidual = 0.072, ResidualHistory = 0.072
+Loop 'Relax' iteration 4: Residual = 0.072, Damping = 0.4
+Running step 'Relax[4].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 4, damping 0.4, residual 0.0432
+openjd_output_var: Residual=0.0432
+Process exited with code: 0
+Output Residual = 0.0432
+Loop 'Relax' iteration 4 outputs: FinalResidual = 0.0432, ResidualHistory = 0.0432
+Loop 'Relax' iteration 5: Residual = 0.0432, Damping = 0.4
+Running step 'Relax[5].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 5, damping 0.4, residual 0.02592
+openjd_output_var: Residual=0.02592
+Process exited with code: 0
+Output Residual = 0.02592
+Loop 'Relax' iteration 5 outputs: FinalResidual = 0.02592, ResidualHistory = 0.02592
+Loop 'Relax' iteration 6: Residual = 0.02592, Damping = 0.4
+Running step 'Relax[6].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 6, damping 0.4, residual 0.015552
+openjd_output_var: Residual=0.015552
+Process exited with code: 0
+Output Residual = 0.015552
+Loop 'Relax' iteration 6 outputs: FinalResidual = 0.015552, ResidualHistory = 0.015552
+Loop 'Relax' iteration 7: Residual = 0.015552, Damping = 0.4
+Running step 'Relax[7].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 7, damping 0.4, residual 0.009331
+openjd_output_var: Residual=0.009331
+Process exited with code: 0
+Output Residual = 0.009331
+Loop 'Relax' iteration 7 outputs: FinalResidual = 0.009331, ResidualHistory = 0.009331
+Loop 'Relax' succeeded after 8 iterations (until is true)
+Loop 'Relax' outputs: FinalResidual = 0.009331, ResidualHistory = [0.2, 0.3, 0.12, 0.072, 0.0432, 0.02592, 0.015552, 0.009331]
+Job output Iterations = 8
+Job output FinalResidual = 0.009331
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Relax mesh
+Duration: {DURATION}
+Chunks run: 9
+Job outputs:
+  Iterations = 8
+  FinalResidual = 0.009331
+--- stderr

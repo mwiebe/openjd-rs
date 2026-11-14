@@ -1,0 +1,5 @@
+$ openjd run {T}/refine.yaml --step Refine --tasks 0 -p SceneFile={T}/fixtures/refine.scene -p OutputPattern={W}/out/beauty_####.exr -p OutputVideo={W}/out/beauty.mp4
+exit code: 1
+--- stdout
+--- stderr
+ERROR: Loop 'Refine' has no Task parameters or Tasks of its own; --tasks cannot be used.

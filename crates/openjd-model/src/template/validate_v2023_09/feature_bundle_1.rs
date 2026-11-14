@@ -15,8 +15,9 @@ pub fn validate_feature_bundle_1(
 ) {
     let active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
 
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+    for st in jt.step_templates() {
+        let step = st.step;
+        let step_path = st.path();
 
         // SimpleAction fields
         let sa_fields: &[(&str, &Option<SimpleAction>)] = &[
@@ -70,13 +71,9 @@ pub fn validate_feature_bundle_1(
         active,
         errors,
     );
-    for (i, step) in jt.steps.iter().enumerate() {
-        let envs_path = vec![
-            PathElement::Field("steps".into()),
-            PathElement::Index(i),
-            PathElement::Field("stepEnvironments".into()),
-        ];
-        check_env_embedded_eol(&step.step_environments, &envs_path, active, errors);
+    for st in jt.step_templates() {
+        let envs_path = path_field(&st.path(), "stepEnvironments");
+        check_env_embedded_eol(&st.step.step_environments, &envs_path, active, errors);
     }
 }
 

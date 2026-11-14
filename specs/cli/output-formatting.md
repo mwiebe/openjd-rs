@@ -135,6 +135,16 @@ duration: 42.123
 chunks_run: 100
 ```
 
+**CONTROL_FLOW.** For a template that lists `CONTROL_FLOW`, the run's JSON and YAML also
+have `steps` (each Step's state, Task count, and per-Task outputs; for a loop, its own
+entry with its iterations and outputs, then one entry per body Step instance named
+`<Loop>[<N>].<Step>`), `job_outputs` (each evaluated job output's value), and
+`job_outputs_not_evaluated`, and its human-readable result ends with a `Job outputs:` list;
+`summary` adds each Step's `state`, a pending Step's `binding`, `job_outputs`, and for a
+loop its condition, bound, variables, outputs, and body. See [run.md](run.md) § Result
+Output and [summary.md](summary.md) § CONTROL_FLOW and § Loops. Other templates' output is unchanged, matching
+the Python CLI's.
+
 ## Implementation Pattern
 JSON and YAML share the same code path — a `serde_json::Value` object is built once, then
 serialized with either `serde_json::to_string_pretty()` or `serde_yaml::to_string()`:

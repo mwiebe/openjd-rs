@@ -1298,7 +1298,12 @@ steps:
 "#,
     );
     let params = job_params(&jt, &[]);
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let map = &mut deps[0].parameters.as_mut().unwrap().0;
     let need = map.remove("Need").unwrap();
     map.insert("Other".to_string(), need);
@@ -1783,7 +1788,12 @@ steps:
 "#,
     );
     let params = job_params(&jt, &[]);
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let (e, x) = (deps[0].clone(), deps[1].clone());
     deps.push(e);
     deps.push(x);

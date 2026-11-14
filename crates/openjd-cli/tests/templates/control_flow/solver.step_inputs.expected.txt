@@ -1,0 +1,64 @@
+$ openjd run {T}/solver.yaml --step Relax --step-inputs '{"Steps.Prepare.Output.Residual": 0.5}' -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p Tolerance=0.1
+exit code: 0
+--- stdout
+Session start
+Running job 'Relax mesh'
+Loop 'Relax' is pending inputs:
+  Enabled: yes
+  maxIterations: 200
+  Start (initial values and first while): determined at run time from Steps.Prepare.Output.Residual
+Loop 'Relax' is ready
+Running loop 'Relax'
+Loop 'Relax' iteration 0: Residual = 0.5, Damping = 0.8
+Running step 'Relax[0].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 0, damping 0.8, residual 0.1
+openjd_output_var: Residual=0.1
+Process exited with code: 0
+Output Residual = 0.1
+Loop 'Relax' iteration 0 outputs: FinalResidual = 0.1, ResidualHistory = 0.1
+Loop 'Relax' iteration 1: Residual = 0.1, Damping = 0.8
+Running step 'Relax[1].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 1, damping 0.8, residual 0.15
+openjd_output_var: Residual=0.15
+Process exited with code: 0
+Output Residual = 0.15
+Loop 'Relax' iteration 1 outputs: FinalResidual = 0.15, ResidualHistory = 0.15
+Loop 'Relax' iteration 2: Residual = 0.1, Damping = 0.4
+Running step 'Relax[2].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 2, damping 0.4, residual 0.06
+openjd_output_var: Residual=0.06
+Process exited with code: 0
+Output Residual = 0.06
+Loop 'Relax' iteration 2 outputs: FinalResidual = 0.06, ResidualHistory = 0.06
+Loop 'Relax' succeeded after 3 iterations (until is true)
+Loop 'Relax' outputs: FinalResidual = 0.06, ResidualHistory = [0.1, 0.15, 0.06]
+Job output Iterations = 3
+Job output FinalResidual = 0.06
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Relax mesh
+Step: Relax
+Duration: {DURATION}
+Chunks run: 3
+Job outputs:
+  Iterations = 3
+  FinalResidual = 0.06
+--- stderr

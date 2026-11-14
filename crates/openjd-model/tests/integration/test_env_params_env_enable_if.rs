@@ -1714,7 +1714,12 @@ fn a_duplicate_entrys_values_are_ignored() {
          {environment: F}]\n  script: {actions: {onRun: {command: x}}}\n",
     );
     let values = job_params_with(&jt, &[], &[]);
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let mut bad = serde_json::from_value::<openjd_model::template::StepDependency>(
         serde_json::json!({"environment": "E", "parameters": {"N": "{{Param.X}}"}}),
     )

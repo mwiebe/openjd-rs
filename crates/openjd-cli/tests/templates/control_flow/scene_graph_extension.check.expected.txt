@@ -1,0 +1,7 @@
+$ openjd check {T}/scene_graph_extension.yaml
+exit code: 1
+--- stdout
+--- stderr
+ERROR: Model validation error: 1 validation error for JobTemplate
+extensions:
+	Unsupported extension names: TASK_DEPENDENCIES

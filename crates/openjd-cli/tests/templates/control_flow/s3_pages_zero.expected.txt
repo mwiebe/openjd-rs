@@ -1,0 +1,31 @@
+$ openjd run {T}/s3_pages_zero.yaml -p Bucket=media -p Prefix=shots/ -p WorkDir={W}/work
+$ s3 fixtures/s3_two_keys
+exit code: 0
+--- stdout
+Session start
+Running job 'Process s3://media/shots/'
+Step 'ProcessPage' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.ListObjects.RawOutput.Manifests
+  Host requirements: known
+Loop 'ListObjects' succeeded after 0 iterations (the first while is false)
+Loop 'ListObjects' outputs: Manifests = [], PageSizes = []
+Step 'ProcessPage': Tasks known (0 tasks)
+Step 'ProcessPage' is ready
+Job output ObjectCount = 0
+Running step 'ProcessPage'
+Step 'ProcessPage' has 0 tasks
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Process s3://media/shots/
+Duration: {DURATION}
+Chunks run: 0
+Job outputs:
+  ObjectCount = 0
+--- stderr

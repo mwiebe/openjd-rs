@@ -38,13 +38,62 @@ pub struct Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<String>>,
     pub parameters: IndexMap<String, JobParameter>,      // Insertion-ordered
-    pub steps: Vec<Step>,
+    pub steps: Vec<Step>,                                // top-level Steps only
+    pub loops: Vec<Loop>,                                // CONTROL_FLOW loops (RFC 0013)
     pub job_environments: Option<Vec<Environment>>,
+    pub outputs: Option<Vec<JobOutput>>,                 // CONTROL_FLOW job outputs
 }
 ```
 
+`steps` holds one `Step` per top-level Step of the template, in template order. `loops`
+holds one [`Loop`](#loop-control_flow-rfc-0013) per loop, in template order, and each
+records its index among the template's `steps` entries, so a Job alone can list its
+entries in template order. A loop's body Steps are in neither: an instance of each is
+created per iteration (see [job-creation.md](job-creation.md) § Loops). `loops` has
+`#[serde(default)]` and is skipped when empty, so a Job without loops serializes as
+before. Code that knows only Steps reads `steps` unchanged.
+
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
 output.
+
+`outputs` holds the template's `jobOutputDefinitions`, in order, or `None` when it has
+none. It has `#[serde(default)]` and is skipped when `None`, so a Job without job outputs
+serializes as before. See [JobOutput](#joboutput-control_flow) below and
+[job-outputs.md](job-outputs.md).
+
+### JobOutput (CONTROL_FLOW)
+
+```rust
+pub struct JobOutput {
+    pub declaration: OutputVariable,      // name, type, unit, constraints
+    pub object_type: Option<ObjectType>,  // PATH and LIST[PATH]: FILE or DIRECTORY
+    pub description: Option<String>,
+    pub value: FormatString,              // as written
+    pub evaluated: Option<JobOutputValue>,
+}
+
+pub enum JobOutputValue { Value(ExprValue), Null }
+```
+
+`declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0011-rfc-0012)),
+so its constraint checks are the ones a Step's outputs use; its `collect` is always
+`ONCE`. `object_type` carries a `PATH` or `LIST[PATH]` output's `objectType` for tools and
+user interfaces; it is not checked. `evaluated` is `None` while the output is pending, `Value` with the value
+converted to the declared type, or `Null` when the value evaluated to `null` (no value,
+which is not an error). `create_job` fills it for the outputs whose inputs are concrete at
+creation; a caller fills the rest from `evaluate_job_output`, for example with
+`JobOutputValue::from`. Like `Job`, both types implement `Serialize` but not
+`Deserialize`. `JobOutput`'s `Serialize` is written by hand to emit one plain struct with
+the declaration's fields inline (`#[serde(flatten)]` would serialize as a map, which
+`serde_wasm_bindgen` turns into a JS `Map` for openjd-for-js). A pending output with a
+description serializes as
+`{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, with
+`unit`, `constraints`, and `objectType` after `type` when declared. An evaluated one adds
+`"evaluated": {"state": "VALUE", "value": {"Int": 8}}` (the `ExprValue` serde form that
+`JobParameter.value` also uses), or `"evaluated": {"state": "NULL"}` when it evaluated to
+`null`, so an absent `evaluated` is always a pending output. The `state` tag follows
+`StepBinding`; a bare JSON `null` would read as `undefined` in openjd-for-js, the same as
+an absent field.
 
 ### JobParameter
 
@@ -77,21 +126,29 @@ pub struct Step {
     pub resolved_symtab: Option<SerializedSymbolTable>,
     pub environment_parameters: Option<Vec<EnvironmentParameterValues>>, // ENV_PARAMS
     pub environments: Option<Vec<EnvironmentRef>>,                        // ENV_PARAMS
+    pub output_variables: Option<Vec<OutputVariable>>,   // CONTROL_FLOW
+    pub binding: StepBinding,                            // CONTROL_FLOW
+    pub path_inputs: Vec<PathInput>,                     // CONTROL_FLOW
 }
 ```
+
+The three `CONTROL_FLOW` fields (RFC 0011, RFC 0012) are described in
+[CONTROL_FLOW fields](#control_flow-fields-rfc-0011-rfc-0012) below.
 
 `resolved_symtab` exists to transport symbol values across the network to the worker host
 that runs the job. The worker evaluates the format strings that remain unresolved after job
 creation, so `resolved_symtab` is filtered to contain exactly the symbols referenced by
 those format strings. For a Step, these are: the step script's actions (command, args,
 timeout, cancelation), embedded files, script-level let bindings, step-level let bindings,
-and any step-scoped environments' variables, actions, and embedded files. Most of these are
+and any step-scoped environments' variables, actions, embedded files, and script-level let
+bindings. Most of these are
 host-context (SESSION and TASK scope); timeout and notifyPeriodInSeconds are template scope
 (validation rejects `Session.*`/`Task.*`/`Env.File.*`/`Env.Param.*` in them) but still resolve on the
 worker, referencing only the job-creation-stage symbols carried in `resolved_symtab`.
 
 Contents include `RawParam.*`, non-PATH `Param.*` values, `Job.Name`, `Job.EnvNames`
-(ENV_PARAMS), `Step.Name`, and let bindings. PATH-typed `Param.*` entries and any `apply_path_mapping` results are excluded
+(ENV_PARAMS), `Step.Name`, and let bindings, and for a loop body Step instance (RFC 0013) the
+`Loop.*` values it reads, with a path-typed loop variable stored only as `RawLoop.<V>`. PATH-typed `Param.*` entries and any `apply_path_mapping` results are excluded
 because path mapping rules aren't available until session time. The session layers these
 plus `Session.*` and `Task.*` values on top at runtime.
 
@@ -196,6 +253,184 @@ assumes values in the form `create_job` writes them: a deserialized Job whose IN
 spelled another way (`"007"`, `"yes"`) compares them by that text, which can cost an unneeded exit
 and enter but never shares an Environment between values a Session can tell apart. A FLOAT's stored
 text is the text a Session renders, so for a FLOAT the comparison is exact.
+
+### CONTROL_FLOW fields (RFC 0011, RFC 0012)
+
+`job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`. The
+template's `JobParameterDefinition` implements none of the first three, so an output
+declaration is carried on the job in its own form.
+
+```rust
+pub struct OutputVariable {
+    pub name: String,
+    pub param_type: JobParameterType,     // serialized as "type": the spec string, "LIST[INT]"
+    pub collect: OutputCollectMode,
+    pub unit: Option<String>,
+    pub constraints: OutputConstraints,
+}
+
+pub struct OutputConstraints {
+    pub allowed_values: Option<OutputAllowedValues>,
+    pub min_value: Option<OutputBound>,
+    pub max_value: Option<OutputBound>,
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+    pub item: Option<Box<OutputConstraints>>,
+}
+pub enum OutputAllowedValues { Int(Vec<i64>), Float(Vec<Float64>), String(Vec<String>) }
+pub enum OutputBound { Int(i64), Float(Float64) }
+
+pub enum StepBinding {
+    Bound,                                     // default
+    PendingInputs(PendingBinding),
+    Skipped,
+}
+
+pub struct PendingBinding {
+    pub enablement: GroupState<()>,                       // Known(()) once enableIf is true or absent
+    pub tasks: GroupState<Option<StepParameterSpace>>,    // Known(None): no parameterSpace, one Task
+    pub host_requirements: GroupState<Option<HostRequirements>>,
+    pub remaining: GroupState<()>,                        // Step Environments and script
+    pub environment_selection: Option<EnvironmentSelection>, // until enableIf is decided
+    pub environment_host_requirements: Vec<EnvironmentHostRequirements>, // for host selection
+    pub wrap_layers: Vec<String>,                         // for the remaining group
+    pub producers: Vec<String>,   // producers any group reads, sorted; skipped when empty
+}
+
+pub enum GroupState<T> {
+    Waiting { on: Vec<String> },   // the group's own Steps.* inputs that are not concrete, sorted
+    Known(T),
+}
+
+pub struct PathInput {
+    pub symbol: String,
+    pub ty: openjd_expr::ExprType,             // serialized as "type": "path", "list[path]", ...
+}
+```
+
+Deserialization does not re-check what binding guarantees when it writes these values:
+`GroupState::Waiting::on` is kept in the order given, and `PathInput.ty` may be any type
+its spelling parses to.
+
+`create_job` fills `output_variables` from the template's `outputVariables`
+(`OutputVariableDefinition::to_job_output_variable`). Under `CONTROL_FLOW` it binds each
+Step as far as the values concrete at job creation allow, so `binding` is any of the three
+states, and `advance_step_binding` moves a pending Step on (see
+[job-creation.md](job-creation.md) § Step input binding). A `PendingInputs` Step keeps
+`parameter_space`, `host_requirements`, and `resolved_symtab` as `None`: what is known of
+them waits in its `PendingBinding` and moves into the Step's fields when it is bound. Its
+script, Step Environments, dependencies, and outputs are filled in as for a bound Step. A
+`Skipped` Step has the same three fields `None` for good, and zero Tasks. `path_inputs` is
+recorded by `attach_step_inputs` for `Steps.*` values, and, for a loop body Step instance,
+by the model when the instance is bound, for its `RawLoop.*` values.
+
+`GroupState::Waiting::on` lists the group's own inputs (`Steps.<Step>.<Member>.<Name>`)
+that are not concrete, not counting the enablement group's inputs, which every other group
+also waits for: it is empty for a group that waits only for `enableIf`.
+
+`CONTROL_FLOW` requires `ENV_PARAMS`, so each Step has an Environment selection
+(`EnvironmentSelection`: the Job Environments it enters, its Environment parameter values,
+the entered Environments' resolved host requirements as `EnvironmentHostRequirements`,
+their wrap-hook layers, and the `SelectionError`s found), worked out at job creation. A Step
+pending its `enableIf` keeps it in `PendingBinding::environment_selection`, and a loop keeps
+its body Steps' in `Loop::body_environment_selections`. When the `enableIf` is `true` the
+selection is applied: `environments` and `environment_parameters` are set on the Step, and
+the host requirements and wrap layers move into `environment_host_requirements` and
+`wrap_layers` until the host selection and remaining groups use them (see
+[job-creation.md](job-creation.md#environment-selection-control_flow)). A bound Step's
+`environments`, `environment_parameters`, and combined `host_requirements` are as without
+`CONTROL_FLOW`.
+
+**`OutputConstraints`** holds the constraint properties the definition *declared*, and
+only those. A property that a job parameter of the same type implies when omitted (the
+RFC's example is the 1024-character default `maxLength` of a `RANGE_EXPR` parameter) is
+never added (RFC 0012 `<OutputVariableDefinition>` item 6). Floats are `Float64`, so the
+struct is hashable. For a list type, `min_length`/`max_length` bound the number of
+elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a second
+`item`. For `STRING`, `PATH`, and `RANGE_EXPR`, the lengths count characters.
+
+**Constraint checks.** `OutputVariable` has three checks, each returning
+`Result<(), String>` with a message `Output variable '<name>': <problem>`:
+
+| Method | Checks |
+|--------|--------|
+| `check_constraints(&ExprValue)` | One Task's whole value: its type, then for a scalar the value constraints, and for a list `minLength`, `maxLength`, and every element (`item[i]`, or `item[j][i]` inside `LIST[LIST[INT]]`) |
+| `check_element(&ExprValue)` | One element reported under `collect: APPEND`, against the element type and `item`. An error for a scalar type |
+| `check_length(len, at_exit)` | A list being collected under `APPEND`: `maxLength` always, `minLength` only when `at_exit` |
+
+`check_element` and `check_length` exist because under `APPEND` the constraints split:
+`item` applies to each element as it arrives, `maxLength` to the growing list, and
+`minLength` only when the Action exits. The checks follow the job-parameter rules
+(`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
+A string a message quotes is cut to 200 characters with its control characters escaped
+(see [outputs.md](outputs.md) § Errors).
+A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
+value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
+path context and checked in that form. Conversely a `STRING` value may be a `Path` and a
+`LIST[STRING]` value a `ListPath`, as for `STRING` and `LIST[STRING]` job parameter
+values; the path's text is checked. A `RANGE_EXPR` value may be an
+`ExprValue::RangeExpr`, whose length is that of its canonical spelling, or an
+`ExprValue::String` holding a valid range expression, whose length is that of the
+string as written (as for a `RANGE_EXPR` job parameter value). The two can differ
+(`1,2,3` is the range `1-3`); the output collector checks a reported value in its
+written spelling and stores the `RangeExpr` ([outputs.md](outputs.md) § Constraints). An empty list built
+without a type hint (`list[nulltype]`) satisfies every list type; a typed empty list must
+have the declared type. `check_element` on a scalar type reports `INT is not a list type,
+so it has no elements`, and so does `check_length` (a scalar's `minLength`/`maxLength`
+count characters, not elements).
+
+**Serde.** Every new field has `#[serde(default)]` and is skipped when it holds its
+default (`None`, `Bound`, or empty), so a Step serialized before this change still
+deserializes, and the serialized form of a Step without `CONTROL_FLOW` features is
+unchanged. `StepBinding` is internally tagged: `{"state": "BOUND"}`,
+`{"state": "PENDING_INPUTS", "enablement": ..., "tasks": ..., "hostRequirements": ...,
+"remaining": ...}`, `{"state": "SKIPPED"}`. A `GroupState` is externally tagged in
+camelCase: `{"waiting": {"on": [...]}}` or `{"known": <value>}`, with `null` for `()` and
+for a `None` result.
+
+Names use the template's spellings where it has them: `OutputVariable.param_type` is
+serialized as `"type"` with the spec string (`"FLOAT"`, `"LIST[STRING]"`; read
+case-insensitively, and an unknown name is `unknown output variable type: 'X'`),
+`collect` as `"ONCE"`/`"LAST"`/`"APPEND"`, and the constraint keys in camelCase.
+`OutputAllowedValues` and `OutputBound` are externally tagged by the value kind in
+lowercase, so an `allowedValues` list of strings that look like numbers cannot be read
+back as numbers. `PathInput.ty` is serialized as `"type"` with the expression type's
+spelling. For example, a Step with two outputs and a pending binding serializes these
+fields as:
+
+```json
+"outputVariables": [
+  {"name": "T", "type": "FLOAT", "unit": "s",
+   "constraints": {"allowedValues": {"float": [0.0, 1.5]}, "minValue": {"float": 0.0}}},
+  {"name": "K", "type": "LIST[STRING]", "collect": "APPEND",
+   "constraints": {"maxLength": 9, "item": {"allowedValues": {"string": ["a"]}}}}
+],
+"binding": {"state": "PENDING_INPUTS", "enablement": {"known": null},
+            "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
+            "hostRequirements": {"known": null}, "remaining": {"known": null},
+            "producers": ["P"]}
+```
+
+and a bound Step whose script reads a path-typed output records it as:
+
+```json
+"pathInputs": [{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}]
+```
+
+`OutputConstraints` is checked against the declared type only when `create_job` builds
+it from the template; deserialization keeps a property of the wrong form (a `float`
+bound on an `INT` output, say), which then has no effect on the checks.
+
+`JobParameterType` derives `Deserialize` as well as `Serialize`; both use the variant
+names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
+
+`job::Environment` has `enabled: bool`: `false` when its `enableIf` evaluated to
+`false`. A disabled Environment must be left out of the Session's Environment stack (not
+entered, its `variables` not set); the caller that builds the stack does this, and
+`openjd-sessions` does not read the field. It is serialized only when `false` and defaults to `true`, so
+existing jobs read back unchanged. `create_job` decides a Job Environment's; the remaining
+group of step input binding decides a Step Environment's, so on a pending Step whose
+remaining group is not known yet it is `true` whatever its `enableIf` will give.
 
 ### StepScript, StepActions, Action
 
@@ -408,6 +643,59 @@ whose entered Environments has requirements keeps its own, unchanged. Requiremen
 resolved to nothing were discarded before combining and are not stored; `CreatedJob`
 lists them per Step for display (Template Schemas §3.3).
 
+### Loop (CONTROL_FLOW, RFC 0013)
+
+```rust
+pub struct Loop {
+    pub name: String,
+    pub description: Option<String>,
+    pub entry_index: usize,                    // its index in the template's `steps`
+    pub dependencies: Option<Vec<StepDependency>>,
+    pub condition: LoopCondition,              // While or Until
+    pub variables: Vec<OutputVariable>,        // name, type, constraints
+    pub output_variables: Vec<OutputVariable>, // name, type, collect, unit, constraints
+    pub body: Vec<String>,                     // body Step names, in body order
+    pub binding: LoopBinding,
+    pub body_environment_selections: Vec<EnvironmentSelection>, // per body Step; empty when none applies
+}
+
+pub enum LoopBinding {
+    Bound(BoundLoop),                  // { max_iterations: u32, start: LoopStart }
+    PendingInputs(PendingLoopBinding), // { enablement, bound, start: GroupState<..>, producers }
+    Skipped,
+}
+
+pub struct LoopStart {
+    pub initial: IndexMap<String, ExprValue>, // each `initial`, converted
+    pub first_while: Option<bool>,            // None for an `until` loop
+}
+```
+
+`LoopBinding` mirrors [`StepBinding`](#control_flow-fields-rfc-0011-rfc-0012), with the
+groups of RFC 0013 §Loop binding: enablement (`enableIf`), bound (`maxIterations`), and
+start (each `initial`, then the first `while`). A bound loop whose `first_while` is
+`Some(false)` has zero iterations (`BoundLoop::has_iterations`). The body Step templates
+and the loop's format strings stay in the `JobTemplate`, which the loop functions take.
+Each loop output's declaration is an `OutputVariable` whose `collect` is `LAST` or
+`APPEND`; a loop variable's has the default `collect`, which means nothing for it.
+
+`Loop`, `LoopBinding`, `BoundLoop`, `LoopStart`, and `PendingLoopBinding` implement `Debug`,
+`Clone`, `PartialEq`, `Hash`, and `Serialize` (`LoopStart`'s `Hash` is written by hand, over
+its `initial` entries sorted by name), but not `Deserialize`, because the bound
+values are `ExprValue`s (as for `JobOutput`). `LoopBinding` is internally tagged on
+`state`, as `StepBinding` is:
+
+```json
+{"name": "L", "entryIndex": 0, "condition": "UNTIL",
+ "variables": [{"name": "N", "type": "INT"}], "body": ["W"],
+ "binding": {"state": "BOUND", "maxIterations": 4,
+             "start": {"initial": {"N": {"Int": 2}}}}}
+```
+
+Loop values take the `ExprValue` serde form that `JobParameter.value` uses. The working values a caller
+keeps while a loop runs (`LoopProgress`, `LoopIteration`, `BoundaryOutcome`,
+`LoopResult`, `LoopError`) are not parts of a Job.
+
 ### StepDependency
 
 ```rust
@@ -420,8 +708,11 @@ pub struct StepDependency {
 
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
-| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
-| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved, and with ENV_PARAMS combined with the entered Environments' (§3.3.3); carries `resolved_symtab: Option<SerializedSymbolTable>`; `environment:` dependency entries, with `activation` and both `enableIf`s, become `environment_parameters` / `environments` (ENV_PARAMS); a Step Environment whose `enableIf` is `false` is dropped |
+| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap`; `jobOutputDefinitions` become `outputs` |
+| `template::StepLoop` | `job::Loop` | Its groups decided into `binding`; variable and output declarations as `OutputVariable`s; body Steps named, not instantiated; the body Steps' Environment selections in `body_environment_selections` when any has something to apply |
+| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved, and with ENV_PARAMS combined with the entered Environments' (§3.3.3); carries `resolved_symtab: Option<SerializedSymbolTable>`; `environment:` dependency entries, with `activation` and both `enableIf`s, become `environment_parameters` / `environments` (ENV_PARAMS); a Step Environment whose `enableIf` is `false` is dropped; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is decided into `binding` (`Skipped` when `false`) |
+| `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
+| `template::JobOutputDefinition` | `job::JobOutput` | Declaration as an `OutputVariable` (`collect` always `ONCE`); keeps `objectType` and `description`; `value` stays a `FormatString`; `evaluated` filled at creation or by the caller |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>`, from either `template::AttributeValues` form; with ENV_PARAMS a requirement that resolves to nothing is discarded, empty `amounts`/`attributes` lists are `None`, and a Step left with none has `host_requirements: None` (Template Schemas §3.3) |

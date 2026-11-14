@@ -1079,7 +1079,12 @@ fn order_step_2_by_entry_index_in_an_edited_template() {
          {{environment: G, enableIf: \"Param.L[4] == 1\"}}]\n  script: {{actions: {{onRun: \
          {{command: x}}}}}}\n"
     ));
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let e = deps[0].clone();
     deps.insert(2, e);
     let values = job_params_with(&jt, &[], &[]);
@@ -1455,7 +1460,12 @@ fn a_later_steps_step_2_to_4_error_stops_that_step_not_the_first() {
         &s0,
         &format!("  dependencies: [{R_BAD}, {{environment: F}}]\n"),
     ));
-    let deps = jt.steps[1].dependencies.as_mut().unwrap();
+    let deps = jt.steps[1]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let f = deps[1].clone();
     deps.push(f);
     let values = job_params_with(&jt, &[], &[]);
@@ -1724,7 +1734,12 @@ fn a_job_template_without_env_params_reports_its_own_staged_error_for_the_submis
         "{HEAD}jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n- name: S\n  \
          dependencies: [{{environment: E}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     ));
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let e = deps[0].clone();
     deps.push(e);
     jt.extensions
@@ -1865,7 +1880,12 @@ fn a_stopped_step_of_a_job_template_without_env_params_does_not_stop_the_others(
          dependencies: [{{environment: E}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
          - name: S1\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     ));
-    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let deps = jt.steps[0]
+        .as_step_mut()
+        .unwrap()
+        .dependencies
+        .as_mut()
+        .unwrap();
     let e = deps[0].clone();
     deps.push(e);
     jt.extensions
@@ -2078,7 +2098,7 @@ const R_SRC: &str = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV
                      {onRun: {command: x, timeout: '{{Param.T}}'}}}\n";
 
 fn drop_entries(jt: &mut openjd_model::template::JobTemplate) {
-    jt.steps[0].dependencies = None;
+    jt.steps[0].as_step_mut().unwrap().dependencies = None;
 }
 
 #[test]
@@ -2273,7 +2293,12 @@ fn a_job_template_built_without_extensions_stops_a_step_as_with_env_params() {
          - name: S1\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     let push_dup = |jt: &mut openjd_model::template::JobTemplate| {
-        let deps = jt.steps[0].dependencies.as_mut().unwrap();
+        let deps = jt.steps[0]
+            .as_step_mut()
+            .unwrap()
+            .dependencies
+            .as_mut()
+            .unwrap();
         let e = deps[0].clone();
         deps.push(e);
     };

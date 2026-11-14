@@ -11,20 +11,32 @@ use crate::job;
 
 type NodeIndex = usize;
 
-/// A step-to-step dependency edge.
+/// A dependency edge between two nodes (top-level Steps or loops).
 #[derive(Debug)]
 pub struct StepDependencyEdge {
-    /// Index of the step that is depended upon.
+    /// Node index of the Step or loop that is depended upon.
     pub origin: NodeIndex,
-    /// Index of the step that depends on origin.
+    /// Node index of the Step or loop that depends on origin.
     pub dependent: NodeIndex,
+}
+
+/// Whether a node is a Step or a loop (`CONTROL_FLOW`, RFC 0013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepNodeKind {
+    /// A top-level Step: `step_index` indexes `job.steps`.
+    Step,
+    /// A loop: `step_index` indexes `job.loops`.
+    Loop,
 }
 
 /// A node in the dependency graph.
 #[derive(Debug)]
 pub struct StepDependencyNode {
-    /// The step this node represents (index into job.steps).
+    /// The entry this node represents: an index into `job.steps` for a
+    /// Step, into `job.loops` for a loop (see `kind`).
     pub step_index: usize,
+    /// Whether the node is a Step or a loop.
+    pub kind: StepNodeKind,
     /// The step name.
     pub name: String,
     /// Edges where this step depends on another (this step is the dependent).
@@ -33,7 +45,10 @@ pub struct StepDependencyNode {
     pub out_edges: Vec<usize>,
 }
 
-/// Dependency graph over the steps of an instantiated job.
+/// Dependency graph over the top-level entries of an instantiated job: its
+/// Steps and its loops, as nodes in template order. For a Job without loops,
+/// node `i` is `job.steps[i]`. A loop's body Steps are not nodes: their
+/// dependencies stay within the body (RFC 0013 §`<LoopDefinition>`).
 #[derive(Debug)]
 pub struct StepDependencyGraph {
     nodes: Vec<StepDependencyNode>,
@@ -44,20 +59,54 @@ pub struct StepDependencyGraph {
 impl StepDependencyGraph {
     /// Build the dependency graph from a Job.
     pub fn new(job: &job::Job) -> Result<Self, ModelError> {
-        let name_to_index: HashMap<String, NodeIndex> = job
-            .steps
+        // Template order: each loop at its entry index, the Steps filling
+        // the other places in order.
+        let total = job.steps.len() + job.loops.len();
+        let mut slots: Vec<Option<(StepNodeKind, usize)>> = vec![None; total];
+        for (i, l) in job.loops.iter().enumerate() {
+            match slots.get_mut(l.entry_index) {
+                Some(slot @ None) => *slot = Some((StepNodeKind::Loop, i)),
+                _ => {
+                    return Err(ModelError::DecodeValidation(format!(
+                        "Loop '{}' has entry index {}, which does not fit the Job's {total} Steps and loops",
+                        l.name, l.entry_index
+                    )))
+                }
+            }
+        }
+        for (next_step, slot) in slots.iter_mut().filter(|s| s.is_none()).enumerate() {
+            *slot = Some((StepNodeKind::Step, next_step));
+        }
+        let entries: Vec<(StepNodeKind, usize, &str, Option<&Vec<job::StepDependency>>)> = slots
+            .into_iter()
+            .flatten()
+            .map(|(kind, i)| match kind {
+                StepNodeKind::Step => (
+                    kind,
+                    i,
+                    job.steps[i].name.as_str(),
+                    job.steps[i].dependencies.as_ref(),
+                ),
+                StepNodeKind::Loop => (
+                    kind,
+                    i,
+                    job.loops[i].name.as_str(),
+                    job.loops[i].dependencies.as_ref(),
+                ),
+            })
+            .collect();
+        let name_to_index: HashMap<String, NodeIndex> = entries
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.name.clone(), i))
+            .map(|(n, (_, _, name, _))| (name.to_string(), n))
             .collect();
 
-        let mut nodes: Vec<StepDependencyNode> = job
-            .steps
+        let mut nodes: Vec<StepDependencyNode> = entries
             .iter()
-            .enumerate()
-            .map(|(i, s)| StepDependencyNode {
-                step_index: i,
-                name: s.name.clone(),
+            .map(|(kind, i, name, _)| StepDependencyNode {
+                step_index: *i,
+                kind: *kind,
+                name: name.to_string(),
                 in_edges: Vec::new(),
                 out_edges: Vec::new(),
             })
@@ -65,23 +114,26 @@ impl StepDependencyGraph {
 
         let mut edges = Vec::new();
 
-        for (dep_idx, step) in job.steps.iter().enumerate() {
-            if let Some(deps) = &step.dependencies {
-                for dep in deps {
-                    let origin_idx = *name_to_index.get(&dep.depends_on).ok_or_else(|| {
-                        ModelError::DecodeValidation(format!(
-                            "Step '{}' depends on unknown step '{}'",
-                            step.name, dep.depends_on
-                        ))
-                    })?;
-                    let edge_idx = edges.len();
-                    edges.push(StepDependencyEdge {
-                        origin: origin_idx,
-                        dependent: dep_idx,
-                    });
-                    nodes[dep_idx].in_edges.push(edge_idx);
-                    nodes[origin_idx].out_edges.push(edge_idx);
-                }
+        for (dep_idx, (kind, _, name, deps)) in entries.iter().enumerate() {
+            for dep in deps.iter().copied().flatten() {
+                let origin_idx = *name_to_index.get(&dep.depends_on).ok_or_else(|| {
+                    ModelError::DecodeValidation(format!(
+                        "{} '{name}' depends on unknown step '{}'",
+                        if matches!(kind, StepNodeKind::Loop) {
+                            "Loop"
+                        } else {
+                            "Step"
+                        },
+                        dep.depends_on
+                    ))
+                })?;
+                let edge_idx = edges.len();
+                edges.push(StepDependencyEdge {
+                    origin: origin_idx,
+                    dependent: dep_idx,
+                });
+                nodes[dep_idx].in_edges.push(edge_idx);
+                nodes[origin_idx].out_edges.push(edge_idx);
             }
         }
 
@@ -135,7 +187,9 @@ impl StepDependencyGraph {
     /// DFS-based: processes nodes in template order. For each unvisited node,
     /// pushes it onto a stack and explores dependencies (pushed in reverse
     /// template order so the earliest dependency is processed first).
-    /// Returns step indices in dependency-respecting, template-stable order.
+    /// Returns node indices in dependency-respecting, template-stable order;
+    /// for a Job without loops these are indices into `job.steps`. Use
+    /// [`node`](Self::node) to tell a Step from a loop.
     pub fn topo_sorted(&self) -> Result<Vec<usize>, ModelError> {
         let n = self.nodes.len();
         // 0 = unvisited, 1 = started, 2 = completed

@@ -44,7 +44,9 @@ openjd_model              — crate root re-exports, the main public surface
 │   │                       create_job_with_environment_templates + its types,
 │   │                       check_environment_templates
 │   ├── step_param_space  — StepParameterSpaceIterator
+│   ├── ChunkTaskIndex    — per-Task indices of the Tasks an Action ran (CONTROL_FLOW)
 │   └── step_dependency_graph — StepDependencyGraph + friends
+├── outputs               — CONTROL_FLOW output directive parser + collector
 ├── symbol_table          — re-exported from openjd_expr
 ├── template              — unresolved/parsed template types (public module)
 │   └── parse             — decode_*_template + DocumentType + DecodedTemplate
@@ -73,7 +75,12 @@ ENV_PARAMS, one `Expression`; see [template-types.md](template-types.md)),
 `template::EnvironmentParameterDefinition`,
 `template::EnvironmentParameterValue`, `template::EnvironmentParameterValueMap`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
-`template::ExtensionName`, `template::TaskParameterDefinition`
+`template::ExtensionName`,
+`template::OutputVariableDefinition`, `template::JobOutputDefinition`,
+`template::StepEntry`, `template::StepLoop`, `template::LoopDefinition`,
+`template::LoopVariableDefinition`, `template::LoopOutputVariableDefinition`,
+`template::StepTemplateRef`,
+`template::TaskParameterDefinition`
 and its 5 per-variant inner struct types
 (`IntTaskParameterDefinition`, `FloatTaskParameterDefinition`,
 `StringTaskParameterDefinition`, `PathTaskParameterDefinition`,
@@ -216,6 +223,46 @@ pub fn evaluate_let_bindings(
 
 pub fn convert_environment(env: &template::Environment) -> job::Environment;
 
+/// CONTROL_FLOW: advance pending Step `step_index` of `job` with `inputs`
+/// (each producer in the Step's input_producers() whose state is known, on
+/// every call). A caller error is a BindingError holding a
+/// ModelError::Compatibility.
+pub fn advance_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    step_index: usize,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, job::BindingError>;
+
+/// CONTROL_FLOW: merge the `Steps.*` values a bound Step's host-scope
+/// fields read into its `resolved_symtab`. A caller error (Step not bound, a
+/// symbol not concrete) is a ModelError::Compatibility.
+pub fn attach_step_inputs(
+    step: &job::Step,
+    inputs: &job::StepInputs,
+) -> Result<job::Step, ModelError>;
+
+/// CONTROL_FLOW: the `Steps.*` symbols job output `output_index` reads
+/// (`Steps.<Step>.<Member>.<Name>`, sorted, no repeats). Empty for an
+/// output that reads none and for an index past the Job's outputs.
+pub fn job_output_inputs(job: &job::Job, output_index: usize) -> Vec<String>;
+
+/// CONTROL_FLOW: evaluate job output `output_index` with the `Steps.*`
+/// values in `inputs`. Ok(None) for a null result (constraints not checked).
+/// A ModelValidation error at `jobOutputDefinitions[i] -> value` fails the
+/// Job; a ModelError::Compatibility is a caller error.
+pub fn evaluate_job_output(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    output_index: usize,
+    inputs: &job::StepInputs,
+) -> Result<Option<openjd_expr::ExprValue>, ModelError>;
+
 pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
@@ -342,6 +389,72 @@ pub fn check_environment_templates(
     attached: &[AttachedEnvironmentTemplate<'_>],
     ctx: &ValidationContext,
 ) -> Result<Vec<SubmissionWarning>, ModelError>;
+/// CONTROL_FLOW (RFC 0013): advance pending loop `loop_index` of `job` (its
+/// enablement, bound, and start groups) with its dependencies in `inputs`.
+/// A caller error is a BindingError holding a ModelError::Compatibility.
+pub fn advance_loop_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    inputs: &job::StepInputs,
+) -> Result<job::Loop, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): create iteration `progress.iteration`'s body
+/// Step instances of bound loop `loop_index`, each bound as far as the
+/// values concrete then allow. `inputs` holds the loop's dependencies. An
+/// error fails the loop finally; its BindingError::step is
+/// `<Loop>[<N>].<Step>`.
+pub fn start_iteration(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::LoopIteration, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): advance_step_binding for pending body Step
+/// instance `body_index` of `iteration`. `inputs` holds the loop's
+/// dependencies and the iteration's instances the instance reads.
+pub fn advance_body_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    iteration: &job::LoopIteration,
+    body_index: usize,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): evaluate the boundary of iteration
+/// `progress.iteration` (loop outputs, until, next, while, the bound, in
+/// that order). `inputs` holds the loop's dependencies and every instance
+/// of the iteration. A LoopError fails the loop finally, unless it is a
+/// caller error (LoopError::is_caller_error).
+pub fn evaluate_iteration_boundary(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    inputs: &job::StepInputs,
+) -> Result<job::BoundaryOutcome, job::LoopError>;
+
+/// CONTROL_FLOW (RFC 0013): end a bound loop whose first `while` is false,
+/// once its dependencies are satisfied: the APPEND outputs' `minLength`
+/// against `[]`, then zero iterations with LAST `null` and APPEND `[]`.
+pub fn end_without_iterations(
+    job: &job::Job,
+    loop_index: usize,
+) -> Result<job::LoopResult, job::LoopError>;
 ```
 
 [`create_job`] is the high-level entry point: it resolves the job name
@@ -371,7 +484,44 @@ is accepted whatever its length. Callers that build
 `JobParameterValues` themselves must check those lengths on the value
 as written (see [job-creation.md](job-creation.md), round trip). Every expression
 evaluation it performs runs under the caller's evaluation budgets
-(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
+(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`). With `CONTROL_FLOW`, it copies each Step's
+`outputVariables` onto `job::Step::output_variables`, decides each Job
+Environment's `enableIf`, and binds each Step as far as the values concrete
+at job creation allow, in dependency order: a Step may come back `Bound`,
+`Skipped`, or `PendingInputs` (see [job-creation.md](job-creation.md)
+§ Step input binding). Its own checks of the carried-forward fields see the
+`Steps.*` symbols of each Step's direct dependencies, concrete or
+unresolved. It also stores each `jobOutputDefinitions` entry in
+`job::Job::outputs`, and evaluates each one whose `Steps.*` inputs are
+concrete at creation; a job output that fails there fails `create_job` (see
+[job-outputs.md](job-outputs.md)). Each loop (RFC 0013) becomes a
+[`job::Loop`] in `job::Job::loops`, bound like a Step through its
+enablement, bound, and start groups; a loop group that fails at creation
+fails `create_job`. Nothing of a loop's body Steps is evaluated at creation
+(see [job-creation.md](job-creation.md) § Loops).
+
+[`advance_step_binding`] moves a pending Step on as upstream values arrive:
+it evaluates each group of the Step whose inputs are now concrete, `enableIf`
+first, and returns the Step with more known, `Bound`, or `Skipped`, or the
+first group that failed as a [`job::BindingError`]. [`attach_step_inputs`]
+merges the concrete `Steps.*` values a bound Step's script and Step
+Environments read into its `resolved_symtab`, recording the path-typed ones
+in `job::Step::path_inputs`. Both take a [`job::StepInputs`] assembled with
+`StepInputs::add_producer`.
+
+[`advance_loop_binding`], [`start_iteration`], [`advance_body_step_binding`],
+[`evaluate_iteration_boundary`], and [`end_without_iterations`] run a loop
+(RFC 0013 §Running a loop): the caller keeps a [`job::LoopProgress`] between
+iterations, binds each iteration's body Step instances as it binds Steps,
+and adds a succeeded or skipped loop to its consumers' inputs with
+`StepInputs::add_loop_producer`. Every loop failure these return is final;
+whether a body Task's failure is recoverable is the caller's decision. See
+[job-creation.md](job-creation.md) § Loops.
+
+[`job_output_inputs`] names the `Steps.*` symbols a job output waits on, and
+[`evaluate_job_output`] evaluates it once they are concrete in a
+[`job::StepInputs`]; the caller stores the result in
+`job::JobOutput::evaluated`. See [job-outputs.md](job-outputs.md).
 
 With `ENV_PARAMS`, [`create_job_with_environment_templates`] runs the
 Template Schemas §7.4.1 job-creation order: it binds `Job.Name` and, with
@@ -569,8 +719,9 @@ pub struct JobTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
+    pub job_output_definitions: Option<Vec<JobOutputDefinition>>,  // CONTROL_FLOW
     pub job_environments: Option<Vec<template::Environment>>,
-    pub steps: Vec<template::StepTemplate>,
+    pub steps: Vec<template::StepEntry>,   // Steps and, with CONTROL_FLOW, loops (RFC 0013)
 }
 ```
 
@@ -581,6 +732,19 @@ impl JobTemplate {
     pub fn name(&self) -> &FormatString;
     pub fn description(&self) -> Option<&str>;
     pub fn parameter_definitions_list(&self) -> &[JobParameterDefinition];
+    /// The `jobOutputDefinitions`, empty when there are none.
+    pub fn job_output_definitions_list(&self) -> &[JobOutputDefinition];
+
+    /// The top-level Steps, in template order, without the loops. For a
+    /// template without loops, index `i` of this iterator is entry `i`.
+    pub fn top_level_steps(&self) -> impl Iterator<Item = &StepTemplate>;
+    /// The loops (RFC 0013), in template order.
+    pub fn loops(&self) -> impl Iterator<Item = &StepLoop>;
+    /// Whether any entry of `steps` is a loop.
+    pub fn has_loops(&self) -> bool;
+    /// Every `StepTemplate`, top-level or in a loop's body, in template
+    /// order with each loop's body in place of the loop.
+    pub fn step_templates(&self) -> impl Iterator<Item = StepTemplateRef<'_>>;
 
     /// Build a ModelProfile from the template's declared
     /// specificationVersion + extensions. Entries in `extensions` that
@@ -947,6 +1111,185 @@ of the rule. A `range_expr` value has only its canonical form, which
 is checked under either rule.
 ```
 
+### CONTROL_FLOW Template Types (RFC 0011, RFC 0012)
+
+`CONTROL_FLOW` adds `JobTemplate::job_output_definitions` (above) and fields to
+`template::StepTemplate`:
+
+```rust
+pub struct template::StepTemplate {
+    // ...existing fields...
+    pub enable_if: Option<ExprField>,            // an expression field
+    pub output_variables: Option<Vec<OutputVariableDefinition>>,
+}
+```
+
+and two types. An Environment's `enableIf` is `ENV_PARAMS`'s `Option<ExprField>` (above),
+and a Step's and a loop's `enableIf` and a loop's `while` and `until` use the same
+`template::ExprField`.
+
+```rust
+/// One `<OutputVariableDefinition>`: the job parameter definition of the
+/// declared type plus `collect` and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::OutputVariableDefinition { /* private fields */ }
+
+impl template::OutputVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn collect(&self) -> OutputCollectMode;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    /// The wrapped job parameter definition (name, description,
+    /// constraint properties, and `objectType` for PATH types).
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    pub fn to_job_output_variable(&self) -> job::OutputVariable;
+    pub fn check_constraints(&self, value: &openjd_expr::ExprValue) -> Result<(), String>;
+    pub fn check_element(&self, element: &openjd_expr::ExprValue) -> Result<(), String>;
+    pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
+}
+
+/// One `<JobOutputDefinition>`: the job parameter definition of the
+/// declared type plus `value` and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::JobOutputDefinition { /* private fields */ }
+
+impl template::JobOutputDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn value(&self) -> &FormatString;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    /// The wrapped job parameter definition (name, description,
+    /// constraint properties, and `objectType` for PATH types).
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// The job-side form, with `evaluated: None`.
+    pub fn to_job_output(&self) -> job::JobOutput;
+}
+```
+
+`OutputVariableDefinition` and `JobOutputDefinition` implement `Deserialize`. A Step's and a loop's `enableIf`
+and a loop's `while` and `until` decode a present `null` as
+`Some(ExprField::Null)`, not `None`, so that validation reports it. See
+[template-types.md](template-types.md) § CONTROL_FLOW Types.
+
+### CONTROL_FLOW Loop Template Types (RFC 0013)
+
+`JobTemplate::steps` holds `StepEntry`s. These are template types only:
+`create_job` returns a `ModelError::Compatibility` error for a template with
+a loop (see [job-creation.md](job-creation.md)).
+
+```rust
+/// One entry of `steps`: a `<StepLoop>` when the mapping has a `loop` key,
+/// a `<StepTemplate>` otherwise.
+#[derive(Debug, Clone)]
+pub enum template::StepEntry {
+    Step(StepTemplate),
+    Loop(StepLoop),
+}
+
+impl template::StepEntry {
+    pub fn name(&self) -> &str;
+    /// Empty when there are none.
+    pub fn dependencies(&self) -> &[StepDependency];
+    pub fn enable_if(&self) -> Option<&ExprField>;
+    pub fn as_step(&self) -> Option<&StepTemplate>;
+    pub fn as_step_mut(&mut self) -> Option<&mut StepTemplate>;
+    pub fn as_loop(&self) -> Option<&StepLoop>;
+}
+
+/// `<StepLoop>`: `deny_unknown_fields`, so `script`, `parameterSpace`,
+/// `hostRequirements`, `stepEnvironments`, and `let` are unknown fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct template::StepLoop {
+    pub name: String,
+    pub description: Option<Description>,
+    pub enable_if: Option<ExprField>,
+    pub dependencies: Option<Vec<StepDependency>>,
+    pub loop_definition: LoopDefinition,            // serde name `loop`
+    pub output_variables: Option<Vec<LoopOutputVariableDefinition>>,
+}
+
+impl template::StepLoop {
+    /// Empty when there are none.
+    pub fn variables(&self) -> &[LoopVariableDefinition];
+    /// Empty when there are none.
+    pub fn output_variables_list(&self) -> &[LoopOutputVariableDefinition];
+    pub fn body(&self) -> &[StepTemplate];
+}
+
+/// `<LoopDefinition>`: `deny_unknown_fields`. A body entry with a `loop`
+/// key fails to parse ("loops do not nest").
+#[derive(Debug, Clone, Deserialize)]
+pub struct template::LoopDefinition {
+    pub variables: Option<Vec<LoopVariableDefinition>>,
+    pub while_condition: Option<ExprField>,   // serde name `while`
+    pub until_condition: Option<ExprField>,   // serde name `until`
+    pub max_iterations: IntOrFormatString,
+    pub steps: Vec<StepTemplate>,
+}
+
+/// `<LoopVariableDefinition>`: the job parameter definition of the
+/// declared type plus `initial` and `next`.
+#[derive(Debug, Clone)]
+pub struct template::LoopVariableDefinition { /* private fields */ }
+
+impl template::LoopVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn initial(&self) -> &FormatString;
+    pub fn next(&self) -> &FormatString;
+    pub fn description(&self) -> Option<&str>;
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// Name, type, and constraints, for `check_constraints`.
+    pub fn to_output_variable(&self) -> job::OutputVariable;
+}
+
+/// `<LoopOutputVariableDefinition>`: the job parameter definition of the
+/// declared type plus `collect` (as written), `value`, and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::LoopOutputVariableDefinition { /* private fields */ }
+
+impl template::LoopOutputVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    /// `None` when omitted; a valid template has `LAST` or `APPEND`.
+    pub fn collect(&self) -> Option<OutputCollectMode>;
+    pub fn value(&self) -> &FormatString;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// Name, type, `collect`, `unit`, and constraints, for
+    /// `check_constraints`, `check_element`, and `check_length`.
+    pub fn to_output_variable(&self) -> job::OutputVariable;
+}
+
+/// A `StepTemplate` with where it is, from `JobTemplate::step_templates`.
+#[derive(Debug, Clone, Copy)]
+pub struct template::StepTemplateRef<'a> {
+    pub step: &'a StepTemplate,
+    /// Its entry in `steps`: its own, or its loop's.
+    pub entry_index: usize,
+    /// Its index in its loop's body; `None` for a top-level Step.
+    pub body_index: Option<usize>,
+    pub step_loop: Option<&'a StepLoop>,
+}
+
+impl template::StepTemplateRef<'_> {
+    /// `steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step.
+    pub fn path(&self) -> Vec<PathElement>;
+}
+```
+
+`StepEntry`, `StepLoop`, `LoopDefinition`, `LoopVariableDefinition`, and
+`LoopOutputVariableDefinition` implement `Deserialize`. See
+[template-types.md](template-types.md) § CONTROL_FLOW Loop Types and
+[validation.md](validation.md) § Loops.
+
 ### Task Parameter Definitions
 
 ```rust
@@ -1044,8 +1387,8 @@ pub struct StepParameterSpaceDefinition {
 
 `IntOrFormatString` is an integer or a format string. It is the element
 type of `IntRange::List` (Template Schemas §3.4.1.1 `<IntRangeList>`, used
-by both `INT` and `CHUNK[INT]`) and the type of the two `ChunksDefinition`
-count fields. A JSON integer, an integer-valued float, or a string that
+by both `INT` and `CHUNK[INT]`), the type of the two `ChunksDefinition`
+count fields, and with `CONTROL_FLOW` the type of `LoopDefinition::max_iterations`. A JSON integer, an integer-valued float, or a string that
 parses as a base-10 integer (surrounding whitespace allowed) decodes to
 `Int`. A string containing `{{` decodes to `FormatString`, which is
 resolved at job creation, or fails to decode when it is not a valid
@@ -1104,8 +1447,10 @@ Session- and task-scope strings (in `script.actions`, `variables`,
 embedded file contents, etc.) remain as [`FormatString`] for the session
 runtime to resolve when worker state is available.
 
-All types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
-with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
+The job types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
+(the step input binding helpers `StepInputs`, `ProducerState`, and
+`BindingError` are working values, not parts of a job, and their derives
+are listed with them) with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
 structural on the *created job*, not the source template: derived
 state such as `resolved_symtab` participates, and since its transport
 format preserves original float literals, jobs created from `1.0` vs
@@ -1115,7 +1460,15 @@ format preserves original float literals, jobs created from `1.0` vs
 consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 `f64` — `Job`, `Step`, `StepParameterSpace`, `TaskParameter`,
 `HostRequirements`, `AmountRequirement` — implement `PartialEq` but
-not `Eq`; the rest also implement `Eq`.
+not `Eq`, and so do the CONTROL_FLOW types that hold an
+`openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
+but not `Eq`): `OutputVariable`, `OutputConstraints`,
+`OutputAllowedValues`, `OutputBound`, and `JobOutput`, as do `StepBinding`,
+`PendingBinding`, and `GroupState`, which can hold a `StepParameterSpace` and
+`HostRequirements`, and the RFC 0013 loop types `Loop`, `LoopBinding`,
+`BoundLoop`, `LoopStart`, and `PendingLoopBinding`, which hold an
+`OutputVariable` or an `ExprValue`.
+The rest also implement `Eq`.
 
 ```rust
 pub struct job::Job {
@@ -1123,8 +1476,16 @@ pub struct job::Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<ModelExtension>>,
     pub parameters: IndexMap<String, JobParameter>,
+    /// The top-level Steps, in template order (a loop's body Steps are not
+    /// here).
     pub steps: Vec<Step>,
+    /// CONTROL_FLOW loops (RFC 0013), in template order. `#[serde(default)]`,
+    /// skipped when empty.
+    pub loops: Vec<Loop>,
     pub job_environments: Option<Vec<Environment>>,
+    /// CONTROL_FLOW job outputs, in template order. `#[serde(default)]`,
+    /// skipped when `None`.
+    pub outputs: Option<Vec<JobOutput>>,
 }
 
 pub struct job::JobParameter {
@@ -1172,6 +1533,15 @@ pub struct job::Step {
     /// created Job never holds `Some` of the full list. Serde: default,
     /// skipped when `None`.
     pub environments: Option<Vec<EnvironmentRef>>,
+    /// CONTROL_FLOW: the Step's output declarations, or `None`.
+    pub output_variables: Option<Vec<OutputVariable>>,
+    /// CONTROL_FLOW: the binding state. A pending or skipped Step keeps
+    /// `parameter_space`, `host_requirements`, and `resolved_symtab` `None`.
+    pub binding: StepBinding,
+    /// CONTROL_FLOW: path-typed `Steps.*` values stored in
+    /// `resolved_symtab` in submission form, recorded by
+    /// `attach_step_inputs`.
+    pub path_inputs: Vec<PathInput>,
 }
 
 impl job::Step {
@@ -1187,6 +1557,23 @@ impl job::Step {
     /// and string form (its transport form), so a FLOAT by the text it was
     /// written with; RANGE_EXPR by the integers it denotes.
     #[must_use] pub fn environment_values_equal(&self, other: &job::Step) -> bool;
+    /// CONTROL_FLOW: the Task count once Tasks are known (bound, or pending
+    /// with `tasks: Known`); `Some(0)` when skipped; `None` otherwise,
+    /// and for a Step without CONTROL_FLOW whose count does not fit a u64.
+    pub fn tasks_known(&self) -> Option<u64>;
+    /// CONTROL_FLOW: what is known of a pending Step, per group; `None`
+    /// for a bound or skipped Step.
+    pub fn binding_report(&self) -> Option<BindingReport>;
+    /// CONTROL_FLOW: the producers whose `Steps.*` symbols the Step reads:
+    /// in its script and Step Environments, and for a pending Step in any
+    /// group, known or not. What a caller passes on each binding call.
+    /// Sorted; empty for a skipped Step.
+    pub fn input_producers(&self) -> Vec<String>;
+    /// CONTROL_FLOW: the `Steps.<Step>.<Member>.<Name>` symbols the Step
+    /// reads in its script and Step Environments (which attach_step_inputs
+    /// needs concrete) and, while pending, those its groups wait on.
+    /// Sorted; empty for a skipped Step.
+    pub fn input_symbols(&self) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -1284,6 +1671,483 @@ pub enum job::CancelationMode {
 }
 ```
 
+### CONTROL_FLOW Job Types (RFC 0011, RFC 0012)
+
+Re-exported from `job`. Every new `job::Step` field has `#[serde(default)]` and is
+skipped when it holds its default, so a Step serialized before `CONTROL_FLOW` still
+deserializes and a Step without `CONTROL_FLOW` features serializes as before.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::OutputVariable {
+    pub name: String,
+    /// Serialized as "type" with the spec string ("LIST[INT]"), read
+    /// case-insensitively.
+    pub param_type: JobParameterType,
+    pub collect: OutputCollectMode,           // skipped when ONCE
+    pub unit: Option<String>,
+    pub constraints: OutputConstraints,       // skipped when empty
+}
+
+impl job::OutputVariable {
+    /// One Task's whole value: its type, then the declared constraints
+    /// (for a list: minLength, maxLength, and every element).
+    pub fn check_constraints(&self, value: &ExprValue) -> Result<(), String>;
+    /// One element reported under `collect: APPEND`. Errors for a
+    /// scalar type.
+    pub fn check_element(&self, element: &ExprValue) -> Result<(), String>;
+    /// The length of a list being collected under APPEND: maxLength
+    /// always, minLength only when `at_exit`. Errors for a scalar type.
+    pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
+}
+
+/// The constraint properties the definition declared, and only those.
+/// Every field is skipped when `None`.
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::OutputConstraints {
+    pub allowed_values: Option<OutputAllowedValues>,
+    pub min_value: Option<OutputBound>,
+    pub max_value: Option<OutputBound>,
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+    pub item: Option<Box<OutputConstraints>>,
+}
+
+impl job::OutputConstraints {
+    pub fn is_empty(&self) -> bool;
+}
+
+/// Externally tagged in lowercase: {"int": [1, 2]}, {"string": ["a"]}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum job::OutputAllowedValues {
+    Int(Vec<i64>),
+    Float(Vec<openjd_expr::value::Float64>),
+    String(Vec<String>),
+}
+
+/// Externally tagged in lowercase: {"int": 1}, {"float": 0.5}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum job::OutputBound {
+    Int(i64),
+    Float(openjd_expr::value::Float64),
+}
+
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED; a
+/// PENDING_INPUTS value holds the PendingBinding's fields beside "state".
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]
+pub enum job::StepBinding {
+    #[default]
+    Bound,
+    PendingInputs(PendingBinding),
+    Skipped,
+}
+
+impl job::StepBinding {
+    pub fn is_bound(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::PendingBinding {
+    pub enablement: GroupState<()>,
+    pub tasks: GroupState<Option<StepParameterSpace>>,
+    pub host_requirements: GroupState<Option<HostRequirements>>,
+    pub remaining: GroupState<()>,
+    /// The Step's Environment selection while its `enableIf` is not
+    /// decided; `None` once applied, or when it has nothing to apply.
+    /// Skipped when `None`.
+    pub environment_selection: Option<EnvironmentSelection>,
+    /// The entered Environments' host requirements from the applied
+    /// selection, for the host selection group; skipped when empty.
+    pub environment_host_requirements: Vec<EnvironmentHostRequirements>,
+    /// The wrap-hook layers of the entered Job Environments, for the
+    /// remaining group's single-wrap-layer check; skipped when empty.
+    pub wrap_layers: Vec<String>,
+    /// The producers any group reads, sorted; skipped when empty.
+    pub producers: Vec<String>,
+}
+
+/// CONTROL_FLOW with ENV_PARAMS (RFC 0011 `<Environment>` item 3): a Step's
+/// Environment selection, worked out at job creation for every Step and
+/// applied once its `enableIf` is `true`. Each field is skipped when
+/// empty. See [job-creation.md](job-creation.md) § Environment selection.
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::EnvironmentSelection {
+    pub environments: Option<Vec<EnvironmentRef>>,              // as Step::environments
+    pub environment_parameters: Option<Vec<EnvironmentParameterValues>>,
+    pub host_requirements: Vec<EnvironmentHostRequirements>,
+    pub wrap_layers: Vec<String>,
+    /// Applying the selection fails the Step's enablement group with these.
+    pub errors: Vec<SelectionError>,
+    /// `JobTemplate`, or `Submission` with Environment Templates attached.
+    pub model: String,
+}
+impl job::EnvironmentSelection {
+    /// Nothing to apply: no set, values, host requirements, layers, or errors.
+    #[must_use] pub fn is_empty(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::SelectionError {
+    pub path: Vec<PathElement>,   // relative to the Job Template, or document-first
+    pub message: String,
+}
+
+/// One entered Environment's requirements resolved for a Step (§3.3.3).
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::EnvironmentHostRequirements {
+    pub label: String,        // `<path> -> hostRequirements (Environment '<name>')`
+    pub requirements: HostRequirements,
+}
+
+/// Externally tagged in camelCase: {"waiting": {"on": [...]}}, {"known": ...}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum job::GroupState<T> {
+    /// `on`: the group's own `Steps.<Step>.<Member>.<Name>` inputs that are
+    /// not concrete, sorted (not counting the enablement group's).
+    Waiting { on: Vec<String> },
+    Known(T),
+}
+
+impl<T> job::GroupState<T> {
+    pub fn is_known(&self) -> bool;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive] // TASK_DEPENDENCIES would add a Task graph group
+pub enum job::MaterializationGroup {
+    Enablement,
+    TaskEnumeration,
+    HostSelection,
+    Remaining,
+    /// A loop's `maxIterations` (RFC 0013).
+    LoopBound,
+    /// A loop's `initial` values and first `while` (RFC 0013).
+    LoopStart,
+}
+/// "enablement", "Task enumeration", "host selection", "remaining",
+/// "bound", "start".
+impl Display for job::MaterializationGroup;
+
+/// A group that failed, which fails its Step at once.
+#[derive(Debug)]
+pub struct job::BindingError {
+    pub step: String,
+    pub group: MaterializationGroup,
+    pub errors: Vec<ModelError>,
+}
+impl job::BindingError {
+    /// Every error is a ModelError::Compatibility: a caller error, which
+    /// does not fail the Step. `false` when `errors` is empty.
+    pub fn is_caller_error(&self) -> bool;
+}
+/// "Step '<step>' failed in its <group> group:" (for a caller error,
+/// "Binding Step '<step>' was refused in its <group> group:") then each
+/// error on its own line.
+impl Display for job::BindingError;
+impl std::error::Error for job::BindingError;
+
+#[derive(Debug, Clone, Copy)]
+pub enum job::ProducerState<'a> {
+    /// Tasks known, not finished: TaskParam and TaskRawParam only.
+    TasksKnown,
+    /// Each Task's outputs, in iteration order (chunking disabled).
+    Succeeded { task_outputs: &'a [outputs::TaskOutputs] },
+    /// As Succeeded, but a declared output no Task's map holds stays
+    /// unknown (for a caller simulating the producer with some outputs).
+    Given { task_outputs: &'a [outputs::TaskOutputs] },
+    /// Every symbol of the producer is null.
+    Skipped,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct job::StepInputs { /* private */ }
+
+impl job::StepInputs {
+    pub fn new() -> Self;
+    /// Add or replace a producer's `Steps.*` values, typed as RFC 0011
+    /// §The `Steps.*` scope table types them. Path-typed values are held
+    /// only in their Raw form, a URI in the Posix format the model
+    /// evaluates in (text unchanged). TasksKnown on a skipped producer is
+    /// Skipped. A caller error is a ModelError::Compatibility.
+    pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
+        -> Result<(), ModelError>;
+    /// Add or replace a loop's (RFC 0013) `Output` and `RawOutput` symbols:
+    /// each value itself (no per-Task list), converted to its type; a LAST
+    /// output may be null; a path-typed one only in its Raw form unless
+    /// null. Skipped: every symbol null. A caller error is a
+    /// ModelError::Compatibility.
+    pub fn add_loop_producer(&mut self, producer: &Loop, state: LoopProducerState<'_>)
+        -> Result<(), ModelError>;
+    /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
+    /// symbol of a skipped producer; `None` when not concrete and for a
+    /// path-typed Output or TaskParam (derived on the worker host).
+    pub fn get(&self, symbol: &str) -> Option<&ExprValue>;
+    /// Concrete, including a path-typed Output or TaskParam whose Raw twin is.
+    pub fn is_concrete(&self, symbol: &str) -> bool;
+    /// The producers added, sorted.
+    pub fn producers(&self) -> impl Iterator<Item = &str>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::GroupReport {
+    Known,
+    Waiting { on: Vec<String>, for_enablement: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct job::BindingReport {
+    pub enablement: GroupReport,
+    pub tasks: GroupReport,
+    pub host_requirements: GroupReport,
+    pub remaining: GroupReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::PathInput {
+    pub symbol: String,
+    /// Serialized as "type" with its spelling, e.g. "list[path]".
+    pub ty: openjd_expr::ExprType,
+}
+```
+
+Job outputs (`job::Job::outputs`). Like `job::Job`, they implement `Serialize` but
+not `Deserialize`, because `openjd_expr::ExprValue` does not.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct job::JobOutput {
+    /// Name, type, unit, and declared constraints; serialized inline with
+    /// the other fields. Its `collect` is always ONCE.
+    pub declaration: OutputVariable,
+    /// `objectType` of a PATH or LIST[PATH] output; skipped when None.
+    pub object_type: Option<ObjectType>,
+    pub description: Option<String>,          // skipped when None
+    pub value: FormatString,
+    /// None while pending; skipped when None.
+    pub evaluated: Option<JobOutputValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::JobOutputValue {
+    /// Serialized as {"state": "VALUE", "value": <ExprValue>}.
+    Value(ExprValue),
+    /// The value evaluated to `null`: the output has no value. Serialized
+    /// as {"state": "NULL"}.
+    Null,
+}
+
+impl Serialize for job::JobOutput;      // one plain struct (see job-types.md)
+impl Serialize for job::JobOutputValue;
+
+impl job::JobOutputValue {
+    pub fn value(&self) -> Option<&ExprValue>;
+}
+
+/// `Some(v)` → `Value(v)`, `None` → `Null`, as `evaluate_job_output`
+/// returns them.
+impl From<Option<ExprValue>> for job::JobOutputValue;
+```
+
+See [job-types.md](job-types.md) § CONTROL_FLOW fields, which has an example of the
+serialized form, and [job-outputs.md](job-outputs.md).
+
+### CONTROL_FLOW Loop Job Types (RFC 0013)
+
+Re-exported from `job`. A loop is `Serialize` but not `Deserialize`, like `job::Job`,
+because its bound values are `openjd_expr::ExprValue`s. The working values a caller
+keeps while a loop runs (`LoopProgress`, `LoopIteration`, `BoundaryOutcome`,
+`LoopResult`, `LoopError`) are not parts of a job and are not serialized. See
+[job-types.md](job-types.md) § Loops and [job-creation.md](job-creation.md) § Loops.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::Loop {
+    pub name: String,
+    pub description: Option<String>,          // skipped when None
+    /// Its index in the template's `steps` list.
+    pub entry_index: usize,
+    pub dependencies: Option<Vec<StepDependency>>,   // skipped when None
+    pub condition: LoopCondition,
+    /// Declarations: name, type, constraints. Skipped when empty.
+    pub variables: Vec<OutputVariable>,
+    /// Declarations: name, type, collect (LAST or APPEND), unit,
+    /// constraints. Skipped when empty.
+    pub output_variables: Vec<OutputVariable>,
+    /// The body Steps' names, in body order.
+    pub body: Vec<String>,
+    pub binding: LoopBinding,
+    /// Each body Step's Environment selection, index for index with
+    /// `body`, which each instance applies once its `enableIf` is `true`.
+    /// Empty, and skipped, when no body Step has one to apply.
+    pub body_environment_selections: Vec<EnvironmentSelection>,
+}
+
+impl job::Loop {
+    /// Some(0) when skipped; None otherwise (not known until it ends).
+    pub fn tasks_known(&self) -> Option<u64>;
+    /// Per group, for a pending loop; None otherwise.
+    pub fn binding_report(&self) -> Option<LoopBindingReport>;
+    /// The producers its own groups read, sorted; empty unless pending.
+    pub fn input_producers(&self) -> Vec<String>;
+    pub fn output_variable(&self, name: &str) -> Option<&OutputVariable>;
+    /// The `Steps.<Step>.<Member>.<Name>` symbols `expression` references,
+    /// sorted, by symbol collection (RFC 0013 §Retries and re-runs). A
+    /// caller error (no such loop in the template, variable, or output) is
+    /// a ModelError::Compatibility.
+    pub fn expression_inputs(&self, job_template: &JobTemplate,
+        expression: &LoopExpression) -> Result<Vec<String>, ModelError>;
+}
+
+/// Serialized "WHILE" or "UNTIL".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum job::LoopCondition { While, Until }
+
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub enum job::LoopBinding {
+    Bound(BoundLoop),
+    PendingInputs(PendingLoopBinding),
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub struct job::BoundLoop {
+    /// 1 to 1,000.
+    pub max_iterations: u32,
+    pub start: LoopStart,
+}
+impl job::BoundLoop {
+    /// false when the first `while` is false (zero iterations).
+    pub fn has_iterations(&self) -> bool;
+}
+
+/// Hash by hand: `initial` entries sorted by name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct job::LoopStart {
+    /// Each `initial`, converted, in declaration order.
+    pub initial: IndexMap<String, ExprValue>,
+    /// The first `while`; None for an `until` loop. Skipped when None.
+    pub first_while: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub struct job::PendingLoopBinding {
+    pub enablement: GroupState<()>,
+    pub bound: GroupState<u32>,
+    pub start: GroupState<LoopStart>,
+    pub producers: Vec<String>,               // skipped when empty
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct job::LoopBindingReport {
+    pub enablement: GroupReport,
+    pub bound: GroupReport,
+    pub start: GroupReport,
+}
+
+/// A running loop's state between iterations, kept by the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopProgress {
+    pub iteration: u32,
+    /// `Loop.<V>` for `iteration`.
+    pub values: IndexMap<String, ExprValue>,
+    /// Each loop output so far: LAST the last value (null before the
+    /// first), APPEND the list (`[]` before the first). Not committed.
+    pub outputs: IndexMap<String, ExprValue>,
+}
+impl job::LoopProgress {
+    /// Iteration 0 with the `initial` values; None unless the loop is bound.
+    pub fn new(job_loop: &Loop) -> Option<Self>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopIteration {
+    pub loop_name: String,
+    pub index: u32,
+    /// One instance per body Step, in body order.
+    pub steps: Vec<Step>,
+}
+impl job::LoopIteration {
+    /// `<Loop>[<N>].<Step>`; None past the body.
+    pub fn instance_name(&self, body_index: usize) -> Option<String>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum job::BoundaryOutcome {
+    Continue(LoopProgress),
+    Succeeded(LoopResult),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopResult {
+    pub iterations: u32,
+    pub ended_by: LoopEnd,
+    /// Each loop output's committed value, in declaration order.
+    pub outputs: IndexMap<String, ExprValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum job::LoopEnd { Until, While, ZeroIterations }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum job::LoopErrorField {
+    OutputValue(String), Until, Next(String), While, MaxIterations,
+    MinLength(String), ValueSize,
+    /// The caller's arguments (a caller error).
+    Inputs,
+}
+impl Display for job::LoopErrorField;
+
+/// A loop failed at an iteration boundary or when it ended, which is final;
+/// or, when is_caller_error(), a refused call that says nothing about the loop.
+#[derive(Debug)]
+pub struct job::LoopError {
+    pub loop_name: String,
+    /// None after zero iterations.
+    pub iteration: Option<u32>,
+    pub field: LoopErrorField,
+    pub errors: Vec<ModelError>,
+}
+impl job::LoopError {
+    /// `errors` is not empty and every error is a ModelError::Compatibility
+    /// (a caller error).
+    pub fn is_caller_error(&self) -> bool;
+}
+/// "Loop '<L>' failed at the boundary of iteration <N>, in <field>:" (or
+/// "after zero iterations"; for a caller error "Evaluating the boundary of
+/// iteration <N> of loop '<L>' was refused, in <field>:", or "Ending loop
+/// '<L>' without iterations was refused, ..."), then each error on its own
+/// line.
+impl Display for job::LoopError;
+impl std::error::Error for job::LoopError;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::LoopExpression {
+    EnableIf, Initial(String), While, Until, Next(String), OutputValue(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum job::LoopProducerState<'a> {
+    Succeeded { outputs: &'a IndexMap<String, ExprValue> },
+    /// As Succeeded, but a declared output `outputs` lacks stays unknown.
+    Given { outputs: &'a IndexMap<String, ExprValue> },
+    Skipped,
+}
+```
+
 ### Parameter Space (Resolved)
 
 ```rust
@@ -1342,6 +2206,96 @@ pub struct job::StepDependency {
 }
 ```
 
+## Output Values (`outputs::*`, CONTROL_FLOW)
+
+The `openjd_output_var` directive parser and the collector that turns one
+Action's directives into each Task's output values (RFC 0012 §Output
+emission). No I/O. See [outputs.md](outputs.md).
+
+```rust
+/// RFC 0012 §Limits item 2: the least `max_bytes` a runtime may pass.
+pub const outputs::MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
+
+/// The text after `openjd_output_var:`, parsed. Borrows from the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum outputs::OutputDirective<'a> {
+    /// `json` is unparsed, without surrounding spaces and tabs.
+    Inline { name: &'a str, task: Option<i64>, json: &'a str },
+    /// `path` is the text after `@` without trailing spaces and tabs; never empty.
+    File { name: &'a str, task: Option<i64>, path: &'a str },
+}
+
+impl<'a> outputs::OutputDirective<'a> {
+    pub fn name(&self) -> &'a str;
+    pub fn task(&self) -> Option<i64>;
+}
+
+/// Grammar only (line terminator already removed). A task selector
+/// outside the i64 range is a `Grammar` error.
+pub fn outputs::parse_output_directive(payload: &str)
+    -> Result<outputs::OutputDirective<'_>, outputs::OutputError>;
+
+/// One Task's values, by output name, in declaration order.
+pub type outputs::TaskOutputs = IndexMap<String, ExprValue>;
+
+#[derive(Debug, Clone)]
+pub struct outputs::OutputCollector { /* private */ }
+
+impl outputs::OutputCollector {
+    /// `chunk`: the chunk's CHUNK[INT] values in iteration order, or
+    /// `None` for an unchunked Step. A repeated value is a `Selector` error;
+    /// `collect: APPEND` on a non-list type is a `Declaration` error.
+    /// `path_mapper`: the Session's own mapper, built from its full,
+    /// unfiltered rules.
+    pub fn new(
+        declared: &[job::OutputVariable],
+        max_bytes: usize,
+        path_mapper: std::sync::Arc<openjd_expr::path_mapping::PathMapper>,
+        worker_format: openjd_expr::path_mapping::PathFormat,
+        chunk: Option<Vec<i64>>,
+    ) -> Result<Self, outputs::OutputError>;
+    /// Declared name; selector present iff chunked and in the chunk; a
+    /// ONCE output not yet reported for that Task.
+    pub fn check_name(&self, name: &str, task: Option<i64>) -> Result<(), outputs::OutputError>;
+    /// `max_bytes` less the Task's held size, not counting a LAST value
+    /// this one would replace.
+    pub fn remaining_bytes_for(&self, name: &str, task: Option<i64>) -> usize;
+    /// Repeats `check_name`; converts `json` (inline text, or a file's
+    /// whole content when `from_file`), reverse-maps PATH values, checks
+    /// constraints, applies the collect mode, counts the size. Returns the
+    /// value (ONCE/LAST) or the new element (APPEND). State is unchanged
+    /// on `Err`.
+    pub fn accept(&mut self, name: &str, task: Option<i64>, json: &[u8], from_file: bool)
+        -> Result<ExprValue, outputs::OutputError>;
+    /// At exit: ONCE/LAST values present and APPEND minLength met for
+    /// every Task. Keyed by CHUNK[INT] value in chunk order (`None` when
+    /// unchunked).
+    pub fn finish(self)
+        -> Result<IndexMap<Option<i64>, outputs::TaskOutputs>, outputs::OutputError>;
+}
+
+/// `Display` is the message. It may quote an inline value's text and the
+/// converted value that is invalid, but never an `@` file's text as such.
+/// Quoted text and an appended EXPR coercion message are cut to 200
+/// characters with control characters escaped. See outputs.md § Errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct outputs::OutputError { /* private */ }
+
+impl outputs::OutputError {
+    pub fn kind(&self) -> outputs::OutputErrorKind;
+    pub fn message(&self) -> &str;
+}
+impl std::fmt::Display for outputs::OutputError;
+impl std::error::Error for outputs::OutputError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum outputs::OutputErrorKind {
+    Grammar, Undeclared, Selector, Repeated, Json, FileContent,
+    Conversion, Path, Constraint, Size, Missing, Declaration,
+}
+```
+
 ## Shared Types
 
 Everything in this section is re-exported at the crate root from the
@@ -1364,6 +2318,7 @@ pub enum ModelExtension {
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
     EnvParams,         // RFC 0010 (draft) — "ENV_PARAMS"
+    ControlFlow,       // RFC 0011, RFC 0012 — "CONTROL_FLOW" (requires ENV_PARAMS and EXPR; Job Templates only)
 }
 
 impl ModelExtension {
@@ -1412,6 +2367,7 @@ impl Default for ModelProfile { /* ... */ }
 /// Every field is optional; `None` means "no additional restriction."
 #[derive(Debug, Clone, Default)]
 pub struct CallerLimits {
+    /// Each top-level Step, loop, and loop body Step (RFC 0013) counts once.
     pub max_step_count: Option<usize>,
     pub max_env_count: Option<usize>,
     /// Cap on the `environment:` entries (ENV_PARAMS) in one Step's
@@ -1421,7 +2377,10 @@ pub struct CallerLimits {
     /// validation only, at `steps[i] -> dependencies`, so it takes
     /// effect only in the limits passed to decoding.
     pub max_step_environment_entries: Option<usize>,
+    /// With CONTROL_FLOW, checked as each Step's Tasks become known.
     pub max_task_count: Option<u64>,
+    /// The Task count of one Step, checked when its Tasks become known.
+    pub max_step_task_count: Option<u64>,
     pub max_step_script_size: Option<usize>,
     pub max_environment_size: Option<usize>,
     pub max_template_size: Option<usize>,
@@ -1453,6 +2412,16 @@ pub struct CallerLimits {
     /// spec-recommended default (`openjd_expr::DEFAULT_OPERATION_LIMIT`,
     /// 10 million).
     pub max_eval_operations: Option<usize>,
+    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0012
+    /// §Limits item 2). Enforced only at run time, when mirrored into
+    /// `SessionLimits`. `None` = `outputs::MIN_OUTPUT_BYTES_LIMIT`
+    /// (1 MiB); the runtime raises a smaller value to it.
+    pub max_task_output_bytes: Option<usize>,
+    /// Total bytes of one loop's variable and output values, as JSON
+    /// (CONTROL_FLOW, RFC 0013 §Limits item 4), checked after `initial` and
+    /// at each boundary after the outputs and after `next`. `None` = no
+    /// limit.
+    pub max_loop_value_bytes: Option<usize>,
 }
 
 /// The thing every validation and instantiation function takes — a
@@ -1482,7 +2451,10 @@ impl ValidationContext {
 
 ```rust
 /// Job parameter type — the `type` field on a job parameter definition,
-/// after `UPPER_SNAKE_CASE` → Rust-identifier conversion.
+/// after `UPPER_SNAKE_CASE` → Rust-identifier conversion. Also the type of
+/// a CONTROL_FLOW output variable. `Serialize` and `Deserialize` use the
+/// variant names (`"Int"`, `"ListString"`), not the spec strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum JobParameterType {
     String, Int, Float, Path, Bool, RangeExpr,
@@ -1546,6 +2518,8 @@ pub enum EndOfLine {
     Lf, Crlf, Auto,
 }
 
+/// Hash since CONTROL_FLOW: job::JobOutput holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ObjectType {
     File, Directory,
@@ -1554,6 +2528,17 @@ pub enum ObjectType {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DataFlow {
     None, In, Out, Inout,
+}
+
+/// RFC 0012 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OutputCollectMode {
+    #[default] Once, Last, Append,
+}
+
+impl OutputCollectMode {
+    pub fn as_spec_str(&self) -> &'static str;   // "ONCE", "LAST", "APPEND"
 }
 
 pub enum TemplateSpecificationVersion {
@@ -1642,7 +2627,14 @@ pub enum ModelError {
     /// full `ExpressionError` with its kind and source context.
     Expression(openjd_expr::ExpressionError),
 
-    /// Incompatible env-template parameter merges (§1.2.1).
+    /// Incompatible env-template parameter merges (§1.2.1); a create_job
+    /// context that does not cover the template; with CONTROL_FLOW, a caller
+    /// error in step input binding (advance_step_binding,
+    /// StepInputs::add_producer, attach_step_inputs) and in running a loop
+    /// (RFC 0013: advance_loop_binding, start_iteration,
+    /// advance_body_step_binding, evaluate_iteration_boundary,
+    /// end_without_iterations, StepInputs::add_loop_producer,
+    /// Loop::expression_inputs).
     Compatibility(String),
 
     /// The `specificationVersion` field named a revision this library
@@ -1652,7 +2644,7 @@ pub enum ModelError {
 ```
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PathElement {
     Field(String),
     Index(usize),
@@ -1915,25 +2907,66 @@ feedback; for that case, callers mutate
 `set_chunks_default_task_count` while iterating to reshape chunks
 dynamically.
 
+### `ChunkTaskIndex` (CONTROL_FLOW)
+
+Re-exported at the crate root and from `job`. Built lazily: `take` walks the per-Task
+iteration only as far as the Task it is asked for, so in-order Actions cost O(1) amortized
+each and a run that stops early never walks the rest of a large space. Maps each Task an
+Action ran to its index in
+the Step's per-Task iteration order (`new_with_chunk_override(space, Some(1))`), the
+order of a producer's `Steps.*` lists and of `ProducerState::Succeeded`. A chunked Step's
+session reports outputs keyed by `CHUNK[INT]` value, not position (a chunk's values are
+sorted, a list range iterates in written order), so a caller uses this to place them.
+
+```rust
+pub struct ChunkTaskIndex { /* private fields */ }
+
+impl ChunkTaskIndex {
+    /// Index the Tasks of `space`, iterated with chunking disabled. Walks
+    /// nothing yet.
+    pub fn new(space: &job::StepParameterSpace) -> Result<Self, ModelError>;
+    /// The number of Tasks, with chunking disabled.
+    pub fn task_count(&self) -> u64;
+    /// The space's `CHUNK[INT]` parameter, if any.
+    pub fn chunk_parameter_name(&self) -> Option<&str>;
+    /// The next unused index of the Task with `CHUNK[INT]` value `value`
+    /// (`None` for a space without one) in the Action whose Task parameter
+    /// values are `action`; `None` when no unused Task matches.
+    pub fn take(&mut self, action: &TaskParameterSet, value: Option<i64>) -> Option<usize>;
+}
+```
+
+A Task is keyed by the values of the other Task parameters (fixed within a chunk), each
+with its type, compared by name in any order, and its `CHUNK[INT]` value. A key can repeat
+(a `STRING` range `[a, a]`), so each has a queue of indices handed out in order; Tasks with
+the same key have identical parameters, so which gets which index is not observable.
+
 ## Step Dependency Graph
 
 ```rust
 #[derive(Debug)]
 pub struct StepDependencyEdge {
-    pub origin: usize,     // index of the depended-upon step
-    pub dependent: usize,  // index of the depending step
+    pub origin: usize,     // node index of the depended-upon Step or loop
+    pub dependent: usize,  // node index of the depending Step or loop
 }
+
+/// Whether a node is a top-level Step or a loop (CONTROL_FLOW, RFC 0013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepNodeKind { Step, Loop }
 
 #[derive(Debug)]
 pub struct StepDependencyNode {
+    /// Into `job.steps` for a Step, into `job.loops` for a loop.
     pub step_index: usize,
+    pub kind: StepNodeKind,
     pub name: String,
     pub in_edges: Vec<usize>,   // indices into the edges vector
     pub out_edges: Vec<usize>,
 }
 
-/// Directed acyclic graph over an instantiated job's steps. Built from
-/// `job::Job.steps[].dependencies`.
+/// Directed acyclic graph over an instantiated job's top-level Steps and
+/// loops, nodes in template order (node `i` is `job.steps[i]` for a Job
+/// without loops). Built from their `dependencies`.
 #[derive(Debug)]
 pub struct StepDependencyGraph { /* private fields */ }
 
@@ -1948,7 +2981,7 @@ impl StepDependencyGraph {
 
     /// Stable topological sort matching the Python reference
     /// implementation: DFS-based, template order is the tiebreaker.
-    /// Returns step indices. Fails with a descriptive cycle path if
+    /// Returns node indices. Fails with a descriptive cycle path if
     /// the graph is cyclic.
     pub fn topo_sorted(&self) -> Result<Vec<usize>, ModelError>;
 
@@ -2043,8 +3076,23 @@ Enums that are marked `#[non_exhaustive]` today:
 - `TaskParameterType`
 - `FileType`
 - `ModelError`
+- `outputs::OutputErrorKind`, so a later change can split a kind without
+  breaking callers that match on it
+- `job::MaterializationGroup`, which `TASK_DEPENDENCIES` would extend with a
+  Task graph group
 
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem
 entity kind, data direction) whose sets of variants are not expected
 to change.
+
+The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
+`OutputCollectMode` (RFC 0012's three modes), `job::StepBinding` (RFC 0011's three
+binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
+value kinds the constraint properties take), and `outputs::OutputDirective`
+(RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`
+(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` and `job::LoopProducerState` (the states a producer
+contributes inputs in, including `Given`, the state of a producer a caller simulates
+with some of its outputs). A change to the RFCs that adds
+a variant is a breaking change to these, which the crate's pre-1.0 version
+allows, as does a new producer state a caller such as `openjd run` needs.

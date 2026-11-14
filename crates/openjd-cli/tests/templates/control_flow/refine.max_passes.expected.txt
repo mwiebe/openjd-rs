@@ -1,0 +1,105 @@
+$ openjd run {T}/refine.yaml -p Frames=1-4 -p MaxPasses=2 -p SceneFile={T}/fixtures/refine.scene -p OutputPattern={W}/out/beauty_####.exr -p OutputVideo={W}/out/beauty.mp4
+exit code: 1
+--- stdout
+Session start
+Running job 'Render refine until clean'
+Running loop 'Refine'
+Loop 'Refine' iteration 0: Samples = 64, Frames = [1, 2, 3, 4]
+Running step 'Refine[0].RenderPass'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 1
+Output:
+render stub: frame 1 at 64 samples -> beauty_0001.exr (noise 0.01)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+render stub: frame 2 at 64 samples -> beauty_0002.exr (noise 0.03)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 3
+Output:
+render stub: frame 3 at 64 samples -> beauty_0003.exr (noise 0.06)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 4
+Output:
+render stub: frame 4 at 64 samples -> beauty_0004.exr (noise 0.01)
+Process exited with code: 0
+Running step 'Refine[0].CheckPass'
+==============================================
+--------- Running Task
+==============================================
+Output:
+qc stub: noise {1: 0.01, 2: 0.03, 3: 0.06, 4: 0.01}
+openjd_output_var: NoisyFrames=[2, 3]
+openjd_output_var: MeanNoise=0.0275
+Process exited with code: 0
+Output NoisyFrames = [2, 3]
+Output MeanNoise = 0.0275
+Loop 'Refine' iteration 0 outputs: FinalSamples = 64, NoisyFrameCounts = 2, MeanNoise = 0.0275
+Loop 'Refine' iteration 1: Samples = 128, Frames = [2, 3]
+Running step 'Refine[1].RenderPass'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+render stub: frame 2 at 128 samples -> beauty_0002.exr (noise 0.015)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 3
+Output:
+render stub: frame 3 at 128 samples -> beauty_0003.exr (noise 0.03)
+Process exited with code: 0
+Running step 'Refine[1].CheckPass'
+==============================================
+--------- Running Task
+==============================================
+Output:
+qc stub: noise {2: 0.015, 3: 0.03}
+openjd_output_var: NoisyFrames=[3]
+openjd_output_var: MeanNoise=0.0225
+Process exited with code: 0
+Output NoisyFrames = [3]
+Output MeanNoise = 0.0225
+Loop 'Refine' failed at the boundary of iteration 1, in maxIterations
+Step 'EncodeVideo' is blocked: its dependency 'Refine' failed
+Job output Passes was not evaluated: it waits on Loop 'Refine', which failed
+Job output FinalSamples was not evaluated: it waits on Loop 'Refine', which failed
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: Render refine until clean
+Duration: {DURATION}
+Chunks run: 8
+Job outputs:
+  Passes: not evaluated (waits on Loop 'Refine', which failed)
+  FinalSamples: not evaluated (waits on Loop 'Refine', which failed)
+--- stderr
+ERROR: Loop 'Refine' failed at the boundary of iteration 1, in maxIterations:
+Model validation error: 1 validation error for JobTemplate
+steps[0] -> loop -> maxIterations:
+	Loop 'Refine' has run maxIterations (2) iterations without ending, so it fails.
+  {{Param.MaxPasses}}
