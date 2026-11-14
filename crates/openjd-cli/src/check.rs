@@ -172,7 +172,20 @@ fn disabled_environment_lines(
     // (§3.2.1 item 3).
     let declinable = |name: &str| !job_env_names.contains(name);
     let mut lines = Vec::new();
-    for step in jt.step_templates().map(|st| st.step) {
+    for st in jt.step_templates() {
+        let step = st.step;
+        // A Step, or a loop's body Step, whose own `enableIf` is literally
+        // `false` is skipped and has no Sessions (CONTROL_FLOW, RFC 0011
+        // `<Environment>` item 3).
+        if step.enable_if.as_ref().and_then(|e| e.as_bool()) == Some(false)
+            || st
+                .step_loop
+                .and_then(|l| l.enable_if.as_ref())
+                .and_then(|e| e.as_bool())
+                == Some(false)
+        {
+            continue;
+        }
         let requested: HashSet<&str> = step
             .dependencies
             .iter()
@@ -224,8 +237,12 @@ fn disabled_environment_lines(
             } else {
                 "Environments"
             };
+            let of_loop = st
+                .step_loop
+                .map(|l| format!(" (body Step of loop '{}')", l.name))
+                .unwrap_or_default();
             lines.push(format!(
-                "Step '{}': enableIf: false disables {noun} {} for its Sessions.",
+                "Step '{}'{of_loop}: enableIf: false disables {noun} {} for its Sessions.",
                 step.name,
                 names.join(", ")
             ));

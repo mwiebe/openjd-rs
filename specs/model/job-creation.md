@@ -1807,7 +1807,12 @@ empty for a Step whose selection was not applied at creation; `warnings` are the
 submission's, whatever the Steps' enablement. For a Step whose selection was applied, a Step
 Environment's status is what its remaining group decided (`Entered`, or `Disabled` and in
 `disabled_environments`) when that group was evaluated at creation; when it was not, the
-Step Environments are left out of both lists, since their `enableIf` is not decided yet.
+Step Environments are left out of both lists, since their `enableIf` is not decided yet. A warning about a Step's entry (Template Schemas §3.2.1 items 1 and 2) is
+part of its selection, so `CreatedJob::warnings` holds it only for a Step whose selection is
+applied at creation, and `check_environment_templates` only for a Step known to be enabled;
+one about an attachment (item 4) is reported whatever the Steps' `enableIf`. An entry whose
+`enableIf` fails is still checked for an ambiguous name, reported at Job creation whatever
+its Step's `enableIf` ("What stays at Job creation").
 
 The checks that depend on whether a Step runs are made before job creation only for a Step
 known to be enabled (see [validation.md](validation.md#known-to-be-enabled-control_flow)):

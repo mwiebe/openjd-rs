@@ -1753,3 +1753,164 @@ steps:
         "{message}"
     );
 }
+
+// ── Round 5 ───────────────────────────────────────────────────────
+
+fn attached_x(activation: &str, params: &str) -> EnvironmentTemplate {
+    env_ok(&format!(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: X
+  activation: {activation}{params}
+  script: {{actions: {{onEnter: {{command: echo, args: [x]}}}}}}
+"#
+    ))
+}
+
+#[test]
+fn an_ambiguous_entry_whose_enable_if_fails_is_rejected_for_a_skipped_step() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+- {name: S, type: STRING, default: abc}
+steps:
+- name: A
+  enableIf: "Param.F"
+  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+"#,
+        HEADER,
+    );
+    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+    let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with(
+            "Model validation error: 1 validation error for Submission\nJobTemplate \
+                         -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'X', \
+                         which 2 attached Environment Templates define"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_entry_warning_is_reported_only_for_a_step_whose_selection_is_applied() {
+    let src = |enable_if: &str| {
+        format!(
+            r#"
+parameterDefinitions:
+- {{name: F, type: BOOL, default: false}}
+steps:
+- name: P
+  outputVariables: [{{name: Ok, type: BOOL}}]
+  script: {{actions: {{onRun: {{command: echo, args: [p]}}}}}}
+- name: A
+  enableIf: {enable_if}
+  dependencies:
+  - {{dependsOn: P}}
+  - {{environment: X, required: false, parameters: {{K: 1}}}}
+  - {{environment: Missing, required: false}}
+  script: {{actions: {{onRun: {{command: echo, args: [a]}}}}}}
+"#
+        )
+    };
+    let envs = [attached_x("ON_REQUEST", "")];
+    let attached = [AttachedEnvironmentTemplate::new(&envs[0])];
+    // Skipped at creation, pending, or not known to be enabled: none.
+    for enable_if in ["\"Param.F\"", "\"Steps.P.Output.Ok\""] {
+        let jt = jt_ok(&src(enable_if), HEADER);
+        assert!(
+            create_with(&jt, &envs, &[]).unwrap().warnings.is_empty(),
+            "{enable_if}"
+        );
+        let warnings = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap();
+        assert!(warnings.is_empty(), "{enable_if}");
+    }
+    // Enabled at creation: both.
+    let jt = jt_ok(&src("\"Param.F\""), HEADER);
+    assert_eq!(
+        create_with(&jt, &envs, &[("F", "true")])
+            .unwrap()
+            .warnings
+            .len(),
+        2
+    );
+    let jt = jt_ok(&src("\"true\""), HEADER);
+    let warnings = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap();
+    assert_eq!(warnings.len(), 2);
+}
+
+#[test]
+fn a_failed_resolved_default_of_an_attachment_is_reported_for_each_step() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+steps:
+- name: A
+  enableIf: "Param.F"
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let lic = env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+parameterDefinitions:
+- {name: S, type: STRING, default: many}
+environment:
+  name: Lic
+  envParameterDefinitions: [{name: Seats, type: INT, default: "{{Param.S}}"}]
+  script: {actions: {onEnter: {command: echo, args: ["{{Env.Param.Seats}}"]}}}
+"#,
+    );
+    let err = create_with(&jt, &[lic], &[]).unwrap_err().to_string();
+    assert!(
+        err.contains(
+            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\t\
+             for Step 'B', which does not supply this parameter:"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("'A'"), "{err}");
+}
+
+#[test]
+fn a_remaining_group_error_unrelated_to_step_environments_keeps_the_wrap_check() {
+    // B's own timeout fails and its Sessions enter two wrapping
+    // Environments: both are reported.
+    let jt = jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: T, type: INT, default: 0}}
+- {{name: R, type: BOOL, default: true}}
+jobEnvironments:
+- name: W1{}
+- name: W2
+  activation: ON_REQUEST{}
+steps:
+- name: B
+  enableIf: "Param.R"
+  dependencies: [{{environment: W2, enableIf: "Param.R"}}]
+  script: {{actions: {{onRun: {{command: echo, args: [b], timeout: "{{{{Param.T}}}}"}}}}}}
+"#,
+            wrap_hooks("  "),
+            wrap_hooks("  ")
+        ),
+        FB1_WRAP_HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate"),
+        "{err}"
+    );
+    assert!(err.contains("timeout must be > 0."), "{err}");
+    assert!(err.contains("'W1', 'W2'"), "{err}");
+}

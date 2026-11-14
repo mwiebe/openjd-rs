@@ -619,14 +619,23 @@ async fn execute_step(
     sim: &mut Simulator,
 ) -> Result<bool, RunError> {
     println!("{}\tRunning step '{name}'", ctx.timestamp());
+    // A Step Environment whose enableIf is false is left out of the Step
+    // (RFC 0011 `<Environment>` item 4); say so, since with CONTROL_FLOW
+    // the decision may have been made only at step input binding.
+    if sim.control_flow() {
+        for disabled in sim.disabled_step_environments(&step.name, step) {
+            println!(
+                "{}\tStep Environment '{disabled}' is disabled by its enableIf; not entering it",
+                ctx.timestamp()
+            );
+        }
+    }
     let environment_baseline = ctx.entered_envs.len();
     if let Some(step_envs) = &step.step_environments {
         for env in step_envs {
             if ctx.is_stopping() {
                 break;
             }
-            // A Step Environment whose enableIf is false is left out of the
-            // Step (RFC 0011 `<Environment>` item 4).
             ctx.enter_environment(
                 env,
                 &env.name,

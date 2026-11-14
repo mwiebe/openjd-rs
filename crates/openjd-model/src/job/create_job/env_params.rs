@@ -443,7 +443,13 @@ impl<'a> DeclaringEnvironment<'a> {
                     let Some(outcome) = self.defaults[k].get() else {
                         continue;
                     };
-                    if outcome.reported.replace(true) && !per_step {
+                    // A literal `default` is checked once, as a definition
+                    // (`check_literal_defaults`), whatever `per_step`.
+                    let literal = matches!(
+                        self.defs[k].default,
+                        Some(EnvironmentParameterValue::Literal(_))
+                    );
+                    if outcome.reported.replace(true) && (!per_step || literal) {
                         continue;
                     }
                     for e in &outcome.errors {
@@ -1157,6 +1163,12 @@ pub(crate) struct StepSelection<'a> {
     /// `ON_REQUEST` one, and is an error for an `ALWAYS` one; one that
     /// names no attachment has no effect.
     pub(crate) disabled: Vec<DisabledEntry>,
+    /// The Step's entries that name no Job Environment and whose `enableIf`
+    /// failed (reported), in written order. With `CONTROL_FLOW` the
+    /// submission stage still checks each name for ambiguity, an error made
+    /// whatever any Step's `enableIf` (RFC 0011 `<Environment>` item 3,
+    /// "What stays at Job creation").
+    pub(crate) undecided: Vec<DisabledEntry>,
     /// The names of the Step's `stepEnvironments` entries, in written
     /// order, each with whether its own `enableIf` (§4 item 6) lets the
     /// Step's Sessions enter it ([`StepEntries::step_environments_enabled`]).
@@ -1461,6 +1473,21 @@ pub(crate) fn resolve_step_entries<'a>(
                         environment: name.to_string(),
                         dependency_index: j,
                     })
+                })
+                .collect(),
+            undecided: st
+                .dependencies
+                .iter()
+                .flatten()
+                .enumerate()
+                .zip(&decisions)
+                .filter_map(|((j, dep), decision)| {
+                    let name = dep.environment()?;
+                    (decision.is_none() && failed.contains(name) && !job_envs.names.contains(name))
+                        .then(|| DisabledEntry {
+                            environment: name.to_string(),
+                            dependency_index: j,
+                        })
                 })
                 .collect(),
             job_environment_statuses: job_envs

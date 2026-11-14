@@ -197,7 +197,10 @@ The environment totals, each Step's environment count, and the Environments list
 the created Job, so a Step Environment whose `enableIf` (`ENV_PARAMS`, Template Schemas §4
 item 6) is `false` for its Step is not counted or listed there (job creation drops it from
 `job::Step::step_environments`), while a Job Environment disabled for some or every Step is,
-since the Job keeps it; each Step's `Disabled environments:` (item 3 above) names both.
+since the Job keeps it; each Step's `Disabled environments:` (item 3 above) names both. With
+`CONTROL_FLOW`, a pending Step whose remaining group is not known yet still has every Step
+Environment, its `enableIf` undecided, so they are counted and listed, even one whose
+`enableIf` is `false`.
 
 ### Human-Readable Format
 

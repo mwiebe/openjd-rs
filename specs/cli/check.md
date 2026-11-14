@@ -92,6 +92,10 @@ the boolean scalar `enableIf: false` disables (`disabled_environment_lines`):
 Step 'S': enableIf: false disables Environments 'Off' (jobEnvironments), 'Scratch' (stepEnvironments) for its Sessions.
 ```
 
+With `CONTROL_FLOW`, a loop's body Steps get lines too, named `Step 'B' (body Step of loop
+'L')`, and a Step, or a body Step of a loop, whose own `enableIf` is the boolean scalar
+`false` gets none: it is skipped and has no Sessions (RFC 0011 `<Environment>` item 3).
+
 The Environments are named in Session order: attached ones (with `--environment`, labeled
 with their path), then the Job Template's `jobEnvironments`, then the Step's own
 `stepEnvironments`. A Step would enter an Environment with `activation: BY_DEFAULT` for

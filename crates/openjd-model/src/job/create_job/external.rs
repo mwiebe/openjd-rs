@@ -964,6 +964,9 @@ pub(super) struct Selected<'a> {
     pub(super) staged: StagedErrors,
     pub(super) body_staged: StagedErrors,
     pub(super) warnings: Vec<SubmissionWarning>,
+    /// For each of `warnings`, index for index, the Step whose entry it is
+    /// about, or `None` for one about an attachment.
+    pub(super) warning_steps: Vec<Option<usize>>,
     pub(super) disabled_environments: Vec<StepDisabledEnvironments>,
     pub(super) environment_statuses: Vec<StepEnvironmentStatuses>,
     pub(super) job_path: Vec<PathElement>,
@@ -1151,6 +1154,9 @@ pub(super) fn select_environments<'a>(
         .map(|e| e.name.as_str())
         .collect();
 
+    let control_flow = job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::ControlFlow);
     let mut staged = StagedErrors::default();
     let mut warnings = Vec::new();
     // `default`s resolve against the merged Job Parameters and `Job.Name`,
@@ -1190,6 +1196,7 @@ pub(super) fn select_environments<'a>(
     // Per Step: its enabled `required: false` entries that matched no
     // attachment (§3.2.1 item 2).
     let mut not_found: Vec<Vec<OptionalEntryNotFound>> = Vec::with_capacity(selections.len());
+    let mut warning_steps: Vec<Option<usize>> = vec![None; warnings.len()];
     for (i, selection) in selections.iter().enumerate() {
         let deps_path = path_field(&subject_path(i), "dependencies");
         let mut step_resolved = Vec::new();
@@ -1276,6 +1283,7 @@ pub(super) fn select_environments<'a>(
         resolved.push(step_resolved);
         declined.push(step_declined);
         not_found.push(step_not_found);
+        warning_steps.resize(warnings.len(), Some(i));
     }
 
     // ── Each Step's attached Environments, and its values for them ──
@@ -1326,9 +1334,6 @@ pub(super) fn select_environments<'a>(
     // selection may never run, but an unreachable attachment is rejected
     // whatever any Step's `enableIf`, so it still counts as a Step every
     // `ALWAYS` and `BY_DEFAULT` attachment applies to.
-    let control_flow = job_template
-        .profile()
-        .has_extension(crate::types::ModelExtension::ControlFlow);
     for (i, step) in steps.iter().enumerate() {
         if stopped[i] {
             if control_flow {
@@ -1753,6 +1758,7 @@ pub(super) fn select_environments<'a>(
         staged,
         body_staged,
         warnings,
+        warning_steps,
         disabled_environments,
         environment_statuses,
         job_path,
@@ -2185,6 +2191,7 @@ pub fn check_environment_templates(
     for (i, st) in job_template.step_templates().enumerate() {
         let step = st.step;
         let deps_path = path_field(&step_paths[i], "dependencies");
+        let warnings_before = warnings.len();
         let mut step_resolved = Vec::new();
         let mut step_unapplied = HashSet::new();
         let mut step_ambiguous = HashSet::new();
@@ -2303,6 +2310,12 @@ pub fn check_environment_templates(
         disabled.push(step_disabled);
         declined.push(step_declined);
         undetermined.push(step_undetermined);
+        // A Step's entry warnings are part of its Environment selection, so
+        // they are reported only for a Step known to be enabled (with
+        // `CONTROL_FLOW`; every Step is without it).
+        if !step_runs[i] {
+            warnings.truncate(warnings_before);
+        }
     }
 
     // The Job Template's own Environments that have an `exclusiveGroup`.

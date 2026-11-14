@@ -653,13 +653,14 @@ pub(super) fn bind_step(
             if waiting.is_empty() {
                 lets.evaluate_all(&mut step_symtab)
                     .map_err(|e| GroupFailure::collected(Remaining, e))?;
-                let mut errors = evaluate_remaining(cx, site, &step_symtab, &mut step)
-                    .map_err(|e| GroupFailure::abort(Remaining, e))?;
+                let (mut errors, enable_if_failed) =
+                    evaluate_remaining(cx, site, &step_symtab, &mut step)
+                        .map_err(|e| GroupFailure::abort(Remaining, e))?;
                 // RFC 0011 `<Environment>` item 6: the single-layer rule,
                 // now that the Step Environments are decided. A Step
                 // Environment whose `enableIf` failed is not decided, and
                 // fails the Step already.
-                if errors.is_empty() {
+                if !enable_if_failed {
                     if let Some(message) = super::external::step_wrap_layers_error(
                         std::mem::take(&mut wrap_layers),
                         &step,
@@ -1034,7 +1035,7 @@ fn evaluate_remaining(
     site: &StepSite<'_>,
     step_symtab: &SymbolTable,
     step: &mut job::Step,
-) -> Result<ValidationErrors, ModelError> {
+) -> Result<(ValidationErrors, bool), ModelError> {
     let st = site.st;
     let path = site.path.as_slice();
     let steps_scope = Some((cx.jt, site.loc));
@@ -1057,6 +1058,9 @@ fn evaluate_remaining(
         &mut errors,
     )?;
     let mut enabled_envs = Vec::new();
+    // Whether a Step Environment's `enableIf` failed, so its set is not
+    // decided.
+    let mut enable_if_failed = false;
     for (j, env) in st.step_environments.iter().flatten().enumerate() {
         let env_path = path_index(&path_field(path, "stepEnvironments"), j);
         // RFC 0011 `<Environment>` item 4: a Step Environment's `enableIf`
@@ -1072,6 +1076,7 @@ fn evaluate_remaining(
             Err(ModelError::ModelValidation(e)) => {
                 errors.errors.extend(e.errors);
                 enabled_envs.push(true);
+                enable_if_failed = true;
                 continue;
             }
             Err(e) => return Err(e),
@@ -1100,7 +1105,7 @@ fn evaluate_remaining(
     // CONTROL_FLOW (RFC 0010's Template Schemas §4 item 6).
     step.step_environments =
         instantiate::filter_step_environments(step.step_environments.take(), &enabled_envs);
-    Ok(errors)
+    Ok((errors, enable_if_failed))
 }
 
 /// Evaluates step `let` bindings on demand, each at most once per call.

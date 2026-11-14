@@ -8268,6 +8268,86 @@ steps:
         assert_eq!(reasons(task_then_exit), [r("S", "FAILED", "a Task failed")]);
     }
 
+    /// A Step Environment that step input binding disabled prints that it
+    /// is not entered.
+    #[test]
+    fn a_step_environment_disabled_at_binding_is_logged() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Log
+steps:
+- name: A
+  outputVariables: [{name: N, type: INT}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: N=2')"]}
+- name: B
+  dependencies: [{dependsOn: A}]
+  stepEnvironments:
+  - name: BEnv2
+    enableIf: "Steps.A.Output.N == 3"
+    script:
+      actions:
+        onEnter: {command: python, args: ['-c', "print('ENTER_BENV2')"]}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('B_RAN')"]}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            has(
+                &stdout,
+                "Step Environment 'BEnv2' is disabled by its enableIf; not entering it"
+            ),
+            "{stdout}"
+        );
+        assert!(!has(&stdout, "ENTER_BENV2"), "{stdout}");
+        assert!(has(&stdout, "B_RAN"), "{stdout}");
+    }
+
+    /// `check` lists the Environments a literal `enableIf: false` disables
+    /// for a body Step, naming its loop, and none for a skipped Step.
+    #[test]
+    fn check_names_body_steps_and_leaves_out_skipped_steps() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Chk
+steps:
+- name: S
+  enableIf: false
+  stepEnvironments:
+  - {name: SE, enableIf: false, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+- name: L
+  loop:
+    until: "Loop.Iteration >= 0"
+    maxIterations: 1
+    steps:
+    - name: E
+      stepEnvironments:
+      - {name: EE, enableIf: false, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', 'pass']}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&["check", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.starts_with(
+                "Step 'E' (body Step of loop 'L'): enableIf: false disables Environment 'EE' \
+                 (stepEnvironments) for its Sessions.\nTemplate at "
+            ),
+            "{stdout}"
+        );
+    }
+
     /// Without CONTROL_FLOW, a failed Step's dependents are recorded as
     /// blocked but no line is printed for them, as before the extension.
     #[test]

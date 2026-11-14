@@ -576,6 +576,7 @@ fn control_flow_job(
         environments,
         environment_documents,
         warnings,
+        warning_steps,
         mut disabled_environments,
         mut environment_statuses,
         attached_count,
@@ -686,6 +687,19 @@ fn control_flow_job(
             .map(|((x, _), applied)| if *applied { x } else { T::default() })
             .collect()
     }
+    // A warning about a Step's entry is part of its Environment selection
+    // (RFC 0011 `<Environment>` item 3, Template Schemas §3.2.1 items 1
+    // and 2), so it is reported only for a Step whose selection is applied
+    // here; one about an attachment is reported whatever the Steps'
+    // `enableIf`.
+    let warnings: Vec<_> = warnings
+        .into_iter()
+        .zip(warning_steps)
+        .filter(|(_, step)| {
+            step.is_none_or(|i| applied_at_creation.get(i).copied().unwrap_or(false))
+        })
+        .map(|(w, _)| w)
+        .collect();
     job.steps = steps;
     job.loops = loops;
     job.outputs = outputs;

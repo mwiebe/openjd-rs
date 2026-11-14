@@ -1873,6 +1873,27 @@ impl Simulator {
         record_outputs(step, record, action, outputs);
     }
 
+    /// The names of Step `name`'s Step Environments that its `enableIf`
+    /// left out of `step` (the bound Step, or body Step instance), in
+    /// written order: those the template declares that `step` does not
+    /// hold.
+    pub(super) fn disabled_step_environments(&self, name: &str, step: &Step) -> Vec<String> {
+        let entered: std::collections::HashSet<&str> = step
+            .step_environments
+            .iter()
+            .flatten()
+            .map(|e| e.name.as_str())
+            .collect();
+        self.jt
+            .step_templates()
+            .find(|r| r.step.name == name)
+            .into_iter()
+            .flat_map(|r| r.step.step_environments.iter().flatten())
+            .filter(|e| !entered.contains(e.name.as_str()))
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
     /// Set why `slot` failed, before [`finish_step`](Self::finish_step).
     pub(super) fn set_reason(&mut self, slot: Slot, reason: &str) {
         self.slot_mut(slot).1.reason = Some(reason.to_string());
