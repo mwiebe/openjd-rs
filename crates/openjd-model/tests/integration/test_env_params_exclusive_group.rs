@@ -2272,17 +2272,22 @@ fn an_unknown_entry_for_an_ambiguous_attachment_leaves_its_group_undetermined_at
     for mode in ["on", "off"] {
         check_ok(&jt(mode), &[&e, &e, &l]);
     }
-    let off = create(&jt("off"), &[&e, &e, &l])
-        .expect_err("expected job creation to fail")
-        .to_string();
-    assert!(off.contains("'bad' is not in allowed values"), "{off}");
-    assert!(!off.contains("§3.2.1 item 3"), "{off}");
-    let on = create(&jt("on"), &[&e, &e, &l])
-        .expect_err("expected job creation to fail")
-        .to_string();
-    assert!(
-        on.contains("an entry must match exactly one (Template Schemas §3.2.1 item 3)"),
-        "{on}"
+    create_err(
+        &jt("off"),
+        &[&e, &e, &l],
+        "Submission",
+        &["JobTemplate -> steps[0] -> dependencies[1] -> parameters -> Q:\n\tParameter 'Q': value \
+           'bad' is not in allowed values"],
     );
-    assert!(!on.contains("allowed values"), "{on}");
+    create_err(
+        &jt("on"),
+        &[&e, &e, &l],
+        "Submission",
+        &[
+            "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'E', \
+           which 2 attached Environment Templates define (EnvironmentTemplate[0], \
+           EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas §3.2.1 item \
+           3).",
+        ],
+    );
 }

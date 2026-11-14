@@ -317,12 +317,14 @@ message (see `specs/model/job-creation.md`).
 
 **`Job.EnvNames`** (ENV_PARAMS, Template Schemas §7.3.1; ExprLang §1.2.2) is
 `unresolved[list[string]]` in every table that has `Job.Name` when the document lists
-ENV_PARAMS (and so EXPR): the template-scope tables of host requirements, parameter-space
-ranges, Step `let` bindings, `environment:` entry values and `enableIf`, and action timing
-fields, and every session and task scope, in Job Templates and Environment Templates alike
-(`add_job_symbols`). It is not in the Job Template `name`'s table or an Environment
-parameter `default`'s, so a reference there is "Undefined variable" (§7.3.1). Without
-ENV_PARAMS it is not defined at all; with EXPR alone the message suggests `Job.Name`.
+ENV_PARAMS (and so EXPR), except an Environment parameter `default`'s: the template-scope
+tables of host requirements, parameter-space ranges, Step `let` bindings, `environment:`
+entry values and `enableIf`, and action timing fields, and every session and task scope, in
+Job Templates and Environment Templates alike (`add_job_symbols`). It is not in the Job
+Template `name`'s table or an Environment parameter `default`'s, so a reference there is
+"Undefined variable" (§7.3.1). In a `default`, whose table has `Job.Name`
+(`build_env_param_default_symtab`), the message suggests `Job.Name`. Without ENV_PARAMS it
+is not defined at all; with EXPR alone the message also suggests `Job.Name`.
 
 ### Environment parameter scopes (ENV_PARAMS)
 
