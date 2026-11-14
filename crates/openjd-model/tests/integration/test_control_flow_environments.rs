@@ -2327,3 +2327,49 @@ steps:
         "{err}"
     );
 }
+
+// ── Round 8 ───────────────────────────────────────────────────────
+
+#[test]
+fn a_failing_let_an_entry_reads_indirectly_or_with_others_fails_the_selection() {
+    for (lets, entry, error) in [
+        (
+            r#"["x = 10 // Param.D", "y = x + 1"]"#,
+            r#"enableIf: "y > 0", parameters: {Q: 1}"#,
+            "steps[0] -> let[0]:\n\tInvalid expression in let binding 'x': Division by zero",
+        ),
+        (
+            r#"["x = 10 // Param.D", "y = x + 1"]"#,
+            r#"parameters: {Q: "{{y}}"}"#,
+            "steps[0] -> let[0]:\n\tInvalid expression in let binding 'x': Division by zero",
+        ),
+        (
+            r#"["g = 1", "x = 10 // Param.D"]"#,
+            r#"enableIf: "g > 0 and x > 0", parameters: {Q: 1}"#,
+            "steps[0] -> let[1]:\n\tInvalid expression in let binding 'x': Division by zero",
+        ),
+    ] {
+        let jt = jt_ok(
+            &format!(
+                r#"
+parameterDefinitions:
+- {{name: D, type: INT, default: 0}}
+jobEnvironments:
+- name: JE
+  activation: ON_REQUEST
+  envParameterDefinitions: [{{name: Q, type: INT}}]
+  script: {{actions: {{onEnter: {{command: echo, args: ["{{{{Env.Param.Q}}}}"]}}}}}}
+steps:
+- name: S
+  enableIf: "true"
+  let: {lets}
+  dependencies: [{{environment: JE, {entry}}}]
+  script: {{actions: {{onRun: {{command: echo, args: [s]}}}}}}
+"#
+            ),
+            HEADER,
+        );
+        let err = create_with(&jt, &[], &[]).unwrap_err();
+        assert_errors(&err.to_string(), "JobTemplate", &[error]);
+    }
+}

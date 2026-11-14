@@ -183,7 +183,7 @@ value does not depend on the values unknown there, such as `"true"` or `"Param.F
 true"`, is known too (§3.2 checked-at paragraph, §7.6 rule 5), and every check before job
 creation reads that value (see [validation.md](validation.md#known-enableif-values-env_params)),
 not `literal_enabled()`. `enableIf` is an expression field of type `bool`; see
-[Expression fields](#expression-fields-75). `on_step(name)` and `on_environment(name)` build an entry, and
+[Expression fields](#expression-fields-76). `on_step(name)` and `on_environment(name)` build an entry, and
 `DependencyTarget`'s `Display` writes it as a template does (`dependsOn: X`, `step: X`,
 `environment: X`); `StepKey::as_str()` is `dependsOn` or `step`. These names follow the `service:` form on the `service-extension`
 branch (`step()`, `service()`, `on_service()`, `is_well_formed()`), so adding that key later
@@ -366,7 +366,7 @@ without ENV_PARAMS and on a `stepEnvironments` entry. Job creation resolves it o
 entering Step and combines it with the Step's own (see
 [job-creation.md](job-creation.md#combined-host-requirements-env_params)).
 
-`enable_if` (§4 item 6) is an [expression field](#expression-fields-75) of type `bool`,
+`enable_if` (§4 item 6) is an [expression field](#expression-fields-76) of type `bool`,
 decoded as an entry's `enableIf` is, with a present `null` kept as `ExprField::Null`. It
 decides whether a Step's Sessions enter the Environment, and unlike `activation`,
 `hostRequirements`, and `envParameterDefinitions` it is permitted on every position, a
@@ -678,7 +678,7 @@ same `ExprField` type, which `CONTROL_FLOW` requires (RFC 0011 leaves it to RFC 
 
 ### ExprField
 
-The `CONTROL_FLOW` fields use [`ExprField`](#expression-fields-75) as the `ENV_PARAMS` fields
+The `CONTROL_FLOW` fields use [`ExprField`](#expression-fields-76) as the `ENV_PARAMS` fields
 do, each with a `deserialize_with` that names it (`enableIf`, `while`, or `until`) in its
 decode errors and keeps a present `null` as `Some(Null)`.
 

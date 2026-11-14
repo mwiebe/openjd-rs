@@ -393,7 +393,7 @@ symbols are added either way (see the first item).
   PATH `Param.*` into an entry.
 - **An `environment:` entry's `enableIf`** (§3.2 item 3.2, constraint 9) is an expression
   field of type `bool` (§7.6), checked by `validate_enable_if` with the expression-field
-  checker (see [template-types.md](template-types.md#expression-fields-75)) against the same
+  checker (see [template-types.md](template-types.md#expression-fields-76)) against the same
   table, for every well-formed `environment:` entry that has one. A scalar other than a boolean
   gets "the integer scalar 1 does not fit type bool: an
   expression field of type bool takes a boolean scalar or a string holding one expression

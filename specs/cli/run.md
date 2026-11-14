@@ -654,7 +654,8 @@ Environment's scope from the table it is passed, not from the `Environment`'s fi
 **Single-wrap-layer check (RFC 0008).** Job creation checks every Step's Environment set
 — the attached and Job Environments it enters, by `activation`, `enableIf`, and
 `exclusiveGroup`, and its Step
-Environments whose `enableIf` is not `false` —
+Environments whose `enableIf` is not `false` (with `CONTROL_FLOW`, known to be `true`; one
+whose `enableIf` is decided later is counted when it is, see below) —
 and rejects the Job if more than one environment in a set defines a wrap hook (see
 [../model/job-creation.md](../model/job-creation.md#the-submission-stage)). It checks every
 Step of the Job, as a scheduler would for the submission, so `--step` does not exempt the

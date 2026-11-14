@@ -113,7 +113,7 @@ Currently implements `2023-09` with extensions:
   (§4 item 7),
   the `step:` and `environment:` forms of `<StepDependency>`, the latter with `enableIf` (an
   expression field, Template Schemas §7.6; see
-  [template-types.md](template-types.md#expression-fields-75)), `Job.EnvNames`, and the
+  [template-types.md](template-types.md#expression-fields-76)), `Job.EnvNames`, and the
   `Env.Param.*` / `Env.RawParam.*` scopes (see [validation.md](validation.md) § Pass 11 and
   § Environment parameter scopes), and so are, at job creation in the Template Schemas §7.4.1
   order, entry `enableIf`, each Step's Environment set, effective values, and external

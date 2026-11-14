@@ -457,7 +457,7 @@ budgets template validation and the session runtime apply.
 **`enableIf`** (§3.2 item 3.2). Each `environment:` entry's `enableIf` is decided after the
 Step's `let` bindings and before the entry's name is resolved (§7.4.1). It is an expression
 field of type `bool` (§7.6), resolved by the expression-field checker's `resolve` (see
-[template-types.md](template-types.md#expression-fields-75)) in the Step's template scope
+[template-types.md](template-types.md#expression-fields-76)) in the Step's template scope
 (below), under the template-scope profile and library pass 8 checked it with, the caller's
 evaluation budgets, and POSIX paths: an `enableIf` is
 evaluated in template scope, not in a host context (Template Schemas §7.6, the

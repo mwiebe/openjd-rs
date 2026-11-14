@@ -1521,3 +1521,37 @@ pub(crate) fn resolve_step_entries<'a>(
         step_environments_enabled,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `bool` expression field that reads a value that is not concrete
+    /// resolves to an unresolved value, which is reported, not taken as a
+    /// decision. Job creation never passes one (a failing `let` an entry
+    /// reads fails the Step's selection first), so this guards the arm.
+    #[test]
+    fn an_unresolved_enable_if_is_reported() {
+        let ctx = ValidationContext::new(crate::types::SpecificationRevision::V2023_09);
+        let mut symtab = SymbolTable::new();
+        symtab
+            .set("x", ExprValue::unresolved(ExprType::BOOL))
+            .unwrap();
+        let field = ExprField::Expression("x".to_string());
+        let mut errors = ValidationErrors::default();
+        let path = vec![PathElement::Field("e".to_string())];
+        let decision = resolve_enable_if(
+            Some(&field),
+            &symtab,
+            ResolvePolicy::new(&ctx),
+            &path,
+            &mut errors,
+        );
+        assert_eq!(decision, None);
+        assert_eq!(
+            errors.into_result("M").unwrap_err().to_string(),
+            "Model validation error: 1 validation error for M\ne -> enableIf:\n\tinternal \
+             error: resolved to unresolved[bool] rather than a bool."
+        );
+    }
+}
