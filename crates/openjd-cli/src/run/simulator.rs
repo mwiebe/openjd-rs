@@ -367,6 +367,30 @@ struct StepAdvance {
     tasks_known: bool,
 }
 
+/// Print the warnings of an Environment selection that is being applied
+/// (Template Schemas §3.2.1 items 1 and 2), as job creation prints those
+/// of the selections it applies.
+fn report_selection_warnings(selection: Option<&openjd_model::job::EnvironmentSelection>) {
+    for w in selection.into_iter().flat_map(|s| &s.warnings) {
+        eprintln!(
+            "WARNING: {}",
+            openjd_model::SubmissionWarning {
+                path: w.path.clone(),
+                message: w.message.clone(),
+            }
+        );
+    }
+}
+
+/// The Environment selection `step` waits to apply, when it is pending its
+/// `enableIf`.
+fn pending_selection(step: &Step) -> Option<&openjd_model::job::EnvironmentSelection> {
+    match &step.binding {
+        StepBinding::PendingInputs(p) => p.environment_selection.as_ref(),
+        _ => None,
+    }
+}
+
 /// Print each fact `after` gains over `before`, for the Step named `name`
 /// in the log (`<Loop>[<N>].<Step>` for a body Step instance).
 fn report_step_advance(name: &str, before: &Step, after: &Step) -> StepAdvance {
@@ -379,6 +403,7 @@ fn report_step_advance(name: &str, before: &Step, after: &Step) -> StepAdvance {
     }
     if !enablement_known(before) && enablement_known(after) {
         say(&format!("Step '{name}': enabled (enableIf is true)"));
+        report_selection_warnings(pending_selection(before));
     }
     let mut tasks_known = false;
     if let (None, Some(n)) = (before.tasks_known(), after.tasks_known()) {
@@ -2336,6 +2361,11 @@ impl Simulator {
         self.iteration_read = read;
         for (j, step) in iteration.steps.iter().enumerate() {
             let instance = iteration.instance_name(j).unwrap_or_default();
+            // A body Step instance applies its Step's selection once its
+            // `enableIf` is `true`, here or when it advances.
+            if enablement_known(step) && !matches!(step.binding, StepBinding::Skipped) {
+                report_selection_warnings(self.job.loops[li].body_environment_selections.get(j));
+            }
             match step.binding {
                 StepBinding::Skipped => {
                     say(&format!("Step '{instance}' skipped (enableIf is false)"));

@@ -1797,11 +1797,14 @@ pub struct job::EnvironmentSelection {
     pub wrap_layers: Vec<String>,
     /// Applying the selection fails the Step's enablement group with these.
     pub errors: Vec<SelectionError>,
+    /// Entry warnings (Template Schemas §3.2.1 items 1 and 2), for the
+    /// caller to report when it applies the selection.
+    pub warnings: Vec<SelectionError>,
     /// `JobTemplate`, or `Submission` with Environment Templates attached.
     pub model: String,
 }
 impl job::EnvironmentSelection {
-    /// Nothing to apply: no set, values, host requirements, layers, or errors.
+    /// Nothing to apply: no set, values, host requirements, layers, errors, or warnings.
     #[must_use] pub fn is_empty(&self) -> bool;
 }
 

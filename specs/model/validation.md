@@ -1488,7 +1488,8 @@ with `Loop.*` unknown) if it has one: an `until` loop runs its first iteration. 
 - pass 11: the error for a disabled entry that names an `ALWAYS` Environment, constraints 5
   and 6 for an entry's values, and constraint 7 (`check_required_parameters_supplied`);
 - pass 8: the type and resolve checks of an entry's values (a Step not known to be enabled
-  gets only the undefined-variable check of their scope);
+  gets only the undefined-variable check of their scope, since resolving a value is part of
+  its selection, RFC 0011 `<Environment>` item 3, "Before Job creation");
 - pass 10: the single-wrap-layer rule;
 - `check_environment_templates`: an entry that names nothing or a missing `required`
   Environment, the values, constraint 7, and the `ALWAYS` error, though an ambiguous

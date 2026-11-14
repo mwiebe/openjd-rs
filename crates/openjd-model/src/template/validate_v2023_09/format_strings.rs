@@ -635,6 +635,9 @@ fn validate_env_entry_values(
                 }
                 continue;
             }
+            // For a Step not known to be enabled, resolving the value is part
+            // of its Environment selection (RFC 0011 `<Environment>` item 3,
+            // "Before Job creation"), so only its scope is checked.
             if !step_runs {
                 for sym in fs.accessed_symbols() {
                     if !symtab.contains(&sym) {

@@ -615,6 +615,13 @@ pub struct EnvironmentSelection {
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<SelectionError>,
+    /// The warnings about the Step's entries the selection found (an
+    /// enabled `required: false` entry that names nothing, or one whose
+    /// `parameters` are ignored; Template Schemas §3.2.1 items 1 and 2),
+    /// for the caller to report when it applies the selection, since job
+    /// creation reports only those of the selections it applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<SelectionError>,
     /// What the errors are reported for: `JobTemplate` when no Environment
     /// Template is attached, and `Submission` otherwise, as job creation's
     /// errors are.
@@ -624,7 +631,8 @@ pub struct EnvironmentSelection {
 
 impl EnvironmentSelection {
     /// Whether applying the selection changes nothing: no Environment set
-    /// or values, no host requirements, no wrap layers, and no errors, as
+    /// or values, no host requirements, no wrap layers, and no errors or
+    /// warnings, as
     /// for a Step of a Job with no Environments.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -633,6 +641,7 @@ impl EnvironmentSelection {
             && self.host_requirements.is_empty()
             && self.wrap_layers.is_empty()
             && self.errors.is_empty()
+            && self.warnings.is_empty()
     }
 }
 

@@ -69,7 +69,7 @@ pub(crate) const ANY: usize = usize::MAX;
 ///
 /// Each key also says whether the error belongs to the Step's Environment
 /// selection (`CONTROL_FLOW`, RFC 0011 `<Environment>` item 3), which
-/// [`take_step`](Self::take_step) moves out for a Step whose selection is
+/// [`take_steps`](Self::take_steps) drops for a Step whose selection is
 /// made later, or is made when the Job is created whatever the Step's
 /// `enableIf` ([`at_job_level`](Self::at_job_level)). One key never holds
 /// both, so the flag does not change the order errors are reported in.
@@ -98,44 +98,44 @@ impl StagedErrors {
         self.buckets.entry((stage, step, at, true)).or_default()
     }
 
-    /// Move out the errors of Step `step`'s Environment selection: those
-    /// filed for it under §7.4.1 steps 2 to 8 other than
-    /// [`at_job_level`](Self::at_job_level) ones, in key order. Those
-    /// filed under steps 5 to 8 are left out when the Step is
-    /// [`stopped`](Self::stopped), as [`finish`](Self::finish) leaves them
-    /// out.
-    pub(crate) fn take_step(&mut self, step: usize) -> Vec<ValidationError> {
-        let stopped = self.stopped(step);
-        let keys: Vec<_> = self
-            .buckets
-            .keys()
-            .filter(|(stage, s, _, job_level)| *s == step && !*job_level && *stage >= Stage::Step2)
-            .copied()
-            .collect();
-        let mut out = Vec::new();
-        for key in keys {
-            let errors = self.buckets.remove(&key).unwrap_or_default();
-            if stopped && key.0 >= Stage::Step5 {
-                continue;
-            }
-            out.extend(errors.errors);
-        }
-        out
+    /// Drop the errors of the Environment selections of the Steps in
+    /// `steps`: those filed for them under §7.4.1 steps 2 to 8 other than
+    /// [`at_job_level`](Self::at_job_level) ones, in one pass.
+    pub(crate) fn take_steps(&mut self, steps: &std::collections::HashSet<usize>) {
+        self.buckets.retain(|(stage, s, _, job_level), _| {
+            !(steps.contains(s) && !*job_level && *stage >= Stage::Step2)
+        });
     }
 
-    /// The errors [`take_step`](Self::take_step) would move out, copied.
-    pub(crate) fn step_errors(&self, step: usize) -> Vec<ValidationError> {
-        let stopped = self.stopped(step);
-        self.buckets
+    /// For every Step, the errors of its Environment selection: those filed
+    /// for it under §7.4.1 steps 2 to 8 other than job-level ones, less
+    /// steps 5 to 8 for a [`stopped`](Self::stopped) Step, copied, in key
+    /// order. One pass over the buckets, so the cost
+    /// does not grow with Steps times buckets.
+    pub(crate) fn errors_by_step(&self) -> std::collections::HashMap<usize, Vec<ValidationError>> {
+        let stopped: std::collections::HashSet<usize> = self
+            .buckets
             .iter()
-            .filter(|((stage, s, _, job_level), _)| {
-                *s == step
-                    && !*job_level
-                    && *stage >= Stage::Step2
-                    && !(stopped && *stage >= Stage::Step5)
+            .filter(|((stage, _, _, _), errors)| {
+                (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
             })
-            .flat_map(|(_, errors)| errors.errors.iter().cloned())
-            .collect()
+            .map(|((_, step, _, _), _)| *step)
+            .collect();
+        let mut out: std::collections::HashMap<usize, Vec<ValidationError>> =
+            std::collections::HashMap::new();
+        for ((stage, step, _, job_level), errors) in &self.buckets {
+            if *job_level
+                || *stage < Stage::Step2
+                || (*stage >= Stage::Step5 && stopped.contains(step))
+                || errors.is_empty()
+            {
+                continue;
+            }
+            out.entry(*step)
+                .or_default()
+                .extend(errors.errors.iter().cloned());
+        }
+        out
     }
 
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that

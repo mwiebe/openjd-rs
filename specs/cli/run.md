@@ -253,8 +253,11 @@ the simulator and is reported as an internal error.
    Job Environments it enters (from its Environment selection, see above), and its Step
    Environments are entered: a Step Environment whose `enableIf` is `false` was left out of
    the Step by its remaining group, and prints `Step Environment 'E' is disabled by its
-   enableIf; not entering it` (for a `CONTROL_FLOW` Job; the decision may have been made
-   only at step input binding). Its Tasks run as before, and each
+   enableIf; not entering it` (for a `CONTROL_FLOW` Job, since the decision may have been made
+   only at step input binding; a Job without `CONTROL_FLOW` prints nothing, as before). When
+   a Step's Environment selection is applied after Job creation (a Step whose `enableIf` is
+   decided at step input binding, and every loop body Step instance), its entry warnings
+   (`EnvironmentSelection::warnings`) are printed then, as `WARNING: <path>: <message>`. Its Tasks run as before, and each
    successful Action's `ActionResult.outputs` is recorded per Task, in the Step's
    per-Task iteration order, through the model's `ChunkTaskIndex` (a chunk's outputs are
    keyed by `CHUNK[INT]` value). Each value is printed with its unit after its Action

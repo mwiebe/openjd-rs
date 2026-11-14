@@ -1775,7 +1775,7 @@ the selection of every Step, top-level and loop body, whatever its `enableIf`:
 2. `external::select_environments` runs the submission stage's Environment work over the
    shells: external Environment resolution against the attached Environment Templates,
    constraint 7, each Job Environment's `enableIf` and `exclusiveGroup` per Step, and the
-   checks of the values. Its errors are filed per Step (`StagedErrors::take_step`); an
+   checks of the values. Its errors are filed per Step (`StagedErrors::errors_by_step`); an
    ambiguous Environment name is a Job-level error and is always reported.
 3. `combine_step_host_requirements` resolves each entered Environment's host requirements
    for the Step, and keeps them per source rather than combining them with the Step's own.
@@ -1803,13 +1803,14 @@ host selection group, are listed first in `CreatedJob::discarded_host_requiremen
 that group is evaluated at creation; `advance_step_binding` has nowhere to report them.
 `CreatedJob`'s per-Step lists (`disabled_environments`,
 `environment_statuses`, `discarded_host_requirements`) are for the top-level Steps, and are
-empty for a Step whose selection was not applied at creation; `warnings` are the
-submission's, whatever the Steps' enablement. For a Step whose selection was applied, a Step
+empty for a Step whose selection was not applied at creation. For a Step whose selection was applied, a Step
 Environment's status is what its remaining group decided (`Entered`, or `Disabled` and in
 `disabled_environments`) when that group was evaluated at creation; when it was not, the
 Step Environments are left out of both lists, since their `enableIf` is not decided yet. A warning about a Step's entry (Template Schemas §3.2.1 items 1 and 2) is
 part of its selection, so `CreatedJob::warnings` holds it only for a Step whose selection is
 applied at creation, and `check_environment_templates` only for a Step known to be enabled;
+each selection also carries its own in `EnvironmentSelection::warnings`, for the caller to
+report when it applies a selection made later (`openjd run` prints them then);
 one about an attachment (item 4) is reported whatever the Steps' `enableIf`. An entry whose
 `enableIf` fails is still checked for an ambiguous name, reported at Job creation whatever
 its Step's `enableIf` ("What stays at Job creation").

@@ -637,13 +637,7 @@ pub(super) fn bind_step(
             // checked as soon as its outcome is determined, which can be
             // before the remaining group's inputs are all concrete.
             if !waiting.is_empty() {
-                let unknown: Vec<String> = groups
-                    .all()
-                    .filter(|s| !inputs.is_concrete(s))
-                    .cloned()
-                    .collect();
-                if let Some(message) =
-                    early_wrap_layers_error(cx, st, &step_symtab, &unknown, &wrap_layers)
+                if let Some(message) = early_wrap_layers_error(cx, site, &step_symtab, &wrap_layers)
                 {
                     let mut errors = ValidationErrors::default();
                     errors.add(path, message);
@@ -717,19 +711,20 @@ pub(super) fn bind_step(
 /// determined: the wrap layers `wrap_layers` of the Job Environments the
 /// Step's Sessions enter, with each wrapping Step Environment whose
 /// `enableIf` is known to be `true` (Template Schemas §7.6 rule 5) in
-/// `step_symtab` with the `unknown` symbols (the Step's inputs that are not
-/// concrete), and the `let` bindings that read them, unresolved. A Step
+/// `step_symtab` with every `Steps.*` and `Loop.*` symbol the Step may read
+/// that is not concrete unresolved of its declared type, and the `let`
+/// bindings that read them unresolved. A Step
 /// Environment whose `enableIf` reads a `let` binding that fails, however
 /// indirectly, is not counted: the remaining group fails on the binding.
 /// `None` when at most one layer is certain; the remaining group checks
 /// the full set once it is evaluated.
 fn early_wrap_layers_error(
     cx: &BindContext<'_>,
-    st: &StepTemplate,
+    site: &StepSite<'_>,
     step_symtab: &SymbolTable,
-    unknown: &[String],
     wrap_layers: &[String],
 ) -> Option<String> {
+    let st = site.st;
     let wrapping: Vec<&template::Environment> = st
         .step_environments
         .iter()
@@ -743,10 +738,18 @@ fn early_wrap_layers_error(
     if wrap_layers.len() + wrapping.len() <= 1 {
         return None;
     }
+    // Every `Steps.*` (and `Loop.*`) value the Step may read that is not
+    // concrete is unresolved of its declared type, as template validation
+    // seeds it, so §7.6 rule 5 decides as there (`Steps.A.Output.Ok or
+    // true` is known for a BOOL `Ok`). The concrete values are kept.
     let mut symtab = step_symtab.clone();
-    for sym in unknown {
-        symtab.set(sym, ExprValue::unresolved(ExprType::ANY)).ok()?;
-    }
+    add_control_flow_scope(
+        &mut symtab,
+        cx.jt,
+        StepsReader::Step(site.loc),
+        StepsFieldScope::Template,
+    )
+    .ok()?;
     let profile = template_expr_profile(cx.jt);
     // The `let` bindings that fail, and those that read one, however
     // indirectly: an `enableIf` that reads one is not determined, since the

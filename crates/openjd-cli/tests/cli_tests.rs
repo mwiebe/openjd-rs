@@ -8297,15 +8297,87 @@ steps:
         );
         let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
         assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let line = "Step Environment 'BEnv2' is disabled by its enableIf; not entering it";
+        // Printed under B, after it starts.
         assert!(
-            has(
-                &stdout,
-                "Step Environment 'BEnv2' is disabled by its enableIf; not entering it"
-            ),
+            at(&stdout, "Running step 'B'") < at(&stdout, line),
             "{stdout}"
         );
         assert!(!has(&stdout, "ENTER_BENV2"), "{stdout}");
         assert!(has(&stdout, "B_RAN"), "{stdout}");
+        // A Job without CONTROL_FLOW prints nothing for it, as before.
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS]
+name: Log
+steps:
+- name: B
+  stepEnvironments:
+  - name: BEnv
+    enableIf: false
+    script:
+      actions:
+        onEnter: {command: python, args: ['-c', "print('ENTER_BENV')"]}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('B_RAN')"]}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!stdout.contains("is disabled by its enableIf"), "{stdout}");
+    }
+
+    /// A Step whose Environment selection is applied at step input
+    /// binding, and each body Step instance, prints its entry warnings
+    /// then.
+    #[test]
+    fn entry_warnings_are_printed_when_a_selection_is_applied_later() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Warn
+steps:
+- name: A
+  outputVariables: [{name: Ok, type: BOOL}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: Ok=true')"]}
+- name: B
+  enableIf: "Steps.A.Output.Ok"
+  dependencies: [{dependsOn: A}, {environment: Missing, required: false}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+- name: L
+  loop:
+    until: "Loop.Iteration >= 0"
+    maxIterations: 1
+    steps:
+    - name: C
+      dependencies: [{environment: Missing2, required: false}]
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', 'pass']}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let warning = |path: &str, name: &str| {
+            format!(
+                "WARNING: {path} -> environment: names Environment '{name}', which is not a \
+                 jobEnvironments entry of the Job Template, and no Environment Template is \
+                 attached. The entry has 'required: false', so it has no effect.\n"
+            )
+        };
+        assert_eq!(
+            stderr,
+            warning("steps[1] -> dependencies[1]", "Missing")
+                + &warning(
+                    "steps[2] -> loop -> steps[0] -> dependencies[0]",
+                    "Missing2"
+                ),
+        );
     }
 
     /// `check` lists the Environments a literal `enableIf: false` disables
@@ -8332,6 +8404,18 @@ steps:
     - name: E
       stepEnvironments:
       - {name: EE, enableIf: false, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', 'pass']}
+- name: K
+  enableIf: false
+  loop:
+    until: "Loop.Iteration >= 0"
+    maxIterations: 1
+    steps:
+    - name: KB
+      stepEnvironments:
+      - {name: KE, enableIf: false, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
       script:
         actions:
           onRun: {command: python, args: ['-c', 'pass']}

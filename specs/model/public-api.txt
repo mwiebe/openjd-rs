@@ -1208,6 +1208,7 @@ pub openjd_model::job::EnvironmentSelection::environments: core::option::Option<
 pub openjd_model::job::EnvironmentSelection::errors: alloc::vec::Vec<openjd_model::job::SelectionError>
 pub openjd_model::job::EnvironmentSelection::host_requirements: alloc::vec::Vec<openjd_model::job::EnvironmentHostRequirements>
 pub openjd_model::job::EnvironmentSelection::model: alloc::string::String
+pub openjd_model::job::EnvironmentSelection::warnings: alloc::vec::Vec<openjd_model::job::SelectionError>
 pub openjd_model::job::EnvironmentSelection::wrap_layers: alloc::vec::Vec<alloc::string::String>
 impl openjd_model::job::EnvironmentSelection
 pub fn openjd_model::job::EnvironmentSelection::is_empty(&self) -> bool

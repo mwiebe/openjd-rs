@@ -898,7 +898,20 @@ pub(super) fn combine_with_environments(
         })
         .collect();
     if let Some(own) = own {
-        sources.insert(0, step_source(step_path, own));
+        // With Environment Templates attached, every source is named from
+        // its document (`JobTemplate -> jobEnvironments[k]`), so the Step's
+        // own is too.
+        let attached = environments
+            .iter()
+            .any(|e| !e.label.starts_with("jobEnvironments["));
+        let label_path: Vec<PathElement> = if attached {
+            std::iter::once(PathElement::Field("JobTemplate".to_string()))
+                .chain(step_path.iter().cloned())
+                .collect()
+        } else {
+            step_path.to_vec()
+        };
+        sources.insert(0, step_source(&label_path, own));
     }
     Some(combine(step_name, step_path, &sources, errors))
 }

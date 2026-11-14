@@ -1914,3 +1914,284 @@ steps:
     assert!(err.contains("timeout must be > 0."), "{err}");
     assert!(err.contains("'W1', 'W2'"), "{err}");
 }
+
+// ── Round 6 ───────────────────────────────────────────────────────
+
+#[test]
+fn the_early_wrap_check_reads_pending_outputs_with_their_declared_types() {
+    // `Steps.A.Output.Ok or true` is known `true` for a BOOL `Ok`.
+    let jt = jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: F, type: BOOL, default: true}}
+jobEnvironments:
+- name: W1
+  enableIf: "Param.F"{}
+steps:
+- name: A
+  dependencies: [{{environment: W1, enableIf: "false"}}]
+  outputVariables: [{{name: Ok, type: BOOL}}]
+  script: {{actions: {{onRun: {{command: echo, args: [a]}}}}}}
+- name: S
+  dependencies: [{{dependsOn: A}}]
+  stepEnvironments:
+  - name: W2
+    enableIf: "Steps.A.Output.Ok or true"{}
+  script: {{actions: {{onRun: {{command: echo, args: [s]}}}}}}
+"#,
+            wrap_hooks("  "),
+            wrap_hooks("    ")
+        ),
+        WRAP_HEADER,
+    );
+    let err = create_with(&jt, &[], &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &[
+            "steps[1]:\n\tits Sessions would enter 2 Environments that define wrap hooks \
+           (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W1', 'W2' (stepEnvironments). A \
+           Session may have at most one Environment defining wrap hooks (RFC 0008).",
+        ],
+    );
+}
+
+#[test]
+fn a_pending_steps_selection_carries_its_entry_warnings() {
+    let jt = jt_ok(
+        r#"
+steps:
+- name: A
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  enableIf: "Steps.A.Output.Ok"
+  dependencies: [{dependsOn: A}, {environment: Missing, required: false}]
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let created = create_with(&jt, &[attached_x("ON_REQUEST", "")], &[]).unwrap();
+    assert!(created.warnings.is_empty());
+    let StepBinding::PendingInputs(p) = &step(&created.job, "B").binding else {
+        panic!("B should be pending");
+    };
+    let warnings: Vec<String> = p
+        .environment_selection
+        .as_ref()
+        .unwrap()
+        .warnings
+        .iter()
+        .map(|w| w.message.clone())
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            "names Environment 'Missing', which is not a jobEnvironments entry of the Job \
+          Template, and none of the attached Environment Templates (EnvironmentTemplate[0]) \
+          defines it. The entry has 'required: false', so it has no effect."
+        ]
+    );
+}
+
+#[test]
+fn a_host_requirement_conflict_names_the_steps_own_source_from_its_document() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: M, type: INT, default: 2}
+steps:
+- name: A
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: C
+  enableIf: "Steps.A.Output.Ok"
+  dependencies: [{dependsOn: A}, {environment: R, parameters: {P: 4}}]
+  hostRequirements:
+    amounts: [{name: amount.worker.vcpu, max: "{{Param.M}}"}]
+  script: {actions: {onRun: {command: echo, args: [c]}}}
+"#,
+        FB1_HEADER,
+    );
+    let r = env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS, FEATURE_BUNDLE_1]
+environment:
+  name: R
+  activation: ON_REQUEST
+  envParameterDefinitions: [{name: P, type: INT}]
+  hostRequirements:
+    amounts: [{name: amount.worker.vcpu, min: "{{Env.Param.P}}"}]
+  script: {actions: {onEnter: {command: echo, args: [r]}}}
+"#,
+    );
+    let envs = [r];
+    let job = create_with(&jt, &envs, &[]).unwrap().job;
+    let err = advance(
+        &jt,
+        &envs,
+        &[],
+        &job,
+        "C",
+        "A",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains(
+            "EnvironmentTemplate[0] -> environment -> hostRequirements (Environment 'R') requires \
+             min 4, and JobTemplate -> steps[1] -> hostRequirements requires max 2."
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_failing_literal_default_is_reported_once() {
+    // A literal default edited below its minValue after decoding, on an
+    // ALWAYS attachment that every Step takes.
+    let jt = jt_ok(
+        r#"
+steps:
+- name: S1
+  script: {actions: {onRun: {command: echo, args: [s1]}}}
+- name: S2
+  script: {actions: {onRun: {command: echo, args: [s2]}}}
+"#,
+        HEADER,
+    );
+    let src = |default: u32| {
+        format!(
+            r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: X
+  activation: ALWAYS
+  envParameterDefinitions: [{{name: N, type: INT, minValue: {min}, default: {default}}}]
+  script: {{actions: {{onEnter: {{command: echo, args: ["{{{{Env.Param.N}}}}"]}}}}}}
+"#,
+            min = if default == 1 { 1 } else { 5 }
+        )
+    };
+    let mut x = env_ok(&src(6));
+    // The default of a decodable template with minValue 1, moved onto X,
+    // whose minValue is 5.
+    let one = env_ok(&src(1))
+        .environment
+        .env_parameter_definitions
+        .unwrap()[0]
+        .default
+        .clone();
+    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = one;
+    let err = create_with(&jt, &[x], &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\t\
+           Parameter 'N': value 1 is less than minimum 5",
+        ],
+    );
+}
+
+#[test]
+fn an_undecided_entry_naming_a_job_environment_is_not_checked_against_attachments() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+- {name: S, type: STRING, default: abc}
+jobEnvironments:
+- name: X
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [x]}}}
+steps:
+- name: A
+  enableIf: "Param.F"
+  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+"#,
+        HEADER,
+    );
+    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+    create_with(&jt, &envs, &[]).unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn an_undecided_entry_named_by_three_attachments_is_rejected() {
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+- {name: S, type: STRING, default: abc}
+steps:
+- name: A
+  enableIf: "Param.F"
+  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+"#,
+        HEADER,
+    );
+    let envs = [
+        attached_x("ON_REQUEST", ""),
+        attached_x("ON_REQUEST", ""),
+        attached_x("ON_REQUEST", ""),
+    ];
+    let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
+    assert!(
+        err.contains("which 3 attached Environment Templates define"),
+        "{err}"
+    );
+}
+
+#[test]
+fn without_control_flow_a_failed_entry_enable_if_is_reported_alone() {
+    let src = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS]
+name: J
+parameterDefinitions:
+- {name: S, type: STRING, default: abc}
+steps:
+- name: A
+  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+"#;
+    let jt = decode_job_template(yaml(src), Some(ALLOW), &CallerLimits::default()).unwrap();
+    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+    let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with("Model validation error: 1 validation error for Submission"),
+        "{err}"
+    );
+    assert!(err.contains("dependencies[0] -> enableIf:"), "{err}");
+}
+
+#[test]
+fn a_loop_may_not_have_an_environment_entry() {
+    check_err(
+        r#"
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
+steps:
+- name: L
+  dependencies: [{environment: E}]
+  loop:
+    until: "true"
+    maxIterations: 1
+    steps:
+    - name: B
+      script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        &[
+            "steps[0] -> dependencies[0]:\n\ta loop's dependencies may not have an 'environment' \
+           entry: a loop has no Sessions. Put the entry on the body Steps that need the \
+           Environment (RFC 0011).",
+        ],
+    );
+}

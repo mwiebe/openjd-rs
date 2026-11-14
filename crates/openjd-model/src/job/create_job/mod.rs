@@ -435,6 +435,7 @@ fn control_flow_job(
             host_requirements: host,
             wrap_layers: wrap,
             errors: Vec::new(),
+            warnings: Vec::new(),
             model: model.to_string(),
         })
         .collect();
@@ -453,15 +454,27 @@ fn control_flow_job(
     // Each Step's selection carries its errors, so a Step whose `enableIf`
     // is decided `true` fails its enablement group with them and evaluates
     // nothing else.
+    let mut by_step = all_staged.errors_by_step();
     for (i, selection) in environment_selections.iter_mut().enumerate() {
-        selection.errors = all_staged
-            .step_errors(i)
+        selection.errors = by_step
+            .remove(&i)
+            .unwrap_or_default()
             .into_iter()
             .map(|e| job::SelectionError {
                 path: e.path,
                 message: e.message,
             })
             .collect();
+    }
+    // Each selection's entry warnings, for the caller to report when it
+    // applies a selection made later.
+    for (w, step) in selected.warnings.iter().zip(&selected.warning_steps) {
+        if let Some(sel) = step.and_then(|i| environment_selections.get_mut(i)) {
+            sel.warnings.push(job::SelectionError {
+                path: w.path.clone(),
+                message: w.message.clone(),
+            });
+        }
     }
     // For each subject, the entry of its Step when it is a top-level Step.
     let top_level: Vec<Option<usize>> = job_template
@@ -509,6 +522,7 @@ fn control_flow_job(
     // other subject's errors are its own, for step input binding, and a
     // skipped Step's, or a Step's not reached before an abort, are dropped.
     let mut applied_at_creation = vec![false; top_level.len()];
+    let mut not_applied = std::collections::HashSet::new();
     for (i, top) in top_level.iter().enumerate() {
         let applied = top.is_some_and(|e| match &built[e] {
             Some(binding::Built::Step(step)) => match &step.binding {
@@ -523,7 +537,7 @@ fn control_flow_job(
             applied_at_creation[i] = true;
             continue;
         }
-        all_staged.take_step(i);
+        not_applied.insert(i);
         if let Some(Some(binding::Built::Step(step))) = top.map(|e| &mut built[e]) {
             if let job::StepBinding::PendingInputs(p) = &mut step.binding {
                 // A selection with nothing to apply was not stored, but one
@@ -534,6 +548,7 @@ fn control_flow_job(
             }
         }
     }
+    all_staged.take_steps(&not_applied);
     // An abort is reported with every error found before it: the Job
     // Environments' and the Steps' collected errors, and the selection
     // errors of the Steps whose selections were applied, as ENV_PARAMS
