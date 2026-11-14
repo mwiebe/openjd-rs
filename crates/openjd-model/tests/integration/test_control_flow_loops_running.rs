@@ -1453,6 +1453,46 @@ fn loop_group_errors_at_creation_fail_create_job() {
     }
 }
 
+#[test]
+fn a_range_expr_loop_variable_is_measured_as_written_and_in_canonical_form() {
+    // `1,2,3` is 5 characters as written; its canonical form `1-3` is 3.
+    let loop_with = |constraint: &str| {
+        template(
+            "",
+            &format!(
+                "- name: L
+  loop:
+    maxIterations: 1
+    until: \"true\"
+    variables: [{{name: R, type: RANGE_EXPR, {constraint}, initial: \"1,2,3\", next: \"{{{{Loop.R}}}}\"}}]
+    steps:
+{}",
+                body_step("B", "")
+            ),
+        )
+    };
+    let err = Fixture::new(&loop_with("maxLength: 3"), &[])
+        .create()
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> loop -> variables[0] -> initial",
+            "Loop variable 'R': value length 5 exceeds maximum 3\n  1,2,3"
+        )])
+    );
+    let err = Fixture::new(&loop_with("minLength: 4"), &[])
+        .create()
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> loop -> variables[0] -> initial",
+            "Loop variable 'R': value length 3 is less than minimum 4\n  1,2,3"
+        )])
+    );
+}
+
 // ── Iterations ────────────────────────────────────────────────────
 
 #[test]

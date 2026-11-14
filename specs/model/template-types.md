@@ -706,7 +706,7 @@ a [`JobParameterDefinition`](parameters.md). Its `Deserialize`:
 2. removes `collect` (an [`OutputCollectMode`](#outputcollectmode), `ONCE` when omitted)
    and `unit` (a string) from the mapping;
 3. removes `default`, `userInterface`, and, for `PATH` and `LIST[PATH]`, `dataFlow`, and
-   records which were present, so that pass 11 can report each at its own path. On
+   records which were present, so that pass 12 can report each at its own path. On
    another type, `dataFlow` stays in the mapping and the job parameter definition rejects
    it as an unknown field;
    (in steps 2 and 3 an explicit `null` counts as omitted, as it does for the job
@@ -735,7 +735,7 @@ differences:
 
 - a missing or `null` `value` reads `missing 'value' field in job output definition`;
 - `collect` is recorded with `default`, `userInterface`, and `dataFlow`, before them, so
-  pass 11 reports it at its own path (`is not allowed in a job output definition.`)
+  pass 12 reports it at its own path (`is not allowed in a job output definition.`)
   instead of the job parameter definition rejecting it as an unknown field;
 - the messages say `job output` where an output variable's say `output variable`, and an
   unknown field lists `value` and `unit` as the extra fields.
@@ -775,7 +775,7 @@ rather than an untagged-enum error that names neither shape. A loop's error is p
 field that decided the shape: `steps entry 'L' has a 'loop' field, so it is a loop
 (CONTROL_FLOW, RFC 0013), which has no such field: unknown field `script`, expected one
 of ...`. That holds with or without `CONTROL_FLOW`. Without the extension a well-formed
-`loop` entry still parses as a `StepLoop`, and pass 11 reports it at `steps[i] -> loop`. The accessors `name()`,
+`loop` entry still parses as a `StepLoop`, and pass 12 reports it at `steps[i] -> loop`. The accessors `name()`,
 `dependencies()` (empty when absent), and `enable_if()` read either shape, and
 `as_step()` and `as_loop()` select one.
 
@@ -803,7 +803,7 @@ pub struct LoopDefinition {
 Both use `deny_unknown_fields`, so a loop with `script`, `parameterSpace`,
 `hostRequirements`, `stepEnvironments`, or `let` fails as an unknown field of a loop, and
 a missing `maxIterations` as `loop 'L': missing field `maxIterations``. `while` and
-`until` are both optional here so that pass 11 can report "exactly one" at
+`until` are both optional here so that pass 12 can report "exactly one" at
 `steps[i] -> loop`; a present `null` counts as present and is reported by pass 8. The body is deserialized element by element: an element with a
 `loop` key fails with `loop body entry <j> '<name>' has a 'loop' field, but loops do not
 nest: a loop's body may contain only Steps (RFC 0013).`, and every other element is a
@@ -819,7 +819,7 @@ type, as `OutputVariableDefinition` does, and is deserialized the same way after
 `initial` and `next` (format strings, both required) are removed. A missing one reads
 `missing 'initial' field in loop variable definition` (or `'next'`), after the loop's
 `loop 'L': ` prefix. `collect` and `unit`
-are recorded with `default`, `userInterface`, and `dataFlow`, so pass 11 reports each at
+are recorded with `default`, `userInterface`, and `dataFlow`, so pass 12 reports each at
 its own path (`is not allowed in a loop variable definition.`), and an unknown field lists
 `initial` and `next` as the extra fields. The accessors are `name`, `job_param_type`,
 `initial`, `next`, `description`, `definition`, `constraints`, and `to_output_variable`,
@@ -830,7 +830,7 @@ whose `check_constraints` checks every value the variable takes.
 One `<LoopOutputVariableDefinition>`: as a `JobOutputDefinition` (`value` required:
 `missing 'value' field in loop output definition`), plus `collect` and `unit`. `collect`
 is kept as written, `None` when omitted, because it is required and `ONCE` is not allowed:
-pass 11 reports both at `steps[i] -> outputVariables[k] -> collect`. An unknown field
+pass 12 reports both at `steps[i] -> outputVariables[k] -> collect`. An unknown field
 lists `collect`, `value`, and `unit`. The accessors are `name`, `job_param_type`,
 `collect`, `value`, `unit`, `description`, `definition`, `constraints`, and
 `to_output_variable` (with `collect` defaulted to `ONCE` when it was omitted), whose

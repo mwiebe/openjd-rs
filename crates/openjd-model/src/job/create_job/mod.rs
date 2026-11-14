@@ -458,6 +458,17 @@ fn control_flow_job(
     // later (its error is collected). Every other subject's errors are its
     // own, for step input binding, and a skipped Step's are dropped.
     let mut applied_at_creation = vec![false; top_level.len()];
+    // The Job Template stage's errors and the submission stage's, in the
+    // order and with the paths `finish_errors` reports them in, so a
+    // Step's selection errors read as they would at Job creation.
+    let mut all_staged = staged::StagedErrors::default();
+    let job_prefix: Vec<crate::error::PathElement> = if attached.is_empty() {
+        Vec::new()
+    } else {
+        vec![crate::error::PathElement::Field("JobTemplate".to_string())]
+    };
+    all_staged.absorb(std::mem::take(&mut selected.body_staged), &job_prefix);
+    all_staged.absorb(std::mem::take(&mut selected.staged), &[]);
     for (i, top) in top_level.iter().enumerate() {
         let applied = top.is_some_and(|e| match &built[e] {
             Some(binding::Built::Step(step)) => match &step.binding {
@@ -471,11 +482,9 @@ fn control_flow_job(
             applied_at_creation[i] = true;
             continue;
         }
-        let errors: Vec<job::SelectionError> = selected
-            .staged
+        let errors: Vec<job::SelectionError> = all_staged
             .take_step(i)
             .into_iter()
-            .chain(selected.body_staged.take_step(i))
             .map(|e| job::SelectionError {
                 path: e.path,
                 message: e.message,
@@ -496,15 +505,65 @@ fn control_flow_job(
         mut job,
         environments,
         environment_documents,
-        staged,
-        body_staged,
         warnings,
-        disabled_environments,
-        environment_statuses,
+        mut disabled_environments,
+        mut environment_statuses,
         attached_count,
         ..
     } = selected;
-    finish_errors(check_errors, body_staged, staged, attached_count > 0)?;
+    // The selection leaves the Step Environments' `enableIf` to each Step's
+    // remaining group (RFC 0011 `<Environment>` item 4). Where that group
+    // was evaluated here, report what it decided; where it was not, the
+    // Step Environments are not decided, so they are left out.
+    for (i, top) in top_level.iter().enumerate() {
+        let Some(Some(binding::Built::Step(step))) = top.map(|e| &built[e]) else {
+            continue;
+        };
+        let decided = match &step.binding {
+            job::StepBinding::Bound => true,
+            job::StepBinding::PendingInputs(p) => p.remaining.is_known(),
+            job::StepBinding::Skipped => false,
+        };
+        let entered: Vec<&str> = step
+            .step_environments
+            .iter()
+            .flatten()
+            .map(|e| e.name.as_str())
+            .collect();
+        if let Some(statuses) = environment_statuses.get_mut(i) {
+            statuses.environments.retain_mut(|s| {
+                if s.scope != external::EnvironmentScope::Step {
+                    return true;
+                }
+                s.status = if entered.contains(&s.name.as_str()) {
+                    external::EnvironmentStatus::Entered
+                } else {
+                    external::EnvironmentStatus::Disabled
+                };
+                decided
+            });
+        }
+        if let Some(disabled) = disabled_environments.get_mut(i) {
+            disabled.step_environments = if decided {
+                job_template
+                    .step_templates()
+                    .nth(i)
+                    .into_iter()
+                    .flat_map(|st| st.step.step_environments.iter().flatten())
+                    .map(|e| e.name.clone())
+                    .filter(|n| !entered.contains(&n.as_str()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        }
+    }
+    finish_errors(
+        check_errors,
+        staged::StagedErrors::default(),
+        all_staged,
+        attached_count > 0,
+    )?;
     let mut steps = Vec::new();
     let mut loops = Vec::new();
     for entry in built {

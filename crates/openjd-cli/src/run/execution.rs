@@ -34,6 +34,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         started_at,
         tasks_run: 0,
         session_failed: false,
+        failed_environment: None,
         preserved_dir: None,
     };
 
@@ -442,14 +443,13 @@ async fn run_workload(
                         ))
                         .await;
                         if ctx.is_stopping() {
+                            ctx.record_failure_reason(sim, slot);
                             sim.finish_step(slot, true, false)?;
                             break;
                         }
                         let ran_all =
                             execute_step(ctx, args, &step, &step.name, slot, explicit, sim).await?;
-                        if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
-                            sim.set_reason(slot, "the run was interrupted");
-                        }
+                        ctx.record_failure_reason(sim, slot);
                         sim.finish_step(slot, ctx.session_failed, ran_all)?;
                     }
                 }
@@ -565,13 +565,16 @@ async fn run_loop(
             ))
             .await;
             if ctx.is_stopping() {
-                sim.stop_loop(li, "the run stopped before its iteration completed");
+                if ctx.failed_environment.is_some() {
+                    ctx.record_failure_reason(sim, slot);
+                    sim.finish_step(slot, true, false)?;
+                } else {
+                    sim.stop_loop(li, "the run stopped before its iteration completed");
+                }
                 return Ok(());
             }
             let ran_all = execute_step(ctx, args, &step, &name, slot, None, sim).await?;
-            if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
-                sim.set_reason(slot, "the run was interrupted");
-            }
+            ctx.record_failure_reason(sim, slot);
             sim.finish_step(slot, ctx.session_failed, ran_all)?;
             if ctx.session_failed {
                 return Ok(());

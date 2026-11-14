@@ -119,6 +119,9 @@ struct RunContext {
     started_at: Instant,
     tasks_run: usize,
     session_failed: bool,
+    /// The Environment whose entering failed the Session, if one did, so a
+    /// Step that fails because of it is not said to have failed a Task.
+    failed_environment: Option<String>,
     /// The Session's working directory, once the Session has ended with
     /// `--preserve`.
     preserved_dir: Option<PathBuf>,
@@ -285,7 +288,18 @@ impl RunContext {
                     }
                 }
                 self.session_failed = true;
+                self.failed_environment = Some(name.to_string());
             }
+        }
+    }
+
+    /// Set why `slot` failed when the run failed or stopped while it ran:
+    /// an Environment that failed to enter, or an interruption.
+    fn record_failure_reason(&mut self, sim: &mut simulator::Simulator, slot: simulator::Slot) {
+        if let Some(name) = self.failed_environment.take() {
+            sim.set_reason(slot, &format!("its Environment '{name}' failed to enter"));
+        } else if self.session_failed && self.interrupted.load(Ordering::SeqCst) {
+            sim.set_reason(slot, "the run was interrupted");
         }
     }
 
@@ -544,6 +558,7 @@ mod tests {
             started_at: Instant::now(),
             tasks_run: 0,
             session_failed: false,
+            failed_environment: None,
             preserved_dir: None,
         };
 

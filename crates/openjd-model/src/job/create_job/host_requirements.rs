@@ -720,6 +720,12 @@ struct Source {
 /// steps[i]` with attachments), filed under Step `i` after its
 /// Environments' failures. A Step that enters no Environment, as
 /// `entered` says of a Step stopped after §7.4.1 step 4, is left alone.
+///
+/// With `kept` (`CONTROL_FLOW`), each Step's entered Environments'
+/// requirements are also kept per source for its host selection group,
+/// and each Environment is resolved, and a failure filed, once per Step,
+/// since each Step's Environment selection is applied, or never made, on
+/// its own (RFC 0011 `<Environment>` item 3).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn combine_step_host_requirements(
     job_steps: &mut [job::Step],
@@ -755,7 +761,7 @@ pub(super) fn combine_step_host_requirements(
         // §3.2.2 equality: a FLOAT keeps its text and a RANGE_EXPR is
         // stored in canonical form, so equal values have one transport form.
         let mut groups: Vec<(Option<&job::EnvironmentParameterValues>, Vec<usize>)> = Vec::new();
-        let mut group_of: HashMap<Option<String>, usize> = HashMap::new();
+        let mut group_of: HashMap<(Option<usize>, Option<String>), usize> = HashMap::new();
         for (s, step) in job_steps.iter().enumerate() {
             if !entered
                 .get(s)
@@ -775,7 +781,8 @@ pub(super) fn combine_step_host_requirements(
             if declares && values.is_none() {
                 continue;
             }
-            let key = values.map(|v| v.values.as_value().to_string());
+            let per_step = kept.is_some().then_some(s);
+            let key = (per_step, values.map(|v| v.values.as_value().to_string()));
             match group_of.get(&key) {
                 Some(g) => groups[*g].1.push(s),
                 None => {

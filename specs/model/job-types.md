@@ -339,7 +339,10 @@ the host requirements and wrap layers move into `environment_host_requirements` 
 `wrap_layers` until the host selection and remaining groups use them (see
 [job-creation.md](job-creation.md#environment-selection-control_flow)). A bound Step's
 `environments`, `environment_parameters`, and combined `host_requirements` are as without
-`CONTROL_FLOW`.
+`CONTROL_FLOW`. Until its selection is applied, a pending Step's `environments` is `None`,
+which `Step::enters_environment` reads as every Job Environment, and its
+`environment_parameters` is `None`; a caller enters a Step's Environments only once it is
+bound.
 
 **`OutputConstraints`** holds the constraint properties the definition *declared*, and
 only those. A property that a job parameter of the same type implies when omitted (the
@@ -424,13 +427,11 @@ bound on an `INT` output, say), which then has no effect on the checks.
 `JobParameterType` derives `Deserialize` as well as `Serialize`; both use the variant
 names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
 
-`job::Environment` has `enabled: bool`: `false` when its `enableIf` evaluated to
-`false`. A disabled Environment must be left out of the Session's Environment stack (not
-entered, its `variables` not set); the caller that builds the stack does this, and
-`openjd-sessions` does not read the field. It is serialized only when `false` and defaults to `true`, so
-existing jobs read back unchanged. `create_job` decides a Job Environment's; the remaining
-group of step input binding decides a Step Environment's, so on a pending Step whose
-remaining group is not known yet it is `true` whatever its `enableIf` will give.
+A Step Environment whose `enableIf` is `false` is left out of `job::Step::step_environments`,
+as without `CONTROL_FLOW`; the remaining group of step input binding decides it, so a pending
+Step whose remaining group is not known yet still lists every Step Environment. A Job
+Environment's `enableIf` is decided per Step with the Step's Environment selection, into
+`job::Step::environments`.
 
 ### StepScript, StepActions, Action
 

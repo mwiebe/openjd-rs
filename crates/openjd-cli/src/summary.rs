@@ -116,7 +116,12 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
             .zip(&created.discarded_host_requirements)
             .map(|((s, statuses), discarded)| {
                 environments_decided(s).then(|| StepEnvSets {
-                    entered: session_env_infos(&the_job, &created.environment_documents, s),
+                    entered: session_env_infos(
+                        &job_template,
+                        &the_job,
+                        &created.environment_documents,
+                        s,
+                    ),
                     disabled: disabled_env_infos(statuses),
                     declined: declined_env_infos(statuses),
                     not_found: statuses
@@ -359,12 +364,29 @@ struct SessionEnvInfo {
 /// The Environments `step`'s Sessions enter, in order: the combined Job
 /// Environments it enters (attached first, then the Job Template's;
 /// `documents` describes `job.job_environments` index for index), then its
-/// Step Environments.
+/// Step Environments. With `CONTROL_FLOW`, a Step Environment whose
+/// `enableIf` the Step's remaining group has not decided yet (RFC 0011
+/// `<Environment>` item 4) is marked as entered only if its `enableIf` is
+/// `true`.
 fn session_env_infos(
+    jt: &openjd_model::template::JobTemplate,
     job: &job::Job,
     documents: &[job::Document],
     step: &job::Step,
 ) -> Vec<SessionEnvInfo> {
+    let undecided =
+        matches!(&step.binding, job::StepBinding::PendingInputs(p) if !p.remaining.is_known());
+    let template_envs: Vec<&openjd_model::template::Environment> = jt
+        .step_templates()
+        .find(|r| r.body_index.is_none() && r.step.name == step.name)
+        .into_iter()
+        .flat_map(|r| r.step.step_environments.iter().flatten())
+        .collect();
+    let has_enable_if = |name: &str| {
+        template_envs
+            .iter()
+            .any(|e| e.name == name && e.enable_if.is_some())
+    };
     job.job_environments
         .iter()
         .flatten()
@@ -380,7 +402,11 @@ fn session_env_infos(
                 .flatten()
                 .map(|env| SessionEnvInfo {
                     name: env.name.clone(),
-                    source: "stepEnvironments".to_string(),
+                    source: if undecided && has_enable_if(&env.name) {
+                        "stepEnvironments, if its enableIf is true".to_string()
+                    } else {
+                        "stepEnvironments".to_string()
+                    },
                 }),
         )
         .collect()

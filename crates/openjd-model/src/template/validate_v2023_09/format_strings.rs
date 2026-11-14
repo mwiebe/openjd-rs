@@ -2464,7 +2464,7 @@ fn validate_loop_expressions(
     for (k, ov) in l.output_variables_list().iter().enumerate() {
         let declared = ov.job_param_type().expr_type();
         let ty = if ov.collect() == Some(crate::types::OutputCollectMode::Append) {
-            // A non-list APPEND output is reported by pass 11; check its
+            // A non-list APPEND output is reported by pass 12; check its
             // value against the declared type.
             declared.list_element_type().cloned().unwrap_or(declared)
         } else {
@@ -3264,7 +3264,7 @@ pub fn validate_format_strings(
     );
 
     // ── Job outputs (CONTROL_FLOW): their own scope ──
-    // Pass 11 rejects `jobOutputDefinitions` without the extension.
+    // Pass 12 rejects `jobOutputDefinitions` without the extension.
     if cf_active {
         validate_job_output_values(jt, expr_active, &template_ev, errors);
     }
@@ -3901,7 +3901,7 @@ pub fn validate_format_strings(
     }
 
     // ── Loops (CONTROL_FLOW, RFC 0013): the loop's own expressions ──
-    // Pass 11 rejects `loop` without the extension.
+    // Pass 12 rejects `loop` without the extension.
     if cf_active {
         for (i, entry) in jt.steps.iter().enumerate() {
             if let StepEntry::Loop(l) = entry {

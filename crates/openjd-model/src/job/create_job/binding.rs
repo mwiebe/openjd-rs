@@ -610,6 +610,18 @@ pub(super) fn bind_step(
         Some(GroupState::Known(())) => GroupState::Known(()),
         _ => {
             let waiting = missing(&groups.remaining, inputs);
+            // RFC 0011 `<Environment>` item 6: the single-layer rule is
+            // checked as soon as its outcome is determined, which can be
+            // before the remaining group's inputs are all concrete.
+            if !waiting.is_empty() {
+                if let Some(message) =
+                    early_wrap_layers_error(cx, st, &step_symtab, &waiting, &wrap_layers)
+                {
+                    let mut errors = ValidationErrors::default();
+                    errors.add(path, message);
+                    return Err(GroupFailure::collected(Remaining, errors));
+                }
+            }
             if waiting.is_empty() {
                 lets.evaluate_all(&mut step_symtab)
                     .map_err(|e| GroupFailure::collected(Remaining, e))?;
@@ -664,6 +676,71 @@ pub(super) fn bind_step(
             Ok(step)
         }
     }
+}
+
+/// The single-layer rule (RFC 0011 `<Environment>` item 6) for a Step whose
+/// remaining group still waits on `waiting`, when its outcome is already
+/// determined: the wrap layers `wrap_layers` of the Job Environments the
+/// Step's Sessions enter, with each wrapping Step Environment whose
+/// `enableIf` is known to be `true` (Template Schemas §7.6 rule 5) in
+/// `step_symtab` with the `waiting` symbols, and the `let` bindings that
+/// read them, unresolved. `None` when at most one layer is certain; the
+/// remaining group checks the full set once it is evaluated.
+fn early_wrap_layers_error(
+    cx: &BindContext<'_>,
+    st: &StepTemplate,
+    step_symtab: &SymbolTable,
+    waiting: &[String],
+    wrap_layers: &[String],
+) -> Option<String> {
+    let wrapping: Vec<&template::Environment> = st
+        .step_environments
+        .iter()
+        .flatten()
+        .filter(|env| {
+            env.script
+                .as_ref()
+                .is_some_and(|s| s.actions.has_any_wrap_hook())
+        })
+        .collect();
+    if wrap_layers.len() + wrapping.len() <= 1 {
+        return None;
+    }
+    let mut symtab = step_symtab.clone();
+    for sym in waiting {
+        symtab.set(sym, ExprValue::unresolved(ExprType::ANY)).ok()?;
+    }
+    if cx.has_expr {
+        if let Some(bindings) = &st.let_bindings {
+            // Errors are reported when the group is evaluated; a binding
+            // that fails here is left out, so what reads it is not known.
+            let mut scratch = ValidationErrors::default();
+            crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
+                bindings,
+                &[],
+                &mut symtab,
+                cx.ctx,
+                openjd_expr::HostContext::None,
+                &mut scratch,
+                |_| true,
+            );
+        }
+    }
+    let profile = template_expr_profile(cx.jt);
+    let library = openjd_expr::FunctionLibrary::for_profile(&profile);
+    let ev = ExprFieldEval {
+        profile: &profile,
+        library: &library,
+        memory_limit: cx.budgets.memory,
+        operation_limit: cx.budgets.operations,
+    };
+    let mut layers = wrap_layers.to_vec();
+    for env in wrapping {
+        if expr_field::known_bool(env.enable_if.as_ref(), &symtab, &ev) == Some(true) {
+            layers.push(format!("'{}' (stepEnvironments)", env.name));
+        }
+    }
+    (layers.len() > 1).then(|| super::external::wrap_layers_message(&layers))
 }
 
 /// The errors of an Environment selection, which fail its Step.

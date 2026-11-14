@@ -32,7 +32,7 @@ JobOutputDefinition).
 
 ## Validation
 
-**Pass 11** ([validation.md](validation.md) § Pass 11) gates the field on `CONTROL_FLOW`
+**Pass 12** ([validation.md](validation.md) § Pass 12) gates the field on `CONTROL_FLOW`
 and checks the structure: 1 to 50 elements; unique names, in a namespace separate from the
 job parameters'; no `collect`, `default`, `userInterface`, or (`PATH` and `LIST[PATH]`)
 `dataFlow`; constraint properties valid for the type; and a `unit` of 1 to 32 characters

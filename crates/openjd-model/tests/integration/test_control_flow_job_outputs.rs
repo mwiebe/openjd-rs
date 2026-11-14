@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `CONTROL_FLOW` (RFC 0011) job outputs: the `jobOutputDefinitions` schema
-//! and its structural rules (pass 11), the job output scope and typing of
+//! and its structural rules (pass 12), the job output scope and typing of
 //! `value` (pass 8), evaluation at Job creation, and `job_output_inputs` /
 //! `evaluate_job_output`.
 //!
@@ -63,7 +63,7 @@ fn assert_ok(template: &str) {
     }
 }
 
-// ── Schema and structure (pass 11) ─────────────────────────────────
+// ── Schema and structure (pass 12) ─────────────────────────────────
 
 #[test]
 fn job_output_definitions_require_the_extension() {
@@ -251,7 +251,7 @@ fn a_definition_must_be_a_mapping() {
 
 #[test]
 fn without_the_extension_only_the_gate_is_reported() {
-    // Pass 8 does not check a value pass 11 already rejects.
+    // Pass 8 does not check a value pass 12 already rejects.
     assert_errs(
         &template_with(
             "[EXPR]",

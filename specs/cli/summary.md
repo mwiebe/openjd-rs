@@ -265,7 +265,7 @@ amounts as numbers, and, when any were discarded, `discarded_host_requirements`,
 For a `CONTROL_FLOW` template, each step entry also has `state` and, for a pending Step,
 `binding` (see below), and `total_tasks` is `null` for a Step whose Tasks are unknown.
 `tasks_determined_at_run_time: true` is added when any Step's are, and `job_outputs` when
-the template defines any. A disabled Environment's entry has `enabled: false`.
+the template defines any.
 
 ### YAML Format
 
@@ -325,7 +325,11 @@ For a template that lists `CONTROL_FLOW`:
   `SKIPPED`.
 * **Totals.** `Total tasks: N + (determined at run time)` when some Step's Tasks are
   unknown, where `N` counts every Step whose Tasks are known, pending or not.
-* **Disabled Environments** are listed with `(from 'P', disabled by its enableIf)`.
+* **Undecided Step Environments.** A pending Step whose remaining group is not known yet has
+  not decided its Step Environments' `enableIf` (RFC 0011 `<Environment>` item 4). Its
+  `Session environments:` list marks each one that has an `enableIf` as `(stepEnvironments,
+  if its enableIf is true)`, and its `Disabled environments:` list leaves the Step
+  Environments out.
 * **Job outputs** are listed after the Environments, with their types and units, and
   either the value `create_job` evaluated or the `Steps.*` symbols each waits on that are
   not concrete at creation (`common::concrete_at_creation`, decided from the Steps'
@@ -479,7 +483,6 @@ struct EnvInfo {
     description: Option<String>,
     parent: String,
     parent_loop: Option<String>,         // a body Step's Step Environment
-    enabled: bool,
 }
 
 struct JobOutputInfo {

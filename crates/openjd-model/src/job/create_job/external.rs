@@ -1515,17 +1515,21 @@ pub(super) fn select_environments<'a>(
     }
     // §7.4.1 step 6: a failed `enableIf` is reported once for all the
     // Steps it was resolved for, filed under the first of them, at its
-    // Environment's place in the Job's Environment order.
+    // Environment's place in the Job's Environment order. With
+    // CONTROL_FLOW, once per Step, as part of each Step's selection.
+    let per_step = job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::ControlFlow);
     let first_step = |name: &str| step_index.get(name).copied().unwrap_or(ANY);
     for (doc, de) in set.declaring.iter().enumerate() {
-        de.report_enable_if_errors(|first, path, message| {
+        de.report_enable_if_errors(per_step, |first, path, message| {
             staged
                 .at(Stage::Step6, first_step(first), doc)
                 .add(&path, message);
         });
     }
     for (de, &position) in job_envs.environments.iter().zip(&job_envs.positions) {
-        de.report_enable_if_errors(|first, path, message| {
+        de.report_enable_if_errors(per_step, |first, path, message| {
             let path: Vec<PathElement> = job_path.iter().cloned().chain(path).collect();
             staged
                 .at(Stage::Step6, first_step(first), own_at(position))
@@ -1822,7 +1826,7 @@ pub(super) fn step_wrap_layers_error(mut layers: Vec<String>, step: &job::Step) 
 
 /// The single-layer rule's message for a Step whose Sessions would enter
 /// the wrapping Environments `layers` (two or more).
-fn wrap_layers_message(layers: &[String]) -> String {
+pub(super) fn wrap_layers_message(layers: &[String]) -> String {
     format!(
         "its Sessions would enter {} Environments that define wrap hooks (onWrapEnvEnter, \
          onWrapTaskRun, onWrapEnvExit): {}. A Session may have at most one Environment defining \

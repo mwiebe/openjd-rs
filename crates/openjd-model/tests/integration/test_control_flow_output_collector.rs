@@ -1112,6 +1112,17 @@ fn range_expr_is_measured_in_its_written_spelling() {
 }
 
 #[test]
+fn range_expr_is_measured_in_its_canonical_form_too() {
+    // `1,2,3` is 5 characters; its canonical form `1-3` is 3.
+    let mut c = collector(&["{name: R, type: RANGE_EXPR, minLength: 4}"]);
+    assert_eq!(
+        err(&mut c, "R=\"1,2,3\"", OutputErrorKind::Constraint),
+        "Output variable 'R': value length 3 is less than minimum 4"
+    );
+    ok(&mut c, "R=\"1,3,5\"");
+}
+
+#[test]
 fn range_expr_longer_than_1024_characters_without_max_length() {
     let spelled: Vec<String> = (1..=400).map(|i| (i * 2).to_string()).collect();
     let text = spelled.join(",");

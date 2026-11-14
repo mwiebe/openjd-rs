@@ -621,7 +621,7 @@ dependencies' symbols:
 | script `let`, `onRun` `command`/`args`, embedded `data`, and a SimpleAction's `script` / `args` / `let` | host |
 
 The job name and every field of `jobEnvironments` (including their `enableIf`) are never
-seeded. Environment Templates are not either; pass 11 rejects `CONTROL_FLOW` in them.
+seeded. Environment Templates are not either; pass 12 rejects `CONTROL_FLOW` in them.
 
 **Reference messages.** Before a field is evaluated, `control_flow_ref_errors` scans the
 symbols it reads (`FormatString::accessed_symbols`, or a `let` binding's
@@ -766,7 +766,7 @@ output, typed by RFC 0013's table, with no per-Task list:
 | `while`, no `enableIf` | `T?` | `list[E]` |
 | `enableIf` | `T?` | `list[E]?` |
 
-A loop output whose `collect` is missing or `ONCE` (pass 11 rejects both) is typed as
+A loop output whose `collect` is missing or `ONCE` (pass 12 rejects both) is typed as
 `LAST`. In a TEMPLATE-scope field a path-typed loop `Output` is not seeded, only its
 `RawOutput`, as for a Step. The messages for a reference a loop rule forbids:
 
@@ -1399,7 +1399,7 @@ and a missing or `null` `value` reported as `missing 'value' field in job output
 definition`. Each definition's errors are reported in the order of the table rows, and an
 output variable's `collect` error comes before its `unit` error.
 
-Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks the
+Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 12 checks the
 distinct-values rule on the integer items of a `range` written as a YAML list. A range
 string such as `"1-10"` cannot repeat a value, because its sub-ranges may not overlap. A
 computed range, and a YAML list with format-string items, is checked when it is
@@ -1410,7 +1410,7 @@ binding).
 Constraint validity reuses `JobParameterDefinition::validate_definition` on the wrapped
 definition, so the rules are exactly those of the job parameter of the same type (for
 example, `minValue` may not exceed `maxValue`, and `allowedValues` must respect
-`minLength`/`maxLength`). Its messages start with `Parameter 'X': `, which pass 11
+`minLength`/`maxLength`). Its messages start with `Parameter 'X': `, which pass 12
 replaces with `Output variable 'X': `. A constraint property that the type does not have
 (such as `minValue` on a `STRING`, or `allowedValues` on a `BOOL`) is an unknown field of
 that job parameter definition and fails deserialization.
@@ -1435,8 +1435,8 @@ An explicit `null` for `outputVariables`,
 `dataFlow` means the field is omitted, as for the template's other optional fields, so it
 is neither gated nor reported. A `null` for a Step's or a loop's `enableIf`, or a loop's
 `while` or `until`, is not: an expression field's `null` is an error (§7.6), reported by
-pass 8 with the extension and gated by pass 11 without it. A `while: null` beside an `until`, or the reverse, counts
-as present, so it gets both pass 8's `must not be null` and pass 11's `not both`.
+pass 8 with the extension and gated by pass 12 without it. A `while: null` beside an `until`, or the reverse, counts
+as present, so it gets both pass 8's `must not be null` and pass 12's `not both`.
 
 **Loops** (RFC 0013 §Validation items 1, 5, 6, and the literal form of 7), with the
 extension:

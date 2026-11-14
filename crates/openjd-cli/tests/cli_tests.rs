@@ -7925,6 +7925,145 @@ steps:
         assert!(!has(&stdout, "Running loop 'L'"), "{stdout}");
     }
 
+    /// RFC 0011 `<Environment>` item 3: a body Step's Environment
+    /// selection is applied by each instance, so its error fails the first
+    /// instance, and so the loop, not Job creation. The body Step is not
+    /// known to be enabled (its loop's `while` reads a Job Parameter), so
+    /// template validation leaves the error to the instance.
+    #[test]
+    fn a_body_steps_environment_selection_error_fails_its_instance() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Sel
+parameterDefinitions:
+- {name: F, type: BOOL, default: true}
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  envParameterDefinitions: [{name: K, type: INT}]
+  script:
+    actions:
+      onEnter: {command: python, args: ['-c', "print('E_{{Env.Param.K}}')"]}
+steps:
+- name: L
+  loop:
+    while: "Param.F"
+    maxIterations: 2
+    steps:
+    - name: B
+      dependencies: [{environment: E, parameters: {K: 1, Q: 2}}]
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('B_RAN')"]}
+"#;
+        let job = write(template);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!has(&stdout, "B_RAN"), "{stdout}");
+        assert!(!has(&stdout, "E_1"), "{stdout}");
+        assert!(
+            stderr.starts_with(
+                "ERROR: Step 'L[0].B' failed in its enablement group:\nModel validation error: 1 \
+                 validation error for JobTemplate\nsteps[0] -> loop -> steps[0] -> dependencies[0] \
+                 -> parameters -> Q:\n\tEnvironment 'E' declares no parameter 'Q'. Declared: K.\n"
+            ),
+            "{stderr}"
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed: Step 'L[0].B' failed in its enablement group"
+        ));
+    }
+
+    /// RFC 0011 `<Environment>` item 4: `summary` shows what a Step's
+    /// remaining group decided about its Step Environments, and marks
+    /// those it has not decided yet.
+    #[test]
+    fn summary_shows_decided_and_undecided_step_environments() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Sum
+steps:
+- name: P
+  outputVariables: [{name: Go, type: BOOL}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+- name: S
+  stepEnvironments:
+  - {name: SOFF, enableIf: "false", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  - {name: SON, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+- name: C
+  dependencies: [{dependsOn: P}]
+  stepEnvironments:
+  - {name: SE, enableIf: "Steps.P.Output.Go", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', 'pass']}
+"#;
+        let job = write(template);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "2. 'S' (1 total Tasks)\n  1 environments\n  Session environments:\n    - SON \
+                 (stepEnvironments)\n  Disabled environments:\n    - SOFF (stepEnvironments): \
+                 disabled\n"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "  Session environments:\n    - SE (stepEnvironments, if its enableIf is true)\n"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A Job Environment that fails to enter fails the Step that moved to
+    /// it, with that reason rather than a Task's.
+    #[test]
+    fn a_job_environment_that_fails_to_enter_is_the_steps_failure_reason() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Fail
+jobEnvironments:
+- name: E2
+  script:
+    actions:
+      onEnter: {command: python, args: ['-c', 'import sys; sys.exit(1)']}
+steps:
+- name: P
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('P_RAN')"]}
+- name: Q
+  dependencies: [{dependsOn: P}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('Q_RAN')"]}
+"#;
+        let job = write(template);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!has(&stdout, "P_RAN"), "{stdout}");
+        let result = json(&stdout);
+        assert_eq!(
+            result["steps"],
+            serde_json::json!([
+                {"name": "P", "reason": "its Environment 'E2' failed to enter",
+                 "state": "FAILED", "task_count": 1},
+                {"name": "Q", "reason": "its dependency 'P' failed",
+                 "state": "BLOCKED", "task_count": 1},
+            ])
+        );
+    }
+
     /// RFC 0008: a body Step Environment with wrap hooks, enabled only in
     /// iteration 1, conflicts with a wrap Environment Template there. The
     /// instance fails, which fails the loop, and the run reports its result.
@@ -8498,8 +8637,9 @@ steps:
         );
     }
 
-    /// RFC 0008: a top-level Step's stack is still checked before any
-    /// Environment is entered.
+    /// RFC 0008: a top-level Step whose Environments are certain at Job
+    /// creation has its stack checked then, before any Environment is
+    /// entered.
     #[test]
     fn a_wrap_environment_conflict_in_a_top_level_step_is_rejected_before_entering() {
         let template = r#"specificationVersion: jobtemplate-2023-09

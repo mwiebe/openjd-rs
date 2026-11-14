@@ -25,6 +25,8 @@ mod test_chunk_scaling;
 mod test_combination_expr;
 #[path = "integration/test_control_flow_binding.rs"]
 mod test_control_flow_binding;
+#[path = "integration/test_control_flow_environments.rs"]
+mod test_control_flow_environments;
 #[path = "integration/test_control_flow_job_outputs.rs"]
 mod test_control_flow_job_outputs;
 #[path = "integration/test_control_flow_job_types.rs"]

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `CONTROL_FLOW` (RFC 0011, RFC 0012) schema, gating, and structural
-//! validation: `outputVariables`, `enableIf`, and validation pass 11.
+//! validation: `outputVariables`, `enableIf`, and validation pass 12.
 //!
 //! Failure tests assert the full error output (count, path, and message), as
 //! `AGENTS.md` § Test Quality Standard requires.

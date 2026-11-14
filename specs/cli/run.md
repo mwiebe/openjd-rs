@@ -168,7 +168,10 @@ the outer execution phase always unwinds the remaining environments. Thus a
 
 Job creation (with its submission checks and the RFC 0008 single-layer check) and
 selection happen before session creation. Invalid runs
-therefore do not create a working directory or print session-start banners.
+therefore do not create a working directory or print session-start banners. The exception
+is a `CONTROL_FLOW` Step whose Environment set is decided at step input binding: its
+Environment selection errors and the single-layer check fail it, and so the run, after the
+Session has started (see the single-wrap-layer check below).
 
 ### CONTROL_FLOW: the scheduler simulator
 
@@ -262,8 +265,11 @@ the simulator and is reported as an internal error.
    large parameter space costs nothing for the Tasks that do not run. A `FLOAT` value is
    matched by number, so a range written `1.50` matches a given `1.5`. A Step with zero Tasks prints `Step 'X'
    has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
-5. The Step is recorded `Failed` (reason `a Task failed`, unless a group failed) if the
-   run failed while it ran, and `Succeeded` otherwise; then the simulator settles.
+5. The Step is recorded `Failed` if the run failed while it ran, and `Succeeded` otherwise;
+   then the simulator settles. The reason is the group that failed, `its Environment 'E'
+   failed to enter` when one of the Job or Step Environments it moved to failed its
+   `onEnter` (`RunContext::failed_environment`), `the run was interrupted`, or otherwise
+   `a Task failed`.
 
 A Job Environment that a Step does not enter (by `activation`, its entries, the
 Environment's `enableIf` for that Step, or an `exclusiveGroup`) is not entered for it; a
@@ -345,8 +351,9 @@ size limit on job outputs, which the RFC's 1 MiB minimum allows.
 ### CONTROL_FLOW: loops
 
 A loop (RFC 0013, plan L8) runs in place in the order of the top-level entries, its
-iterations one after another, in the one Session `run` opens, with its Job Environments
-entered once (RFC 0013 §Sessions allows this).
+iterations one after another, in the one Session `run` opens. Each body Step instance moves
+the Session to its Job Environments as a top-level Step does, keeping the longest prefix with
+equal values (RFC 0013 §Sessions).
 
 **State.** A `LoopRecord` holds the loop's `SimStepState` (with `Running`, `RUNNING`), its
 `LoopProgress` while it runs, its `LoopResult` once it succeeds, why it failed or is

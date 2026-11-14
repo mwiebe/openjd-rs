@@ -54,7 +54,7 @@ cargo test --workspace
 cargo test -p openjd-sessions
 ```
 
-The workspace has 10,300+ unit and integration tests across all crates (10,372 passing and 42 ignored by
+The workspace has 10,300+ unit and integration tests across all crates (10,391 passing and 42 ignored by
 `cargo test --workspace` on Linux at the time of writing).
 
 ### Cross-user tests (Docker)

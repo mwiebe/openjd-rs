@@ -631,33 +631,53 @@ impl<'a> DeclaringEnvironment<'a> {
     /// `activation: ALWAYS`, one error naming every Step its `enableIf` is
     /// `false` for (§4 item 4, §3.2.2 item 6). Each goes to `add` with the
     /// name of the first Step it names, its path and its message.
+    ///
+    /// With `per_step` (`CONTROL_FLOW`), each error is reported once per
+    /// Step it holds for, naming only that Step, since each Step's
+    /// Environment selection is applied, or never made, on its own (RFC
+    /// 0011 `<Environment>` item 3).
     pub(crate) fn report_enable_if_errors(
         &self,
+        per_step: bool,
         mut add: impl FnMut(&str, Vec<PathElement>, String),
     ) {
-        for (result, steps) in &self.decisions.borrow().results {
+        let groups = |steps: &[String]| -> Vec<Vec<String>> {
+            if per_step {
+                steps.iter().map(|s| vec![s.clone()]).collect()
+            } else {
+                vec![steps.to_vec()]
+            }
+        };
+        for (result, all_steps) in &self.decisions.borrow().results {
             let Err(msg) = result else {
                 continue;
             };
-            let names: Vec<String> = steps.iter().map(|s| format!("'{s}'")).collect();
-            let noun = if steps.len() == 1 { "Step" } else { "Steps" };
-            // The note goes after the first line, as for host
-            // requirements, so an expression error's source and caret
-            // lines stay last.
-            let note = format!(
-                "Resolved for {noun} {}.",
-                super::host_requirements::name_list(
-                    &names.iter().map(String::as_str).collect::<Vec<_>>()
-                )
-            );
-            add(
-                &steps[0],
-                path_field(&self.env_path, "enableIf"),
-                super::host_requirements::with_note(msg, &note),
-            );
+            for steps in groups(all_steps) {
+                let names: Vec<String> = steps.iter().map(|s| format!("'{s}'")).collect();
+                let noun = if steps.len() == 1 { "Step" } else { "Steps" };
+                // The note goes after the first line, as for host
+                // requirements, so an expression error's source and caret
+                // lines stay last.
+                let note = format!(
+                    "Resolved for {noun} {}.",
+                    super::host_requirements::name_list(
+                        &names.iter().map(String::as_str).collect::<Vec<_>>()
+                    )
+                );
+                add(
+                    &steps[0],
+                    path_field(&self.env_path, "enableIf"),
+                    super::host_requirements::with_note(msg, &note),
+                );
+            }
         }
-        let disabled = self.always_disabled.borrow();
-        if !disabled.is_empty() {
+        let all_disabled = self.always_disabled.borrow();
+        let disabled_groups = if all_disabled.is_empty() {
+            Vec::new()
+        } else {
+            groups(&all_disabled)
+        };
+        for disabled in disabled_groups {
             let names: Vec<String> = disabled.iter().map(|s| format!("'{s}'")).collect();
             let noun = if names.len() == 1 { "Step" } else { "Steps" };
             add(

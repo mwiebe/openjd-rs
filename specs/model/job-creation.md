@@ -1667,7 +1667,14 @@ creation), and a `StepInputs`:
      `WRAP_ACTIONS` single-wrap-layer rule over the Step's set (RFC 0011
      `<Environment>` item 6): the wrap layers of the Job Environments in its
      Environment selection and those of its enabled Step Environments
-     (`external::step_wrap_layers_error`).
+     (`external::step_wrap_layers_error`). Item 6 asks for the check as soon as its
+     outcome is determined, so while the remaining group still waits on inputs, each
+     call also checks it over what is already certain
+     (`binding::early_wrap_layers_error`): the selection's wrap layers and each
+     wrapping Step Environment whose `enableIf` is known to be `true` by Template
+     Schemas §7.6 rule 5, with the waiting `Steps.*` symbols, and the `let` bindings
+     that read them, unresolved. More than one layer fails the remaining group then,
+     at Job creation for a Step whose `enableIf` is decided there.
 4. When every group is known, the parameter space and host requirements move
    into the Step's own fields, `resolved_symtab` is built from the Step's
    table (every `let` binding evaluated, no `Steps.*` value), and the Step is
@@ -1759,6 +1766,13 @@ the selection of every Step, top-level and loop body, whatever its `enableIf`:
 3. `combine_step_host_requirements` resolves each entered Environment's host requirements
    for the Step, and keeps them per source rather than combining them with the Step's own.
 
+An error that holds for several Steps, such as an Environment's `enableIf` that fails, or is
+`false` for an `ALWAYS` Environment, or its `hostRequirements` failing to resolve, is filed
+once per Step, naming only that Step ("Resolved for Step 'A'."), since each Step's selection
+is applied or never made on its own. Without `CONTROL_FLOW` it is filed once, naming every
+Step it holds for. A Step's selection errors keep the paths and order `create_job` reports
+them in (`JobTemplate ->` first when Environment Templates are attached).
+
 The Steps are then bound (see [Step input binding](#step-input-binding-control_flow)) with
 their selections. A selection is applied when its Step's `enableIf` is decided `true`, at
 creation or later, and its errors then fail the Step's enablement group. A top-level Step
@@ -1771,7 +1785,10 @@ each body Step instance applies its Step's. A skipped Step never applies its sel
 its errors are not reported. `CreatedJob`'s per-Step lists (`disabled_environments`,
 `environment_statuses`, `discarded_host_requirements`) are for the top-level Steps, and are
 empty for a Step whose selection was not applied at creation; `warnings` are the
-submission's, whatever the Steps' enablement.
+submission's, whatever the Steps' enablement. For a Step whose selection was applied, a Step
+Environment's status is what its remaining group decided (`Entered`, or `Disabled` and in
+`disabled_environments`) when that group was evaluated at creation; when it was not, the
+Step Environments are left out of both lists, since their `enableIf` is not decided yet.
 
 The checks that depend on whether a Step runs are made before job creation only for a Step
 known to be enabled (see [validation.md](validation.md#known-to-be-enabled-control_flow)):
