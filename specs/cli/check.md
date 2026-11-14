@@ -100,7 +100,9 @@ Environment shadows it), and each of its own Step Environments. A Step whose ent
 `BY_DEFAULT` Environment has `enableIf: false` declines it (Template Schemas §3.2 item 3.2): the
 Environment's own `enableIf` is not evaluated for that Step, so it is not listed for it, as
 `openjd summary` does not list it under "Disabled environments" (it lists it under "Declined
-environments"). An Environment with `activation: ALWAYS` cannot be disabled:
+environments"). Such an entry declines every attachment with its name, also when several
+attachments share it (Template Schemas §3.2.1 item 3), unless a Job Environment shadows them.
+An Environment with `activation: ALWAYS` cannot be disabled:
 template validation rejects one with `enableIf: false` before this list is made (Template
 Schemas §3.2.2 item 6). These lines name only what the boolean scalar `enableIf: false`
 disables: an Environment or entry whose `enableIf` is an expression is not listed, even one
@@ -166,11 +168,13 @@ stage that needs no Job Parameter values:
 - an attached Environment named like a `jobEnvironments` entry is a warning when the Job
   Template lists `ENV_PARAMS` (§3.2.1 item 4). When such an attachment, or one of two or more
   attachments with the same name (item 3), has parameters without a `default` and
-  `activation: ALWAYS` or `BY_DEFAULT`, it applies to every Step and no entry can supply them,
-  so that is an error at its `envParameterDefinitions`, whatever its own `enableIf` or
-  `exclusiveGroup` (§3.2 constraint 7). No entry decides whether such an attachment applies,
-  so an entry naming its name, with any `enableIf`, does not change this. With `activation:
-  ON_REQUEST` it applies to no Step, so it is not an error;
+  `activation: ALWAYS` or `BY_DEFAULT`, no entry can supply them, so where it applies to a
+  Step that is an error at its `envParameterDefinitions`, whatever its own `enableIf` or
+  `exclusiveGroup` (§3.2 constraint 7). One named like a `jobEnvironments` entry applies to
+  every Step. One of several with the same name and `activation: BY_DEFAULT` does not apply
+  to a Step whose disabled entry declines it (§3.2.1 item 3), and check reports the error
+  only where a Step certainly does not decline it. With `activation: ON_REQUEST` it applies
+  to no Step, so it is not an error;
 - every attached literal `default` is checked (§4.5 item 2);
 - the RFC 0008 single-layer rule, for each Step (template validation already checked a Step
   whose only wrapping layers are ungrouped `jobEnvironments` entries and its Step

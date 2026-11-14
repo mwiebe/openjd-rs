@@ -902,12 +902,13 @@ that has entries lists both.
      `JobTemplate -> steps[i] -> dependencies[j] -> environment` naming the Environment and the
      attached documents; with `required: false`, the entry is ignored and a warning is recorded
      (§3.2.1 item 2; RFC "External Environments are named implicitly" item 3);
-   - two or more: an error naming the attachments (§3.2.1 item 3). Two same-named attachments
-     that no entry names are not an error (plan A11), unless their `activation` is `ALWAYS` or
-     `BY_DEFAULT` and they have parameters without a `default`: no entry can reach them, so
-     each such attachment
-     gets one error at its `envParameterDefinitions`, as in step 1, whatever its `enableIf` or
-     group, when it applies to some Step that is not stopped, and those parameters are not
+   - two or more: for an enabled entry, an error naming the attachments (§3.2.1 item 3); a
+     disabled entry refers to each of them (see below). Two same-named attachments that no
+     enabled entry names are not an error (plan A11), unless their `activation` is `ALWAYS` or
+     `BY_DEFAULT` and they have parameters without a `default`: no enabled entry can reach
+     them, so each such attachment gets one error at its `envParameterDefinitions`, as in step
+     1, whatever its `enableIf` or group, when it applies to some Step that is not stopped (for
+     a `BY_DEFAULT` one, a Step that does not decline it), and those parameters are not
      reported per Step.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
@@ -1410,9 +1411,10 @@ certain of, in its own order (so it can report a Step's value errors that job cr
 reports only once the Step's step 1–4 errors are fixed):
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
-   for an unreachable attachment is reported when it applies to some Step (by its
-   `activation`, since no entry decides it), whatever its own `enableIf` or `exclusiveGroup`
-   (§3.2 constraint 7). That error is reported after item 3's errors (job creation files it
+   for an unreachable attachment is reported when it certainly applies to some Step (by its
+   `activation`, since no enabled entry decides it, and for a `BY_DEFAULT` one only for a Step
+   that has no entry for its name that is known to be disabled or whose `enableIf` is not
+   known), whatever its own `enableIf` or `exclusiveGroup` (§3.2 constraint 7). That error is reported after item 3's errors (job creation files it
    under step 5, after every Step's step 5 errors);
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
@@ -1422,9 +1424,10 @@ reports only once the Step's step 1–4 errors are fixed):
    disabled entry: it declines a `BY_DEFAULT` attachment, which items 3–5 then leave out for
    its Step, is the error for an `ALWAYS` one, and has no effect on one whose Environment
    Template does not list ENV_PARAMS. One whose `enableIf` is not known is enabled or not only
-   when the Job is created, so every attachment it may name is skipped for its Step. Its name
-   is resolved either way (Template Schemas §3.2.1), so a name that two or more attachments
-   define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.6 rule 5).
+   when the Job is created, so every attachment it may name is skipped for its Step. A name
+   that two or more attachments define is the §3.2.1 item 3 error only for an enabled entry,
+   so it is reported here for an entry known to be enabled, and not for one whose `enableIf`
+   is not known (§7.6 rule 5); an entry known to be disabled has its effect on each of them.
    An enabled `required: false` entry whose parameters an attachment that declares none
    ignores gets step 2's warning, and supplies nothing to items 3–5;
 3. step 3 above, without resolving anything that needs Job Parameter values

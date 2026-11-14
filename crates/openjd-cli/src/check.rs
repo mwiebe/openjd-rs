@@ -135,7 +135,9 @@ fn check_with_environments(
 /// §3.2.1), and each of its own Step Environments. A Step whose entry for a
 /// `BY_DEFAULT` Environment has `enableIf: false` declines it (Template
 /// Schemas §3.2 item 3.2), so the Environment's own `enableIf` is not
-/// evaluated for that Step and the Environment is not listed. An
+/// evaluated for that Step and the Environment is not listed. Such an entry
+/// declines every attachment with its name, also when there are several
+/// (§3.2.1 item 3), unless a Job Environment shadows them. An
 /// Environment or entry whose `enableIf` is an expression is not listed,
 /// even one whose value template validation knows (§7.6 rule 5): these
 /// lines name only the boolean scalar `false`. They are informational. A
@@ -165,6 +167,10 @@ fn disabled_environment_lines(
     // An `ON_REQUEST` attachment an entry can reach: exactly one attachment
     // has the name and no Job Environment shadows it (§3.2.1).
     let reachable = |name: &str| !job_env_names.contains(name) && attached_count[name] == 1;
+    // A `BY_DEFAULT` attachment a disabled entry can decline: no Job
+    // Environment shadows it, however many attachments have the name
+    // (§3.2.1 item 3).
+    let declinable = |name: &str| !job_env_names.contains(name);
     let mut lines = Vec::new();
     for step in &jt.steps {
         let requested: HashSet<&str> = step
@@ -193,7 +199,7 @@ fn disabled_environment_lines(
         for (t, label) in env_templates.iter().zip(labels) {
             let env = t.environment();
             let entered = (env.activation() == EnvironmentActivation::ByDefault
-                && !(reachable(&env.name) && not_certain.contains(env.name.as_str())))
+                && !(declinable(&env.name) && not_certain.contains(env.name.as_str())))
                 || (reachable(&env.name) && requested.contains(env.name.as_str()));
             if entered && env.literal_enabled() == Some(false) {
                 names.push(format!("'{}' ({label})", env.name));

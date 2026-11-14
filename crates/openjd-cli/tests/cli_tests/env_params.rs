@@ -1850,6 +1850,38 @@ fn check_and_summary_agree_that_a_declined_environment_is_not_disabled() {
 }
 
 #[test]
+fn check_does_not_say_a_disabled_entry_disables_ambiguous_attachments_it_declines() {
+    // Two attached `BY_DEFAULT` Environments named Conda, each with
+    // `enableIf: false`. A's disabled entry for Conda declines both
+    // (Template Schemas §3.2.1 item 3), so check does not say their
+    // `enableIf` disables them for A; B has no entry, so it does.
+    let dir = tempfile::tempdir().unwrap();
+    let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+               environment: {name: Conda, enableIf: false, variables: {V: x}}\n";
+    let e1 = write_file(&dir, "e1.yaml", env);
+    let e2 = write_file(&dir, "e2.yaml", env);
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+         steps:\n- name: A\n  dependencies:\n  - {environment: Conda, enableIf: false}\n  \
+         script: {actions: {onRun: {command: x}}}\n\
+         - name: B\n  script: {actions: {onRun: {command: x}}}\n",
+    );
+    let (code, stdout, stderr) =
+        run_cli(&["check", &job, "--environment", &e1, "--environment", &e2]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        format!(
+            "Step 'B': enableIf: false disables Environments 'Conda' ({e1}), 'Conda' ({e2}) for \
+             its Sessions.\n\
+             Template at '{job}' passes validation checks.\n"
+        )
+    );
+}
+
+#[test]
 fn check_does_not_say_an_expression_entry_disables_an_environment_it_may_decline() {
     // Maybe's entry for Docker is an expression, so Maybe may decline
     // Docker: check does not say Docker's enableIf disables it for Maybe.
