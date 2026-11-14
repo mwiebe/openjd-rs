@@ -1071,3 +1071,34 @@ steps:
         &["jobEnvironments[0] -> envParameterDefinitions[1]:\n\tduplicate parameter name: 'X'"],
     );
 }
+
+#[test]
+fn an_environment_template_default_types_job_name_as_a_string() {
+    // §4.5 item 1, §7.3.2: template validation gives `Job.Name` its type,
+    // `unresolved[string]`, in an Environment Template's `default` as in a
+    // Job Environment's: a string method passes, and adding an int is a
+    // type error.
+    env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: A, type: STRING, default: "{{ Job.Name.upper() }}"}
+  variables: {V: x}
+"#,
+    );
+    env_err(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: A, type: STRING, default: "{{ Job.Name + 1 }}"}
+  variables: {V: x}
+"#,
+        &["environment -> envParameterDefinitions[0] -> default:\n\tFailed to parse interpolation expression at [0, 18]. Cannot use '+' operator with string and int"],
+    );
+}
