@@ -163,7 +163,8 @@ rules of RFC 0011 §Validation and RFC 0012 §Validation ("At template validatio
 1. Without the extension, `outputVariables` and `enableIf` are errors at their own paths. A `Steps.*` reference
    already fails as an unknown symbol, because nothing seeds it.
 2. With `CONTROL_FLOW`, `EXPR` is required (reuse `check_expr_prerequisite`). `CONTROL_FLOW` in an Environment Template
-   is an error, and so is `enableIf` in one.
+   is an error, and so is `enableIf` in one. (Superseded by [M7](#m7-on-env_params): `CONTROL_FLOW` also requires
+   `ENV_PARAMS`, and an Environment Template's `enableIf` is RFC 0010's.)
 3. `outputVariables`: 1–32 elements, unique names, an allowed type, valid constraints, `collect: APPEND` only with a
    `LIST[...]` type, a `unit` of 1–32 characters with no Unicode Cc characters, and no `LIST[LIST[INT]]` on a Step
    with a `parameterSpace`. Outputs on a Step with a `CHUNK[INT]` parameter are allowed (M3), and a literal-list

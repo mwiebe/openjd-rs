@@ -329,10 +329,13 @@ impl RunContext {
                 .await
             {
                 eprintln!("ERROR: Environment teardown failed: {e}");
+                // The first failure is the reason: a Task or an enter that
+                // failed before this exit stays the reason.
+                if !self.session_failed {
+                    self.failed_environment =
+                        Some(format!("Environment '{}' failed to exit", entered.name));
+                }
                 self.session_failed = true;
-                self.failed_environment.get_or_insert_with(|| {
-                    format!("Environment '{}' failed to exit", entered.name)
-                });
             }
         }
     }

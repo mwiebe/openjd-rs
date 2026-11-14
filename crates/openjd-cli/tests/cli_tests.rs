@@ -4253,9 +4253,7 @@ mod interruption {
     #[cfg(unix)]
     #[test]
     fn an_interruption_during_an_environment_enter_is_the_steps_failure_reason() {
-        use std::io::Write;
-        let mut job = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
-        job.write_all(
+        let result = interrupt_during_enter(
             r#"specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
 name: Intr
@@ -4271,10 +4269,55 @@ steps:
   script:
     actions:
       onRun: {command: python, args: ['-c', 'pass']}
-"#
-            .as_bytes(),
-        )
-        .unwrap();
+"#,
+        );
+        assert_eq!(result["steps"][0]["reason"], "the run was interrupted");
+    }
+
+    /// The same for a body Step instance whose Job Environment is being
+    /// entered: the instance fails, and so its loop.
+    #[cfg(unix)]
+    #[test]
+    fn an_interruption_during_a_body_steps_environment_enter_fails_the_instance() {
+        let result = interrupt_during_enter(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]
+name: Intr
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ['-c', "import time; print('READY_FOR_SIGNAL', flush=True); time.sleep(60)"]
+steps:
+- name: L
+  loop:
+    until: "Loop.Iteration >= 0"
+    maxIterations: 1
+    steps:
+    - name: B
+      dependencies: [{environment: E}]
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', 'pass']}
+"#,
+        );
+        let steps = result["steps"].as_array().unwrap();
+        assert_eq!(steps[0]["state"], "FAILED");
+        assert_eq!(steps[0]["reason"], "its body Step instance 'L[0].B' failed");
+        assert_eq!(steps[1]["state"], "FAILED");
+        assert_eq!(steps[1]["reason"], "the run was interrupted");
+    }
+
+    /// Run `template`, interrupt it once an `onEnter` prints
+    /// `READY_FOR_SIGNAL`, and return the run's JSON result.
+    #[cfg(unix)]
+    fn interrupt_during_enter(template: &str) -> serde_json::Value {
+        use std::io::Write;
+        let mut job = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        job.write_all(template.as_bytes()).unwrap();
         let mut child = cli_command(&["run", job.path().to_str().unwrap(), "--output", "json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -4309,8 +4352,7 @@ steps:
         reader_thread.join().expect("reader thread panicked");
         assert_eq!(child.wait().unwrap().code(), Some(1), "{collected}");
         let json_start = collected.find("\n{").expect("a JSON result") + 1;
-        let result: serde_json::Value = serde_json::from_str(&collected[json_start..]).unwrap();
-        assert_eq!(result["steps"][0]["reason"], "the run was interrupted");
+        serde_json::from_str(&collected[json_start..]).unwrap()
     }
 }
 
@@ -8065,6 +8107,7 @@ steps:
 - name: C
   dependencies: [{dependsOn: P}]
   stepEnvironments:
+  - {name: PLAIN, script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
   - {name: SE, enableIf: "Steps.P.Output.Go", script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}}
   script:
     actions:
@@ -8083,7 +8126,8 @@ steps:
         );
         assert!(
             stdout.contains(
-                "  Session environments:\n    - SE (stepEnvironments, if its enableIf is true)\n"
+                "  Session environments:\n    - PLAIN (stepEnvironments)\n    - SE \
+                 (stepEnvironments, if its enableIf is true)\n"
             ),
             "{stdout}"
         );
@@ -8099,7 +8143,8 @@ steps:
         );
         assert_eq!(
             steps[2]["session_environments"],
-            serde_json::json!([{"name": "SE", "source": "stepEnvironments",
+            serde_json::json!([{"name": "PLAIN", "source": "stepEnvironments"},
+                               {"name": "SE", "source": "stepEnvironments",
                                 "enable_if_undecided": true}])
         );
     }
@@ -8112,7 +8157,8 @@ steps:
     fn an_environment_action_that_fails_is_the_failure_reason() {
         let fail = "{command: python, args: ['-c', 'import sys; sys.exit(1)']}";
         let ok = "{command: python, args: ['-c', 'pass']}";
-        let reasons = |template: String| -> Vec<(String, String)> {
+        // (name, state, reason) of every Step, loop and instance.
+        let reasons = |template: String| -> Vec<(String, String, String)> {
             let job = write(&template);
             let (code, stdout, stderr) =
                 run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
@@ -8121,13 +8167,17 @@ steps:
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter_map(|s| {
-                    Some((
-                        s["name"].as_str()?.to_string(),
-                        s["reason"].as_str()?.to_string(),
-                    ))
+                .map(|s| {
+                    (
+                        s["name"].as_str().unwrap().to_string(),
+                        s["state"].as_str().unwrap().to_string(),
+                        s["reason"].as_str().unwrap_or("").to_string(),
+                    )
                 })
                 .collect()
+        };
+        let r = |name: &str, state: &str, reason: &str| {
+            (name.to_string(), state.to_string(), reason.to_string())
         };
         let header = "specificationVersion: jobtemplate-2023-09\n\
                       extensions: [EXPR, ENV_PARAMS, CONTROL_FLOW]\nname: R\n";
@@ -8139,10 +8189,13 @@ steps:
              - name: B\n      dependencies: [{{environment: E}}]\n      \
              script: {{actions: {{onRun: {ok}}}}}\n"
         );
-        assert!(reasons(body_job_env).contains(&(
-            "L[0].B".into(),
-            "its Environment 'E' failed to enter".into()
-        )));
+        assert_eq!(
+            reasons(body_job_env),
+            [
+                r("L", "FAILED", "its body Step instance 'L[0].B' failed"),
+                r("L[0].B", "FAILED", "its Environment 'E' failed to enter"),
+            ]
+        );
         // A top-level Step's Step Environment fails to enter.
         let step_env = format!(
             "{header}steps:\n- name: S\n  stepEnvironments:\n  - name: SE\n    \
@@ -8150,7 +8203,7 @@ steps:
         );
         assert_eq!(
             reasons(step_env),
-            [("S".into(), "its Environment 'SE' failed to enter".into())]
+            [r("S", "FAILED", "its Environment 'SE' failed to enter")]
         );
         // A body instance's Step Environment fails to enter.
         let body_step_env = format!(
@@ -8159,10 +8212,13 @@ steps:
              - name: BSE\n        script: {{actions: {{onEnter: {fail}}}}}\n      \
              script: {{actions: {{onRun: {ok}}}}}\n"
         );
-        assert!(reasons(body_step_env).contains(&(
-            "L[0].B".into(),
-            "its Environment 'BSE' failed to enter".into()
-        )));
+        assert_eq!(
+            reasons(body_step_env),
+            [
+                r("L", "FAILED", "its body Step instance 'L[0].B' failed"),
+                r("L[0].B", "FAILED", "its Environment 'BSE' failed to enter"),
+            ]
+        );
         // P declines the ON_REQUEST E; C enters it with other values, so
         // the Session exits P's E first, and its onExit fails.
         let exit_fails = format!(
@@ -8174,8 +8230,43 @@ steps:
         );
         assert_eq!(
             reasons(exit_fails),
-            [("C".into(), "Environment 'E' failed to exit".into())]
+            [
+                r("P", "SUCCEEDED", ""),
+                r("C", "FAILED", "Environment 'E' failed to exit"),
+            ]
         );
+        // The first failure is the reason: SE2's failed enter before SE1's
+        // failed exit, and a failed Task before SE's failed exit.
+        let enter_then_exit = format!(
+            "{header}steps:\n- name: S\n  stepEnvironments:\n  - name: SE1\n    \
+             script: {{actions: {{onEnter: {ok}, onExit: {fail}}}}}\n  - name: SE2\n    \
+             script: {{actions: {{onEnter: {fail}}}}}\n  script: {{actions: {{onRun: {ok}}}}}\n"
+        );
+        assert_eq!(
+            reasons(enter_then_exit),
+            [r("S", "FAILED", "its Environment 'SE2' failed to enter")]
+        );
+        let task_then_exit = format!(
+            "{header}steps:\n- name: S\n  stepEnvironments:\n  - name: SE\n    \
+             script: {{actions: {{onEnter: {ok}, onExit: {fail}}}}}\n  \
+             script: {{actions: {{onRun: {fail}}}}}\n"
+        );
+        assert_eq!(reasons(task_then_exit), [r("S", "FAILED", "a Task failed")]);
+    }
+
+    /// Without CONTROL_FLOW, a failed Step's dependents are recorded as
+    /// blocked but no line is printed for them, as before the extension.
+    #[test]
+    fn a_job_without_control_flow_prints_no_blocked_lines() {
+        let job = write(
+            "specificationVersion: jobtemplate-2023-09\nname: NoCf\nsteps:\n- name: A\n  \
+             script: {actions: {onRun: {command: python, args: ['-c', 'import sys; \
+             sys.exit(3)']}}}\n- name: B\n  dependencies: [{dependsOn: A}]\n  \
+             script: {actions: {onRun: {command: python, args: ['-c', 'pass']}}}\n",
+        );
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!stdout.contains("is blocked"), "{stdout}");
     }
 
     /// A Job Environment that fails to enter fails the Step that moved to

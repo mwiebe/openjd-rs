@@ -534,18 +534,16 @@ fn control_flow_job(
             }
         }
     }
-    // An abort is reported alone, unless the Steps whose selections were
-    // applied before it have selection errors: then those are reported,
-    // with the abort's own when it is a validation error, as ENV_PARAMS
-    // reports every Step's.
+    // An abort is reported with every error found before it: the Job
+    // Environments' and the Steps' collected errors, and the selection
+    // errors of the Steps whose selections were applied, as ENV_PARAMS
+    // reports every Step's. It is filed with its own Step's errors. An
+    // abort that is not a validation error is reported alone.
     if let Some(aborted) = aborted {
-        if all_staged.is_empty() {
-            return Err(aborted.error);
-        }
         match aborted.error {
             ModelError::ModelValidation(ve) => {
                 all_staged
-                    .at(staged::Stage::Step8, staged::ANY, staged::ANY)
+                    .at(staged::Stage::Step8, aborted.subject, staged::ANY)
                     .errors
                     .extend(
                         ve.errors
@@ -1260,7 +1258,18 @@ fn instantiate_steps_with_binding(
                         failure: binding::Failure::Abort(error),
                     }) => {
                         applied[i] = group != job::MaterializationGroup::Enablement;
-                        return Ok((built, Some(Aborted { error, applied })));
+                        let subject = flat_of_entry[i].unwrap_or(staged::ANY);
+                        for errors in step_errors {
+                            check_errors.errors.extend(errors.errors);
+                        }
+                        return Ok((
+                            built,
+                            Some(Aborted {
+                                error,
+                                applied,
+                                subject,
+                            }),
+                        ));
                     }
                 }
             }
@@ -1271,7 +1280,19 @@ fn instantiate_steps_with_binding(
                     Err(binding::GroupFailure {
                         failure: binding::Failure::Abort(error) | binding::Failure::Selection(error),
                         ..
-                    }) => return Ok((built, Some(Aborted { error, applied }))),
+                    }) => {
+                        for errors in step_errors {
+                            check_errors.errors.extend(errors.errors);
+                        }
+                        return Ok((
+                            built,
+                            Some(Aborted {
+                                error,
+                                applied,
+                                subject: staged::ANY,
+                            }),
+                        ));
+                    }
                     Err(binding::GroupFailure {
                         failure: binding::Failure::Collected(errors),
                         ..
@@ -1287,9 +1308,12 @@ fn instantiate_steps_with_binding(
 }
 
 /// A Job creation that a Step's or a loop's failed group stopped: the
-/// error, and for each entry of the template's `steps` whether its
-/// Environment selection was applied before then.
+/// error, for each entry of the template's `steps` whether its Environment
+/// selection was applied before then, and where to file the error.
 struct Aborted {
     error: ModelError,
     applied: Vec<bool>,
+    /// The Step template index of the Step that aborted, to file its error
+    /// with that Step's; `staged::ANY` for a loop.
+    subject: usize,
 }

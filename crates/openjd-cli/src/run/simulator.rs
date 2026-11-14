@@ -1738,15 +1738,23 @@ impl Simulator {
                 (&mut r.state, &mut r.reason)
             }
         };
-        if *state == SimStepState::Skipped {
+        let skipped = *state == SimStepState::Skipped;
+        if !skipped {
+            *state = SimStepState::Blocked;
+        }
+        *stored = Some(reason.clone());
+        // A Job without CONTROL_FLOW prints only what ran, as before the
+        // extension (RFC 0011 Technical Requirement 1).
+        if !self.control_flow() {
+            return;
+        }
+        if skipped {
             say(&format!(
                 "{kind} '{name}' is skipped and never satisfies dependsOn: {reason}"
             ));
         } else {
             say(&format!("{kind} '{name}' is blocked: {reason}"));
-            *state = SimStepState::Blocked;
         }
-        *stored = Some(reason);
     }
 
     /// Start Step `idx` of the run (plan C1 items 1 to 4): block it behind a

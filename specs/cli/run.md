@@ -178,7 +178,8 @@ Session has started (see the single-wrap-layer check below).
 `CONTROL_FLOW` (RFC 0011) is enabled by default with every other extension. For a Job
 whose template lists it, `run` acts as a scheduler would, in a small in-memory simulator
 (`run/simulator.rs`, plan C1). A Job without it has only bound Steps and no job outputs,
-so the simulator only records what ran, and the run's output is unchanged.
+so the simulator only records what ran, and the run's output is unchanged: the lines it
+prints for a blocked or skipped Step are printed only for a `CONTROL_FLOW` Job.
 
 Loops (RFC 0013) are nodes of the step graph and run as described in
 [Loops](#control_flow-loops) below. The simulator addresses a top-level entry as a `Node`
@@ -266,10 +267,16 @@ the simulator and is reported as an internal error.
    matched by number, so a range written `1.50` matches a given `1.5`. A Step with zero Tasks prints `Step 'X'
    has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
 5. The Step is recorded `Failed` if the run failed while it ran, and `Succeeded` otherwise;
-   then the simulator settles. The reason is the group that failed, `its Environment 'E'
-   failed to enter` when one of the Job or Step Environments it moved to failed its
-   `onEnter` (`RunContext::failed_environment`), `the run was interrupted`, or otherwise
-   `a Task failed`.
+   then the simulator settles. The reason is the group that failed, `the run was
+   interrupted`, or the first Environment action that failed the run while the Step ran
+   (`RunContext::failed_environment`): `its Environment 'E' failed to enter` when one of the
+   Job or Step Environments it moved to failed its `onEnter`, or `Environment 'E' failed to
+   exit` when an Environment exited while the Session moved to the Step's Job Environments
+   (or unwound its Step Environments) failed its `onExit` before anything else failed;
+   otherwise `a Task failed`. A body Step instance whose move fails or is interrupted fails
+   the same way, and so its loop (`its body Step instance 'L[0].B' failed`); a loop the run
+   stops in any other way between instances fails with `the run stopped before its
+   iteration completed`.
 
 A Job Environment that a Step does not enter (by `activation`, its entries, the
 Environment's `enableIf` for that Step, or an `exclusiveGroup`) is not entered for it; a

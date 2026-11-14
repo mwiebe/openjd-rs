@@ -592,7 +592,7 @@ impl<'a> Attachments<'a> {
     /// `default` (see
     /// [`unreachable_required`](Self::unreachable_required)) for which
     /// `applies(doc)` holds: it applies to some Step that is not stopped
-    /// (§3.2 constraint 7). Each goes to `add` with the attachment's index,
+    /// (§3.2 constraint 7), or with `CONTROL_FLOW` to any Step. Each goes to `add` with the attachment's index,
     /// its path and its message.
     fn report_unreachable(
         &self,
@@ -1321,8 +1321,23 @@ pub(super) fn select_environments<'a>(
     let stopped: Vec<bool> = (0..steps.len())
         .map(|i| body_staged.stopped(i) || staged.stopped(i))
         .collect();
+    // RFC 0011 `<Environment>` item 3, "What stays at Job creation": with
+    // CONTROL_FLOW, a Step stopped by an error of its own Environment
+    // selection may never run, but an unreachable attachment is rejected
+    // whatever any Step's `enableIf`, so it still counts as a Step every
+    // `ALWAYS` and `BY_DEFAULT` attachment applies to.
+    let control_flow = job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::ControlFlow);
     for (i, step) in steps.iter().enumerate() {
         if stopped[i] {
+            if control_flow {
+                for (doc, de) in set.declaring.iter().enumerate() {
+                    if de.activation != EnvironmentActivation::OnRequest {
+                        applies_to_some_step[doc] = true;
+                    }
+                }
+            }
             attached_statuses.push(vec![None; set.declaring.len()]);
             superseded_by.push(vec![None; combined_count]);
             step_environment_parameters.push(Vec::new());
@@ -1517,9 +1532,7 @@ pub(super) fn select_environments<'a>(
     // Steps it was resolved for, filed under the first of them, at its
     // Environment's place in the Job's Environment order. With
     // CONTROL_FLOW, once per Step, as part of each Step's selection.
-    let per_step = job_template
-        .profile()
-        .has_extension(crate::types::ModelExtension::ControlFlow);
+    let per_step = control_flow;
     let first_step = |name: &str| step_index.get(name).copied().unwrap_or(ANY);
     for (doc, de) in set.declaring.iter().enumerate() {
         de.report_enable_if_errors(per_step, |first, path, message| {

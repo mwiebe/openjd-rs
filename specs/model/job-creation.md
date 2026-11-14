@@ -931,7 +931,8 @@ that has entries lists both.
    constraint 7), and no entry can supply them, so that is one error at `<attachment> ->
    environment -> envParameterDefinitions`, and those parameters are not reported again per
    Step under constraint 7. The error is reported when the attachment applies to some Step
-   that is not stopped after §7.4.1 step 4 (`report_unreachable`), filed under step 5 after
+   that is not stopped after §7.4.1 step 4 (`report_unreachable`), or, with `CONTROL_FLOW`,
+   to any Step (RFC 0011 `<Environment>` item 3, "What stays at Job creation"), filed under step 5 after
    the Steps' step 5 errors (see [Error order](#error-order)); for a `BY_DEFAULT` one with an `enableIf` or an
    `exclusiveGroup` its message says "Its activation is BY_DEFAULT, so it applies to every
    Step whatever its enableIf and exclusiveGroup (§3.2 constraint 7)". One with `activation:
@@ -956,7 +957,8 @@ that has entries lists both.
      `BY_DEFAULT` and they have parameters without a `default`: no enabled entry can reach
      them, so each such attachment gets one error at its `envParameterDefinitions`, as in step
      1, whatever its `enableIf` or group, when it applies to some Step that is not stopped (for
-     a `BY_DEFAULT` one, a Step that does not decline it), and those parameters are not
+     a `BY_DEFAULT` one, a Step that does not decline it; with `CONTROL_FLOW`, any such
+     Step), and those parameters are not
      reported per Step.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
@@ -1583,10 +1585,10 @@ when more than one can be:
 
 | Group | Fields | Result |
 |---|---|---|
-| Enablement | the Step's `enableIf` | `true` (or absent): go on; `false`: `StepBinding::Skipped` |
+| Enablement | the Step's `enableIf`, then applying its Environment selection | `true` (or absent): the selection is applied, and its errors fail the group; `false`: `StepBinding::Skipped` |
 | Task enumeration | each Task parameter's `range` (whole field or list items) and `chunks` fields | the materialized `StepParameterSpace`: the Step's Tasks are known |
 | Host selection | every `hostRequirements` format string | the evaluated `HostRequirements` |
-| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds` and format-string `mode`), and the script's | each Step Environment's `enabled`, and the carried-forward checks of the script and of every enabled Step Environment |
+| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds` and format-string `mode`), and the script's | the Step Environments whose `enableIf` is `true`, in `step_environments`, and the carried-forward checks of the script and of every enabled Step Environment |
 
 There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
 
@@ -1711,9 +1713,11 @@ error it holds:
   abort `create_job` with that error alone (a Step Environment's `enableIf`
   belongs to the remaining group, so its error is collected), as an invalid parameter does — also for a Step that would
   stay pending. Because Steps are bound in dependency order, the error
-  reported is the first in that order. When a Step bound before it had its Environment
-  selection applied with errors, those are reported too, with the abort's own (as
-  `ENV_PARAMS` reports every Step's selection errors).
+  reported is the first in that order. It is reported with every error found before it:
+  the Job Environments' and the earlier Steps' collected errors, and the selection errors
+  of the Steps whose selections were applied before it (as `ENV_PARAMS` reports every
+  Step's), filed with its own Step's errors. The aborting Step's own selection is not
+  reported when its `enableIf` failed, since it was never made.
 * A Step whose Environment selection is applied with errors fails its enablement group
   with them and evaluates nothing else; at Job creation they are reported with the other
   selection errors, in §7.4.1 order (`Failure::Selection`).
@@ -1750,8 +1754,8 @@ count (36893488147419103228) ...`. Without `CONTROL_FLOW`,
 
 RFC 0011 `<Environment>` items 1–8. `CONTROL_FLOW` requires `ENV_PARAMS`, so every Step has
 an **Environment selection** (`job::EnvironmentSelection`): the part of RFC 0010's job
-creation for one Step that does not depend on whether the Step runs (Template Schemas
-§7.4.1 steps 2 and 4–8, less the Step Environments' `enableIf`, the checks over the whole
+creation for one Step whose outcome depends on whether the Step runs, made once its
+`enableIf` is `true` (Template Schemas §7.4.1 steps 2 and 4–8, less the Step Environments' `enableIf`, the checks over the whole
 set, and the Step's own host requirements). It is the Job Environments the Step's Sessions
 enter, with its effective Environment parameter values for them, the entered
 Environments' host requirements resolved with those values

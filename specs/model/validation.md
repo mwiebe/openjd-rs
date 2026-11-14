@@ -638,7 +638,7 @@ the first that applies reported:
 
 | Case | Message |
 |---|---|
-| A field that allows no `Steps.*` (job name, `jobEnvironments`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, a loop's enableIf, while, until, initial, next, and output values, and a job output's value, may read them.` |
+| A field that allows no `Steps.*` (job name, `jobEnvironments` other than an Environment parameter `default`, which reports an undefined variable because its table has no `Steps.*` or `Loop.*`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, a loop's enableIf, while, until, initial, next, and output values, and a job output's value, may read them.` |
 | Fewer than four parts (`Steps.P.Output`) | `'<sym>' is not a complete Steps.* reference; expected Steps.<StepName>.Output.<Name>, .RawOutput.<Name>, .TaskParam.<Name>, or .TaskRawParam.<Name>.` |
 | No such Step | `'<sym>': there is no Step named 'P'.` |
 | The Step's name is not an `<Identifier>` | `'<sym>': Step 'P' cannot be referenced through Steps.*, because its name is not an <Identifier>.` |
@@ -673,10 +673,11 @@ their expressions are not type-checked.
 **`enableIf`.** A Step's `enableIf` is checked against a table of its own: `Param.*`
 (minus `PATH` types), `RawParam.*`, `Job.Name`, `Step.Name`, and the TEMPLATE-scope
 `Steps.*` of the Step's direct dependencies, with no `let` names, `Task.*`, or
-`Session.*`. A Step Environment's `enableIf` uses the same table. A Job Environment's
-uses `Param.*` (minus `PATH`), `RawParam.*`, and `Job.Name`, with the reference scan
-rejecting any `Steps.*`. Without `CONTROL_FLOW` pass 8 does not look at `enableIf`; pass
-11 rejects the field.
+`Session.*`. A Step Environment's `enableIf` uses the Step's template-scope table, `let`
+names included (RFC 0011 `<Environment>` item 1), with those `Steps.*` symbols; a Job
+Environment's is RFC 0010's (see [Environment enableIf](#environment-enableif-env_params)),
+with the reference scan rejecting any `Steps.*`. Without `CONTROL_FLOW` pass 8 does not look
+at a Step's `enableIf`; pass 12 rejects the field.
 
 A Step's `enableIf` (and a loop's `enableIf`, `while`, and `until`, below) is an
 expression field of target type `bool` (RFC 0010's Template Schemas §7.6;

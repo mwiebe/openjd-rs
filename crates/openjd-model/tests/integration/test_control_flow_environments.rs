@@ -765,6 +765,13 @@ name: J
 fn a_steps_own_discarded_host_requirements_are_listed_first() {
     let jt = jt_ok(
         r#"
+jobEnvironments:
+- name: E
+  hostRequirements:
+    amounts:
+    - {name: amount.worker.gpu, min: "{{ null }}"}
+    - {name: amount.worker.disk.scratch, min: 1}
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
 steps:
 - name: S
   hostRequirements:
@@ -776,13 +783,21 @@ steps:
         FB1_HEADER,
     );
     let created = created(&jt, &[]);
+    let discarded: Vec<(Option<String>, String)> = created.discarded_host_requirements[0]
+        .iter()
+        .map(|d| {
+            (
+                d.environment.as_ref().map(|e| e.environment.clone()),
+                d.name.clone(),
+            )
+        })
+        .collect();
     assert_eq!(
-        created.discarded_host_requirements,
-        [vec![openjd_model::DiscardedHostRequirement {
-            environment: None,
-            kind: openjd_model::HostRequirementKind::Amount,
-            name: "amount.worker.vcpu".to_string(),
-        }]]
+        discarded,
+        [
+            (None, "amount.worker.vcpu".to_string()),
+            (Some("E".to_string()), "amount.worker.gpu".to_string()),
+        ]
     );
 }
 
@@ -1184,4 +1199,189 @@ steps:
     // A's selection is not applied at creation.
     assert!(statuses(2).is_empty());
     assert!(created.disabled_environments[2].environments.is_empty());
+}
+
+// ── Round 3 ───────────────────────────────────────────────────────
+
+#[test]
+fn a_pending_steps_disabled_entry_for_an_always_environment_fails_its_binding() {
+    // The error is a §7.4.1 step 4 one, which stops the Step's later
+    // checks; its selection still carries it.
+    let jt = jt_ok(
+        r#"
+jobEnvironments:
+- name: Lic
+  activation: ALWAYS
+  script: {actions: {onEnter: {command: echo, args: [l]}}}
+steps:
+- name: A
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  enableIf: "Steps.A.Output.Ok"
+  dependencies: [{dependsOn: A}, {environment: Lic, enableIf: "false"}]
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let job = created(&jt, &[]).job;
+    let err = advance(
+        &jt,
+        &[],
+        &[],
+        &job,
+        "B",
+        "A",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Step 'B' failed in its enablement group:\nModel validation error: 1 validation error \
+         for JobTemplate\nsteps[1] -> dependencies[1] -> enableIf:\n\tis false, so Step 'B' \
+         would decline Environment 'Lic', whose activation is ALWAYS: no Step can leave out an \
+         ALWAYS Environment (Template Schemas §3.2 item 3.2)."
+    );
+}
+
+/// C has a selection error, A and B the aborts; A's `let` error is
+/// collected before the abort.
+fn abort_template(b_enable_if: &str) -> JobTemplate {
+    jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: Z, type: INT, default: 0}}
+- {{name: M, type: INT, default: 2}}
+jobEnvironments:
+- name: H
+  activation: ON_REQUEST
+  envParameterDefinitions: [{{name: Q, type: INT}}]
+  script: {{actions: {{onEnter: {{command: echo, args: ["{{{{Env.Param.Q}}}}"]}}}}}}
+steps:
+- name: A
+  let: ["x = 10 // Param.Z"]
+  script: {{actions: {{onRun: {{command: echo, args: ["{{{{x}}}}"]}}}}}}
+- name: C
+  enableIf: "Param.M > 0"
+  dependencies: [{{dependsOn: A}}, {{environment: H}}]
+  script: {{actions: {{onRun: {{command: echo, args: [c]}}}}}}
+- name: B
+  enableIf: "{b_enable_if}"
+  dependencies: [{{dependsOn: C}}, {{environment: H}}]
+  script: {{actions: {{onRun: {{command: echo, args: [b]}}}}}}
+"#
+        ),
+        HEADER,
+    )
+}
+
+const C_MISSING_Q: &str = "steps[1]:\n\tmust supply, in an 'environment:' dependency, every \
+                           parameter without a default of each Environment that applies to it \
+                           (every jobEnvironments entry with activation ALWAYS, each one with \
+                           activation BY_DEFAULT that the Step does not decline, and each one \
+                           with activation ON_REQUEST that the Step requests; Template Schemas \
+                           §3.2 constraint 7), whatever that Environment's own enableIf is; \
+                           missing: 'Q' of Environment 'H'.";
+
+#[test]
+fn an_abort_is_reported_with_every_error_found_before_it_but_not_its_own_selection() {
+    // B's `enableIf` fails, so its selection (also missing Q) is never
+    // made; A's `let` error and C's selection error are reported with it.
+    let jt = abort_template("10 // Param.Z > 0");
+    let err = create_with(&jt, &[], &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &[
+            "steps[0] -> let[0]:\n\tInvalid expression in let binding 'x': Division by zero",
+            C_MISSING_Q,
+            "steps[2] -> enableIf:\n\tcould not be evaluated: Division by zero",
+        ],
+    );
+}
+
+#[test]
+fn an_abort_with_attached_environment_templates_is_reported_for_the_submission() {
+    let jt = abort_template("10 // Param.Z > 0");
+    let w = env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: W
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [w]}}}
+"#,
+    );
+    let err = create_with(&jt, &[w], &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            "JobTemplate -> steps[0] -> let[0]:\n\tInvalid expression in let binding 'x': \
+             Division by zero",
+            &format!("JobTemplate -> {C_MISSING_Q}"),
+            "JobTemplate -> steps[2] -> enableIf:\n\tcould not be evaluated: Division by zero",
+        ],
+    );
+}
+
+#[test]
+fn an_unrelated_let_that_fails_does_not_stop_the_early_wrap_check() {
+    // `y` fails for S=a but SW's `enableIf` does not read it.
+    let jt = early_wrap_template("\"y = int(Param.S)\", ", "true");
+    let err = create_with(&jt, &[], &[("S", "a")]).unwrap_err();
+    assert_errors(&err.to_string(), "JobTemplate", &[B_TWO_LAYERS]);
+    // A `let` that reads the failing one is undetermined too.
+    let jt = early_wrap_template("\"n = int(Param.S)\", \"m = n + 1\", ", "m > 0 or true");
+    let job = created(&jt, &[("S", "a")]).job;
+    assert!(matches!(
+        step(&job, "B").binding,
+        StepBinding::PendingInputs(_)
+    ));
+}
+
+#[test]
+fn an_unreachable_attachment_is_rejected_when_every_step_is_stopped_and_skipped() {
+    // S's required entry names nothing (a step 3 error, which stops it),
+    // and S is skipped; the attachment named like Job Environment E, with
+    // a parameter no Step can supply, is still rejected (RFC 0011
+    // `<Environment>` item 3, "What stays at Job creation").
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+jobEnvironments:
+- name: E
+  activation: ON_REQUEST
+  script: {actions: {onEnter: {command: echo, args: [e]}}}
+steps:
+- name: S
+  enableIf: "Param.F"
+  dependencies: [{environment: X}]
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let e = env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: E
+  activation: ALWAYS
+  envParameterDefinitions: [{name: P, type: STRING}]
+  script: {actions: {onEnter: {command: echo, args: ["{{Env.Param.P}}"]}}}
+"#,
+    );
+    let err = create_with(&jt, &[e], &[]).unwrap_err().to_string();
+    assert!(
+        err.starts_with(
+            "Model validation error: 1 validation error for Submission\n\
+                         EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\t\
+                         Environment 'E' has the same name as a jobEnvironments entry"
+        ),
+        "{err}"
+    );
 }

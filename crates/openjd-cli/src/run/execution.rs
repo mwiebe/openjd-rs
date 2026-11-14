@@ -565,12 +565,11 @@ async fn run_loop(
             ))
             .await;
             if ctx.is_stopping() {
-                if ctx.failed_environment.is_some() && !ctx.interrupted.load(Ordering::SeqCst) {
-                    ctx.record_failure_reason(sim, slot);
-                    sim.finish_step(slot, true, false)?;
-                } else {
-                    sim.stop_loop(li, "the run stopped before its iteration completed");
-                }
+                // The move failed an Environment action or was interrupted,
+                // so the instance fails, as a top-level Step does, and so
+                // does its loop.
+                ctx.record_failure_reason(sim, slot);
+                sim.finish_step(slot, true, false)?;
                 return Ok(());
             }
             let ran_all = execute_step(ctx, args, &step, &name, slot, None, sim).await?;

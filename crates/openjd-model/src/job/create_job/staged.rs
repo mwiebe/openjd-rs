@@ -138,11 +138,6 @@ impl StagedErrors {
             .collect()
     }
 
-    /// Whether no error is filed.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.buckets.values().all(|e| e.is_empty())
-    }
-
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that
     /// steps 5–8 are not taken for it.
     pub(crate) fn stopped(&self, step: usize) -> bool {

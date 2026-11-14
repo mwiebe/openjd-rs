@@ -712,10 +712,11 @@ pub(super) fn bind_step(
 /// Step's Sessions enter, with each wrapping Step Environment whose
 /// `enableIf` is known to be `true` (Template Schemas §7.6 rule 5) in
 /// `step_symtab` with the `unknown` symbols (the Step's inputs that are not
-/// concrete), and the `let` bindings that read them, unresolved. `None`
-/// when at most one layer is certain, or when a `let` binding fails, since
-/// the remaining group then fails on it; the remaining group checks the
-/// full set once it is evaluated.
+/// concrete), and the `let` bindings that read them, unresolved. A Step
+/// Environment whose `enableIf` reads a `let` binding that fails, however
+/// indirectly, is not counted: the remaining group fails on the binding.
+/// `None` when at most one layer is certain; the remaining group checks
+/// the full set once it is evaluated.
 fn early_wrap_layers_error(
     cx: &BindContext<'_>,
     st: &StepTemplate,
@@ -740,10 +741,12 @@ fn early_wrap_layers_error(
     for sym in unknown {
         symtab.set(sym, ExprValue::unresolved(ExprType::ANY)).ok()?;
     }
+    // The `let` bindings that fail, and those that read one, however
+    // indirectly: an `enableIf` that reads one is not determined, since the
+    // remaining group fails on the binding when it is evaluated.
+    let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
     if cx.has_expr {
         if let Some(bindings) = &st.let_bindings {
-            // A binding that fails here fails the remaining group when it
-            // is evaluated, so the rule's outcome is not determined.
             let mut scratch = ValidationErrors::default();
             crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings_where(
                 bindings,
@@ -754,8 +757,28 @@ fn early_wrap_layers_error(
                 &mut scratch,
                 |_| true,
             );
-            if !scratch.is_empty() {
-                return None;
+            let split = |b: &String| -> Option<(String, String)> {
+                let eq = b.find('=')?;
+                Some((b[..eq].trim().to_string(), b[eq + 1..].trim().to_string()))
+            };
+            for e in &scratch.errors {
+                if let Some(PathElement::Index(j)) = e.path.first() {
+                    if let Some((name, _)) = bindings.get(*j).and_then(split) {
+                        failed.insert(name);
+                    }
+                }
+            }
+            for (name, expr) in bindings.iter().filter_map(split) {
+                let reads_failed = openjd_expr::ParsedExpression::new(&expr)
+                    .map(|p| {
+                        p.accessed_symbols()
+                            .iter()
+                            .any(|sym| failed.contains(sym.split('.').next().unwrap_or(sym)))
+                    })
+                    .unwrap_or(false);
+                if reads_failed {
+                    failed.insert(name);
+                }
             }
         }
     }
@@ -769,7 +792,14 @@ fn early_wrap_layers_error(
     };
     let mut layers = wrap_layers.to_vec();
     for env in wrapping {
-        if expr_field::known_bool(env.enable_if.as_ref(), &symtab, &ev) == Some(true) {
+        let reads_failed = env.enable_if.as_ref().is_some_and(|f| {
+            expr_field::accessed_symbols_with_profile(f, &profile)
+                .iter()
+                .any(|sym| failed.contains(sym.split('.').next().unwrap_or(sym)))
+        });
+        if !reads_failed
+            && expr_field::known_bool(env.enable_if.as_ref(), &symtab, &ev) == Some(true)
+        {
             layers.push(format!("'{}' (stepEnvironments)", env.name));
         }
     }
