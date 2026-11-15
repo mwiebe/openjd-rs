@@ -607,7 +607,7 @@ Added when the prototype was ported onto the `ENV_PARAMS` prototype, for spec `1
   (`KnownEnableIfs::step_known_enabled`, §7.6 rule 5).
 * `openjd run` uses `ENV_PARAMS`'s Session sharing between Steps for top-level Steps and body Step instances; its own
   wrap-stack preflight is removed.
-* Restacked onto the `ENV_PARAMS` prototype at `78ff6e72`, for spec `8af3691`: an ambiguous name is an error only for an
+* Restacked onto the `ENV_PARAMS` prototype at `78ff6e72`, for spec `fbe86f7`: an ambiguous name is an error only for an
   enabled entry (Template Schemas §3.2.1 item 3), so it is part of the Step's Environment selection, and a skipped Step
   or one whose `enableIf` fails never reports it. A disabled entry with an ambiguous name applies to each match. An
   ambiguous attachment's parameter that no Step can supply is likewise a constraint 7 error of each Step it applies to
@@ -1541,7 +1541,7 @@ against the spec at `cd45188`, whose set has 436 tests (4 `env_templates`, 216 `
 436 pass on Linux, and so do all 1,726 tests of the full 2023-09 suite that run there. With M7, against the spec at
 `1ec05b0`, whose set has 524 tests (4 `env_templates`, 258 `job_templates`, and 262 `jobs`), all 524 pass on Linux,
 the 443 `ENV_PARAMS` tests pass as on the `ENV_PARAMS` prototype, and so do all 2,261 tests of the full 2023-09 suite
-that run there, with the 22 Windows-only tests skipped. Restacked onto `78ff6e72`, against the spec at `8af3691`, whose
+that run there, with the 22 Windows-only tests skipped. Restacked onto `78ff6e72`, against the spec at `fbe86f7`, whose
 set has 526 tests (4 `env_templates`, 258 `job_templates`, and 264 `jobs`), all 526 pass on Linux, the 449 `ENV_PARAMS`
 tests pass as on the `ENV_PARAMS` prototype at `78ff6e72`, and so do all 2,271 tests of the full 2023-09 suite that run
 there, with the 22 Windows-only tests skipped. Raise any

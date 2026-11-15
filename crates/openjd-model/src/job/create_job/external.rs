@@ -404,14 +404,18 @@ struct Attachments<'a> {
     /// decline it, whatever its own `enableIf` or `exclusiveGroup` (§3.2
     /// constraint 7), and [`report_unreachable`](Self::report_unreachable)
     /// reports each one that applies to some Step that is not stopped.
-    unreachable_required: Vec<(usize, Vec<PathElement>, String)>,
-    /// The attachments of `unreachable_required` that are unreachable only
-    /// because their name is ambiguous (§3.2.1 item 3), not because a Job
-    /// Environment has it (item 4). With `CONTROL_FLOW`, their error is a
-    /// constraint 7 error of each Step they apply to, so it is part of that
-    /// Step's Environment selection (RFC 0011 `<Environment>` item 3) and
-    /// [`report_unreachable`](Self::report_unreachable) leaves it out.
-    ambiguous_required: HashSet<usize>,
+    /// Each entry also says whether it is for an ambiguous name (§3.2.1
+    /// item 3) rather than for a Job Environment's name (item 4).
+    unreachable_required: Vec<(usize, Vec<PathElement>, String, bool)>,
+    /// With `CONTROL_FLOW`, the attachments whose parameters no Step can
+    /// supply because their name is ambiguous (§3.2.1 item 3), and not also
+    /// a Job Environment's (item 4), each with the error a Step it applies
+    /// to gets, at the Step's path. That is a constraint 7 error of the
+    /// Step, so it is part of its Environment selection (RFC 0011
+    /// `<Environment>` item 3), and
+    /// [`report_unreachable`](Self::report_unreachable) leaves out the
+    /// attachment-level error. Empty without `CONTROL_FLOW`.
+    ambiguous_required: HashMap<usize, String>,
 }
 
 /// An enabled entry of a Step that resolved to exactly one attachment, in
@@ -445,11 +449,15 @@ impl<'a> Attachments<'a> {
     /// then could an entry have named it; and an error when it has
     /// parameters without a `default`), an ambiguous name with such
     /// parameters, and every literal `default` that fails its checks
-    /// (§4.5 item 2).
+    /// (§4.5 item 2). With `CONTROL_FLOW` (`control_flow`), the per-Step
+    /// form of the ambiguous name's error is kept too
+    /// ([`ambiguous_required`](Self::ambiguous_required)).
+    #[allow(clippy::too_many_arguments)]
     fn new(
         attached: &'a [AttachedEnvironmentTemplate<'a>],
         job_env_names: &HashSet<&str>,
         job_lists_env_params: bool,
+        control_flow: bool,
         default_symtab: &openjd_expr::SymbolTable,
         ctx: &ValidationContext,
         errors: &mut ValidationErrors,
@@ -464,7 +472,7 @@ impl<'a> Attachments<'a> {
         let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut unreachable: HashSet<usize> = HashSet::new();
         let mut unreachable_required = Vec::new();
-        let mut ambiguous_required = HashSet::new();
+        let mut ambiguous_required = HashMap::new();
         // How the messages below say the attachment applies to the Steps
         // (§3.2 constraint 7): whatever its `enableIf` or `exclusiveGroup`,
         // since no entry can decline it.
@@ -519,6 +527,7 @@ impl<'a> Attachments<'a> {
                             capped_name_list(required.iter().copied(), required.len()),
                             entered(env)
                         ),
+                        false,
                     ));
                 }
                 // Without ENV_PARAMS in the Job Template there are no
@@ -553,7 +562,9 @@ impl<'a> Attachments<'a> {
         // One without a `default` rejects the submission where it applies
         // to a Step; say so once per attachment, rather than per Step with
         // "must supply" advice that an entry could only follow by naming
-        // the ambiguous name.
+        // the ambiguous name. With CONTROL_FLOW, it is each Step's own
+        // error instead (`ambiguous_required`), unless a Job Environment
+        // has the name too, which item 4 already rejects.
         for (doc, att) in attached.iter().enumerate() {
             let env = att.template.environment();
             let Some(others) = by_name.get(env.name.as_str()).filter(|d| d.len() > 1) else {
@@ -564,8 +575,30 @@ impl<'a> Attachments<'a> {
             if required.is_empty() || env.activation() == EnvironmentActivation::OnRequest {
                 continue;
             }
-            if !job_env_names.contains(env.name.as_str()) {
-                ambiguous_required.insert(doc);
+            if control_flow && !job_env_names.contains(env.name.as_str()) {
+                ambiguous_required.insert(
+                    doc,
+                    format!(
+                        "Environment '{}' ({}) applies to this Step, and it is defined by {} \
+                         attached Environment Templates ({}), so no enabled 'environment:' \
+                         dependency can reach it (Template Schemas §3.2.1 item 3). It has \
+                         parameters without a default that the Step cannot supply: {} (§3.2 \
+                         constraint 7).{}",
+                        env.name,
+                        doc_names[doc],
+                        others.len(),
+                        capped_name_list(
+                            others.iter().map(|d| doc_names[*d].as_str()),
+                            others.len()
+                        ),
+                        capped_name_list(required.iter().copied(), required.len()),
+                        if env.activation() == EnvironmentActivation::ByDefault {
+                            " A disabled 'environment:' dependency of the Step can decline it."
+                        } else {
+                            ""
+                        }
+                    ),
+                );
             }
             unreachable_required.push((
                 doc,
@@ -601,6 +634,7 @@ impl<'a> Attachments<'a> {
                         _ => entered(env),
                     }
                 ),
+                true,
             ));
         }
         for (de, att_ctx) in declaring.iter().zip(&contexts) {
@@ -623,18 +657,21 @@ impl<'a> Attachments<'a> {
     /// [`unreachable_required`](Self::unreachable_required)) for which
     /// `applies(doc)` holds: it applies to some Step that is not stopped
     /// (§3.2 constraint 7), or with `CONTROL_FLOW` to any Step. With
-    /// `CONTROL_FLOW` (`control_flow`), one in
-    /// [`ambiguous_required`](Self::ambiguous_required) is left out: its
-    /// error is filed per Step instead. Each goes to `add` with the
-    /// attachment's index, its path and its message.
+    /// `CONTROL_FLOW` (`control_flow`), the error for an ambiguous name
+    /// (§3.2.1 item 3) is left out: it is filed per Step instead
+    /// ([`ambiguous_required`](Self::ambiguous_required)), or, for an
+    /// attachment also named like a Job Environment, not at all, since no
+    /// entry can name the attachments and item 4's error rejects the
+    /// submission. Each goes to `add` with the attachment's index, its path
+    /// and its message.
     fn report_unreachable(
         &self,
         control_flow: bool,
         mut add: impl FnMut(usize, &[PathElement], String),
         applies: impl Fn(usize) -> bool,
     ) {
-        for (doc, path, message) in &self.unreachable_required {
-            if control_flow && self.ambiguous_required.contains(doc) {
+        for (doc, path, message, ambiguous) in &self.unreachable_required {
+            if control_flow && *ambiguous {
                 continue;
             }
             if applies(*doc) {
@@ -1212,6 +1249,7 @@ pub(super) fn select_environments<'a>(
         attached,
         &job_env_names,
         job_lists_env_params,
+        control_flow,
         &default_symtab,
         ctx,
         staged.at(Stage::Validation, ANY, 0),
@@ -1444,12 +1482,10 @@ pub(super) fn select_environments<'a>(
             // made in that Step's Environment selection (RFC 0011
             // `<Environment>` item 3), so a skipped Step, or one whose
             // selection is made later, does not report it now.
-            if control_flow && set.ambiguous_required.contains(&doc) {
-                for (_, path, message) in
-                    set.unreachable_required.iter().filter(|(d, ..)| *d == doc)
-                {
-                    staged.at(Stage::Step5, i, doc).add(path, message.clone());
-                }
+            if let Some(message) = set.ambiguous_required.get(&doc) {
+                staged
+                    .at(Stage::Step5, i, doc)
+                    .add(&step_path, message.clone());
             }
             let policy = ResolvePolicy::new(att_ctx);
             let mut pending = de.values_for_step(
@@ -2197,12 +2233,16 @@ pub fn check_environment_templates(
     // Literal `default`s read no symbols, and the other `default`s are not
     // resolved here.
     let no_symbols = openjd_expr::SymbolTable::new();
+    let control_flow = job_template
+        .profile()
+        .has_extension(ModelExtension::ControlFlow);
     let set = Attachments::new(
         attached,
         &job_env_names,
         job_template
             .profile()
             .has_extension(ModelExtension::EnvParams),
+        control_flow,
         &no_symbols,
         ctx,
         &mut errors,
@@ -2434,13 +2474,18 @@ pub fn check_environment_templates(
             // A `BY_DEFAULT` one that an entry whose `enableIf` is not known
             // may name may still be declined, so it applies to the Step only
             // if no such entry does.
+            let applies = enters
+                && !(de.activation == EnvironmentActivation::ByDefault
+                    && undetermined[i].contains(&doc));
+            applies_to_some_step[doc] |= applies;
             // With CONTROL_FLOW, an ambiguous one's error is the Step's
             // constraint 7 error (`ambiguous_required`), made before Job
             // creation only for a Step known to be enabled.
-            applies_to_some_step[doc] |= enters
-                && !(de.activation == EnvironmentActivation::ByDefault
-                    && undetermined[i].contains(&doc))
-                && (step_runs[i] || !set.ambiguous_required.contains(&doc));
+            if let Some(message) = set.ambiguous_required.get(&doc) {
+                if applies && step_runs[i] {
+                    errors.add(&step_path, message.clone());
+                }
+            }
             // An attachment an entry whose `enableIf` is not known may name
             // is in `undetermined`: whether that entry requests or declines
             // it is decided at job creation, also for an ambiguous one,
@@ -2571,7 +2616,7 @@ pub fn check_environment_templates(
     // applies to a Step, whatever its `enableIf` or group (§3.2 constraint
     // 7). Reported after the Steps' values, as job creation reports it.
     set.report_unreachable(
-        false,
+        control_flow,
         |_, path, message| errors.add(path, message),
         |doc| applies_to_some_step[doc],
     );

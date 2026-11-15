@@ -958,12 +958,16 @@ that has entries lists both.
      them, so each such attachment gets one error at its `envParameterDefinitions`, as in step
      1, whatever its `enableIf` or group, when it applies to some Step that is not stopped (for
      a `BY_DEFAULT` one, a Step that does not decline it), and those parameters are not
-     reported per Step. With `CONTROL_FLOW` that error is a constraint 7 error of each Step it
-     applies to, filed under the Step's own step 5 (`Attachments::ambiguous_required`), so it
-     is part of the Step's Environment selection: a skipped Step, or one whose selection is made
-     at step input binding or in a loop iteration, does not report it at Job creation (RFC
-     0011 `<Environment>` item 3, "A `SKIPPED` Step"). Only the attachment named like a Job
-     Environment of step 1 stays at Job creation.
+     reported per Step. With `CONTROL_FLOW` it is instead a constraint 7 error of each Step it
+     applies to, at the Step's path ("Environment 'X' (<attachment>) applies to this Step, and it
+     is defined by N attached Environment Templates (...) ... It has parameters without a default
+     that the Step cannot supply: ...", with, for a `BY_DEFAULT` one, "A disabled 'environment:'
+     dependency of the Step can decline it."), filed under the Step's step 5
+     (`Attachments::ambiguous_required`). So it is part of the Step's Environment selection: a
+     skipped Step, or one whose selection is made at step input binding or in a loop iteration,
+     does not report it at Job creation (RFC 0011 `<Environment>` item 3, "A `SKIPPED` Step").
+     An attachment whose name is also a Job Environment's gets only step 1's error, which stays at
+     Job creation; no entry can name it, so no ambiguity error is added.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
@@ -1467,7 +1471,8 @@ reports only once the Step's step 1–4 errors are fixed). With `CONTROL_FLOW`, 
 checks below are made only for a Step known to be enabled (see
 [validation.md](validation.md#known-to-be-enabled-control_flow)); the attachment-level errors
 are reported for every Step, except an ambiguous attachment's parameters that no Step can
-supply, which count only a Step known to be enabled. An enabled entry's ambiguous name is a
+supply, which are reported, in their per-Step form, for each Step known to be enabled that the
+attachment applies to. An enabled entry's ambiguous name is a
 per-Step check too, since Template Schemas §3.2.1 item 3 makes it an error only for an
 enabled entry:
 

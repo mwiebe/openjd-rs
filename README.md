@@ -54,7 +54,7 @@ cargo test --workspace
 cargo test -p openjd-sessions
 ```
 
-The workspace has 10,300+ unit and integration tests across all crates (10,450 passing and 42 ignored by
+The workspace has 10,300+ unit and integration tests across all crates (10,453 passing and 42 ignored by
 `cargo test --workspace` on Linux at the time of writing).
 
 ### Cross-user tests (Docker)
@@ -81,7 +81,7 @@ Current coverage: 87.3% line coverage (see [COVERAGE_REPORT.md](COVERAGE_REPORT.
 
 ## Conformance
 
-Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 2,271 tests, with 22 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `8af3691`, which adds the draft `ENV_PARAMS` and `CONTROL_FLOW` extensions' tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
+Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 2,271 tests, with 22 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `fbe86f7`, which adds the draft `ENV_PARAMS` and `CONTROL_FLOW` extensions' tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
 
 | Category | Tests |
 |----------|-------|

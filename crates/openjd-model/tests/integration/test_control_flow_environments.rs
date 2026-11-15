@@ -2451,28 +2451,37 @@ fn ambiguous_required_x(activation: &str) -> [EnvironmentTemplate; 2] {
     ]
 }
 
-/// The two attachment errors for [`ambiguous_required_x`], with `entered`
-/// the sentence on how the attachment applies to the Steps.
-fn ambiguous_required_errors(entered: &str) -> String {
-    let one = |doc: usize| {
-        format!(
-            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
-             'X' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], \
-             EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it \
-             (Template Schemas §3.2.1 item 3), and it has parameters without a default that no \
-             Step can supply: V. {entered}, and the submission is rejected (§3.2.1)."
-        )
-    };
-    format!(
-        "Model validation error: 2 validation errors for Submission\n{}\n{}",
-        one(0),
-        one(1)
-    )
+/// The errors a Step at `step_path` gets for the two attachments of
+/// [`ambiguous_required_x`], `prefix` before each path (the Job Template's
+/// document, at Job creation), and `decline` true for `BY_DEFAULT` ones.
+fn ambiguous_required_step_errors(prefix: &str, step_path: &str, decline: bool) -> Vec<String> {
+    (0..2)
+        .map(|doc| {
+            format!(
+                "{prefix}{step_path}:\n\tEnvironment 'X' (EnvironmentTemplate[{doc}]) applies to \
+                 this Step, and it is defined by 2 attached Environment Templates \
+                 (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no enabled 'environment:' \
+                 dependency can reach it (Template Schemas §3.2.1 item 3). It has parameters \
+                 without a default that the Step cannot supply: V (§3.2 constraint 7).{}",
+                if decline {
+                    " A disabled 'environment:' dependency of the Step can decline it."
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect()
 }
 
-const BY_DEFAULT_ENTERED: &str = "Its activation is BY_DEFAULT, so it applies to every Step that \
-                                  does not decline it with a disabled entry, and at least one \
-                                  Step does not decline it";
+/// `errors` as one Submission error.
+fn submission_error(errors: &[String]) -> String {
+    format!(
+        "Model validation error: {} validation error{} for Submission\n{}",
+        errors.len(),
+        if errors.len() == 1 { "" } else { "s" },
+        errors.join("\n")
+    )
+}
 
 fn ambiguous_required_template(enable_if: &str) -> JobTemplate {
     jt_ok(
@@ -2501,7 +2510,11 @@ fn an_ambiguous_attachment_no_step_can_supply_fails_only_a_step_it_applies_to_th
     // 3), so only S's selection meets X's constraint 7 (RFC 0011
     // `<Environment>` item 3).
     let envs = ambiguous_required_x("BY_DEFAULT");
-    let expected = ambiguous_required_errors(BY_DEFAULT_ENTERED);
+    let expected = submission_error(&ambiguous_required_step_errors(
+        "JobTemplate -> ",
+        "steps[1]",
+        true,
+    ));
     // Skipped at Job creation: the Job is created.
     let skipped = ambiguous_required_template("\"Param.F\"");
     let job = create_with(&skipped, &envs, &[])
@@ -2540,9 +2553,9 @@ fn an_ambiguous_attachment_no_step_can_supply_fails_only_a_step_it_applies_to_th
 }
 
 #[test]
-fn an_ambiguous_always_attachment_no_step_can_supply_is_not_checked_for_a_skipped_step() {
-    // `ALWAYS` X ×2 and a single Step: a skipped Step has no Environment
-    // selection, so the Job is created; an enabled one fails it.
+fn an_ambiguous_always_attachment_no_step_can_supply_is_reported_for_each_step_it_applies_to() {
+    // `ALWAYS` X ×2: a skipped Step has no Environment selection, so the
+    // Job is created; each enabled Step gets the errors at its own path.
     let envs = ambiguous_required_x("ALWAYS");
     let jt = jt_ok(
         r#"
@@ -2552,15 +2565,156 @@ steps:
 - name: S
   enableIf: "Param.F"
   script: {actions: {onRun: {command: echo, args: [s]}}}
+- name: T
+  enableIf: "Param.F"
+  script: {actions: {onRun: {command: echo, args: [t]}}}
 "#,
         HEADER,
     );
     create_with(&jt, &envs, &[]).unwrap_or_else(|e| panic!("{e}"));
     let err = create_with(&jt, &envs, &[("F", "true")]).unwrap_err();
+    let mut expected = ambiguous_required_step_errors("JobTemplate -> ", "steps[0]", false);
+    expected.extend(ambiguous_required_step_errors(
+        "JobTemplate -> ",
+        "steps[1]",
+        false,
+    ));
+    assert_eq!(err.to_string(), submission_error(&expected));
+}
+
+#[test]
+fn an_ambiguous_attachment_error_does_not_stop_the_steps_other_checks() {
+    // The error is the Step's constraint 7 error (§7.4.1 step 5), so its
+    // other step 5 errors, here an unsupplied parameter of Y, are reported
+    // too.
+    let mut envs = ambiguous_required_x("ALWAYS").to_vec();
+    envs.push(env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR, ENV_PARAMS]
+environment:
+  name: Y
+  activation: ALWAYS
+  envParameterDefinitions: [{name: W, type: STRING}]
+  script: {actions: {onEnter: {command: echo, args: [y]}}}
+"#,
+    ));
+    let jt = jt_ok(
+        r#"
+steps:
+- name: S
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let err = create_with(&jt, &envs, &[]).unwrap_err();
+    let errors = ambiguous_required_step_errors("JobTemplate -> ", "steps[0]", false);
     assert_eq!(
         err.to_string(),
-        ambiguous_required_errors("Its activation is ALWAYS, so every Session enters it")
+        format!(
+            "Model validation error: 3 validation errors for Submission\n{}\n{}\nJobTemplate -> \
+             steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
+             default of each Environment that applies to it (every attached Environment with \
+             activation ALWAYS, each one with activation BY_DEFAULT that the Step does not \
+             decline, and each one with activation ON_REQUEST that the Step requests; Template \
+             Schemas §3.2.1), whatever that Environment's own enableIf is; missing: 'W' of \
+             Environment 'Y' (EnvironmentTemplate[2]).",
+            errors[0], errors[1]
+        )
     );
+}
+
+#[test]
+fn an_ambiguous_attachment_also_named_like_a_job_environment_is_rejected_whatever_enable_if() {
+    // §3.2.1 item 4 holds whatever any Step's `enableIf` (RFC 0011
+    // `<Environment>` item 3, "What stays at Job creation"); no entry can
+    // name the attachments, so item 3's error is not added.
+    let envs = ambiguous_required_x("ALWAYS");
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+jobEnvironments:
+- name: X
+  script: {actions: {onEnter: {command: echo, args: [jx]}}}
+steps:
+- name: S
+  enableIf: "Param.F"
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let item_4 = |doc: usize| {
+        format!(
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
+             'X' has the same name as a jobEnvironments entry of the Job Template, so no \
+             'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
+             parameters without a default that no Step can supply: V. Its activation is ALWAYS, \
+             so every Session enters it, and the submission is rejected (§3.2.1)."
+        )
+    };
+    let expected = submission_error(&[item_4(0), item_4(1)]);
+    let err = create_with(&jt, &envs, &[]).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    let err = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+}
+
+#[test]
+fn an_ambiguous_attachment_fails_a_loop_body_step_in_its_iteration() {
+    // A body Step's Environment selection is made in each iteration, so
+    // Job creation succeeds; before Job creation the error is reported
+    // only when the body Step is known to be enabled.
+    let envs = ambiguous_required_x("ALWAYS");
+    let src = |condition: &str| {
+        format!(
+            r#"
+parameterDefinitions:
+- {{name: F, type: BOOL, default: true}}
+steps:
+- name: L
+  loop:
+    {condition}
+    maxIterations: 2
+    steps:
+    - name: W
+      script: {{actions: {{onRun: {{command: echo, args: [w]}}}}}}
+"#
+        )
+    };
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    let not_known = jt_ok(&src("while: \"Param.F\""), HEADER);
+    check_environment_templates(&not_known, &attached, &template_ctx(&not_known))
+        .unwrap_or_else(|e| panic!("expected no errors before Job creation, got:\n{e}"));
+    let job = create_with(&not_known, &envs, &[])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .job;
+    let values = job_params_with(&not_known, &[], &envs);
+    let progress = openjd_model::job::LoopProgress::new(&job.loops[0]).unwrap();
+    let err = openjd_model::start_iteration(
+        &not_known,
+        &values,
+        &template_ctx(&not_known),
+        &job,
+        0,
+        &progress,
+        &StepInputs::default(),
+        0,
+    )
+    .unwrap_err();
+    let body =
+        ambiguous_required_step_errors("JobTemplate -> ", "steps[0] -> loop -> steps[0]", false);
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Step 'L[0].W' failed in its enablement group:\n{}",
+            submission_error(&body)
+        )
+    );
+    let known = jt_ok(&src("until: \"Loop.Iteration >= 0\""), HEADER);
+    let err = check_environment_templates(&known, &attached, &template_ctx(&known)).unwrap_err();
+    assert_eq!(err.to_string(), submission_error(&body));
 }
 
 #[test]

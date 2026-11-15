@@ -720,7 +720,8 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
 
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
   the attached Environments by name. A missing `required` Environment, an ambiguous name in an
-  enabled entry, an
+  enabled entry (with `CONTROL_FLOW`, in the Step's Environment selection, which for a Step whose
+  `enableIf` is decided later fails that Step then, see above), an
   undeclared key, a bad value, or a parameter without a `default` that a Step does not
   supply fails the run with one validation error before any Session starts, in Template
   Schemas §7.4.1 order (a Step's value errors are reported once its §7.4.1 step 1–4 errors are fixed; see
