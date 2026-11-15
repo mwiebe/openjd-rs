@@ -169,9 +169,9 @@ the outer execution phase always unwinds the remaining environments. Thus a
 Job creation (with its submission checks and the RFC 0008 single-layer check) and
 selection happen before session creation. Invalid runs
 therefore do not create a working directory or print session-start banners. The exception
-is a `CONTROL_FLOW` Step whose Environment set is decided at step input binding: its
-Environment selection errors and the single-layer check fail it, and so the run, after the
-Session has started (see the single-wrap-layer check below).
+is a `CONTROL_FLOW` Step whose Environment set is decided at step input binding or, for a
+loop's body Step instance, in its iteration: its Environment selection errors and the
+single-layer check fail it, and so the run, after the Session has started (see the single-wrap-layer check below).
 
 ### CONTROL_FLOW: the scheduler simulator
 
@@ -720,10 +720,11 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
 
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
   the attached Environments by name. A missing `required` Environment, an ambiguous name in an
-  enabled entry (with `CONTROL_FLOW`, in the Step's Environment selection, which for a Step whose
-  `enableIf` is decided later fails that Step then, see above), an
+  enabled entry, an
   undeclared key, a bad value, or a parameter without a `default` that a Step does not
-  supply fails the run with one validation error before any Session starts, in Template
+  supply fails the run with one validation error before any Session starts (with
+  `CONTROL_FLOW`, for a Step whose Environment selection is made at Job creation; for any other
+  Step these are its Environment selection errors and fail it later, see above), in Template
   Schemas §7.4.1 order (a Step's value errors are reported once its §7.4.1 step 1–4 errors are fixed; see
   [job-creation.md](../model/job-creation.md#error-order)): for `Submission`, each
   error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`), with

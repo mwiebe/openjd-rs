@@ -2625,6 +2625,34 @@ steps:
 }
 
 #[test]
+fn an_enabled_entry_naming_an_ambiguous_attachment_gets_only_the_ambiguous_name_error() {
+    // Job creation stops the Step at the §3.2.1 item 3 error, so neither it
+    // nor check_environment_templates adds the attachment's constraint 7
+    // error for that Step.
+    let envs = ambiguous_required_x("BY_DEFAULT");
+    let jt = jt_ok(
+        r#"
+steps:
+- name: S
+  dependencies: [{environment: X}]
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    let expected = submission_error(&["JobTemplate -> steps[0] -> dependencies[0] -> \
+                                       environment:\n\tnames Environment 'X', which 2 attached \
+                                       Environment Templates define (EnvironmentTemplate[0], \
+                                       EnvironmentTemplate[1]); an entry must match exactly one \
+                                       (Template Schemas §3.2.1 item 3)."
+        .to_string()]);
+    let err = create_with(&jt, &envs, &[]).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    let err = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+}
+
+#[test]
 fn an_ambiguous_attachment_also_named_like_a_job_environment_is_rejected_whatever_enable_if() {
     // §3.2.1 item 4 holds whatever any Step's `enableIf` (RFC 0011
     // `<Environment>` item 3, "What stays at Job creation"); no entry can

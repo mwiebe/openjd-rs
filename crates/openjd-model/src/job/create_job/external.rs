@@ -2480,9 +2480,11 @@ pub fn check_environment_templates(
             applies_to_some_step[doc] |= applies;
             // With CONTROL_FLOW, an ambiguous one's error is the Step's
             // constraint 7 error (`ambiguous_required`), made before Job
-            // creation only for a Step known to be enabled.
+            // creation only for a Step known to be enabled. Job creation
+            // stops a Step whose enabled entry names it, after the §3.2.1
+            // item 3 error, so it is not reported for that Step here either.
             if let Some(message) = set.ambiguous_required.get(&doc) {
-                if applies && step_runs[i] {
+                if applies && step_runs[i] && !ambiguous[i].contains(&doc) {
                     errors.add(&step_path, message.clone());
                 }
             }
