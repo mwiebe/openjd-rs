@@ -131,7 +131,7 @@ pub struct CreatedJob {
     /// The combined Job: its `job_environments` are the attached
     /// Environments, in attachment order, followed by the Job Template's
     /// own, which is the Job's Environment order, the order a Session enters
-    /// them (Template Schemas §1.1 item 7). Each Step's
+    /// them (Template Schemas §1.1 *jobEnvironments*). Each Step's
     /// `environment_parameters` and `environments` cover both.
     pub job: job::Job,
     /// The document of each entry of `job.job_environments`, index for
@@ -263,7 +263,7 @@ pub enum EnvironmentStatus {
 }
 
 /// Where an Environment of a Job comes from, the three parts of the Job's
-/// Environment order (Template Schemas §1.1 item 7).
+/// Environment order (Template Schemas §1.1 *jobEnvironments*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnvironmentScope {
     /// An attached Environment Template's `environment`.
@@ -663,7 +663,6 @@ impl<'a> Attachments<'a> {
         required: bool,
         env_path: Vec<PathElement>,
         errors: &mut ValidationErrors,
-        ambiguity: &mut ValidationErrors,
         warnings: &mut Vec<SubmissionWarning>,
     ) -> EntryMatch<'_> {
         match self.candidates(environment) {
@@ -703,7 +702,7 @@ impl<'a> Attachments<'a> {
             }
             [doc] => EntryMatch::One(*doc),
             many => {
-                ambiguity.add(
+                errors.add(
                     &env_path,
                     format!(
                         "names Environment '{environment}', which {} attached Environment \
@@ -1253,19 +1252,13 @@ pub(super) fn select_environments<'a>(
         }
         for entry in &selection.frozen {
             let entry_path = path_index(&deps_path, entry.dependency_index);
-            let mut ambiguity = ValidationErrors::default();
             let matched = set.match_entry(
                 &entry.environment,
                 entry.required,
                 path_field(&entry_path, "environment"),
                 staged.at(Stage::Step3, i, entry.dependency_index),
-                &mut ambiguity,
                 &mut warnings,
             );
-            staged
-                .at_job_level(Stage::Step3, i, entry.dependency_index)
-                .errors
-                .extend(ambiguity.errors);
             match matched {
                 // With `required: true` it is an error (reported).
                 EntryMatch::Absent => {
@@ -1966,7 +1959,7 @@ fn check_attached_wrap_layers(
 
 /// For each Step, whether its Sessions are certainly entered into each
 /// Environment of the Job, attached ones first and then the Job Template's
-/// own, in the Job's Environment order (§1.1 item 7): each one's state from
+/// own, in the Job's Environment order (§1.1 *jobEnvironments*): each one's state from
 /// what its own `enableIf` (`attached_enabled`, or `known` for a Job
 /// Environment) and the Step's entry for it (`known_entries`, per Step and
 /// attachment; `known` for a Job Environment) are known to be, then
@@ -2109,8 +2102,9 @@ fn certainly_entered_per_step(
 ///
 /// With `CONTROL_FLOW`, the per-Step checks above are made only for a Step
 /// known to be enabled (Template Schemas §7.6 rule 5, RFC 0011
-/// `<Environment>` item 3); an ambiguous name and the attachment-level
-/// errors are reported for every Step.
+/// `<Environment>` item 3), an enabled entry's ambiguous name included
+/// (§3.2.1 item 3); the attachment-level errors are reported for every
+/// Step.
 ///
 /// Format-string values, non-literal `default`s, and non-literal
 /// `hostRequirements` are not resolved: they need Job Parameter values, so
@@ -2277,16 +2271,13 @@ pub fn check_environment_templates(
                 }
             }
             let mut not_found = ValidationErrors::default();
-            let mut ambiguity = ValidationErrors::default();
             let matched = set.match_entry(
                 name,
                 dep.is_required(),
                 path_field(&entry_path, "environment"),
                 &mut not_found,
-                &mut ambiguity,
                 &mut warnings,
             );
-            errors.errors.extend(ambiguity.errors);
             if step_runs[i] {
                 errors.errors.extend(not_found.errors);
             }

@@ -644,7 +644,7 @@ fn order_step_6_by_environment_order() {
 fn order_step_6_two_step_environments_of_one_step_by_their_order() {
     // Both Step Environments of Step S fail their enableIf (§7.4.1 step 6),
     // so both errors are reported, in the Step's stepEnvironments order,
-    // whichever fails which way. Template Schemas §1.1 item 7's Job's
+    // whichever fails which way. Template Schemas §1.1 *jobEnvironments*'s Job's
     // Environment order covers only the attached and Job Environments; the
     // prototype files a Step's Step Environments after all of them, in
     // their written order. A Step Environment declares no parameters, so

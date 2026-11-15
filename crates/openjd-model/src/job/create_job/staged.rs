@@ -67,48 +67,31 @@ pub(crate) const ANY: usize = usize::MAX;
 
 /// A job creation's errors, filed by [`Stage`], Step, and position.
 ///
-/// Each key also says whether the error belongs to the Step's Environment
-/// selection (`CONTROL_FLOW`, RFC 0011 `<Environment>` item 3), which
-/// [`take_steps`](Self::take_steps) drops for a Step whose selection is
-/// made later, or is made when the Job is created whatever the Step's
-/// `enableIf` ([`at_job_level`](Self::at_job_level)). One key never holds
-/// both, so the flag does not change the order errors are reported in.
+/// With `CONTROL_FLOW`, the errors filed for a Step under §7.4.1 steps 2
+/// to 8 are its Environment selection's (RFC 0011 `<Environment>` item
+/// 3), which [`take_steps`](Self::take_steps) drops for a Step whose
+/// selection is made later.
 #[derive(Default)]
 pub(crate) struct StagedErrors {
-    buckets: BTreeMap<(Stage, usize, usize, bool), ValidationErrors>,
+    buckets: BTreeMap<(Stage, usize, usize), ValidationErrors>,
 }
 
 impl StagedErrors {
     /// The errors filed under `stage`, Step `step`, and position `at`, to
     /// add to.
     pub(crate) fn at(&mut self, stage: Stage, step: usize, at: usize) -> &mut ValidationErrors {
-        self.buckets.entry((stage, step, at, false)).or_default()
-    }
-
-    /// As [`at`](Self::at), for an error that is not part of the Step's
-    /// Environment selection, such as an entry whose name matches two
-    /// attachments (RFC 0011 `<Environment>` item 3, "What stays at Job
-    /// creation").
-    pub(crate) fn at_job_level(
-        &mut self,
-        stage: Stage,
-        step: usize,
-        at: usize,
-    ) -> &mut ValidationErrors {
-        self.buckets.entry((stage, step, at, true)).or_default()
+        self.buckets.entry((stage, step, at)).or_default()
     }
 
     /// Drop the errors of the Environment selections of the Steps in
-    /// `steps`: those filed for them under §7.4.1 steps 2 to 8 other than
-    /// [`at_job_level`](Self::at_job_level) ones, in one pass.
+    /// `steps`: those filed for them under §7.4.1 steps 2 to 8, in one pass.
     pub(crate) fn take_steps(&mut self, steps: &std::collections::HashSet<usize>) {
-        self.buckets.retain(|(stage, s, _, job_level), _| {
-            !(steps.contains(s) && !*job_level && *stage >= Stage::Step2)
-        });
+        self.buckets
+            .retain(|(stage, s, _), _| !(steps.contains(s) && *stage >= Stage::Step2));
     }
 
     /// For every Step, the errors of its Environment selection: those filed
-    /// for it under §7.4.1 steps 2 to 8 other than job-level ones, less
+    /// for it under §7.4.1 steps 2 to 8, less
     /// steps 5 to 8 for a [`stopped`](Self::stopped) Step, copied, in key
     /// order. One pass over the buckets, so the cost
     /// does not grow with Steps times buckets.
@@ -116,16 +99,15 @@ impl StagedErrors {
         let stopped: std::collections::HashSet<usize> = self
             .buckets
             .iter()
-            .filter(|((stage, _, _, _), errors)| {
+            .filter(|((stage, _, _), errors)| {
                 (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
             })
-            .map(|((_, step, _, _), _)| *step)
+            .map(|((_, step, _), _)| *step)
             .collect();
         let mut out: std::collections::HashMap<usize, Vec<ValidationError>> =
             std::collections::HashMap::new();
-        for ((stage, step, _, job_level), errors) in &self.buckets {
-            if *job_level
-                || *stage < Stage::Step2
+        for ((stage, step, _), errors) in &self.buckets {
+            if *stage < Stage::Step2
                 || (*stage >= Stage::Step5 && stopped.contains(step))
                 || errors.is_empty()
             {
@@ -141,7 +123,7 @@ impl StagedErrors {
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that
     /// steps 5–8 are not taken for it.
     pub(crate) fn stopped(&self, step: usize) -> bool {
-        self.buckets.iter().any(|((stage, s, _, _), errors)| {
+        self.buckets.iter().any(|((stage, s, _), errors)| {
             *s == step && (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
         })
     }
@@ -164,13 +146,13 @@ impl StagedErrors {
         let stopped: std::collections::HashSet<usize> = self
             .buckets
             .iter()
-            .filter(|((stage, _, _, _), errors)| {
+            .filter(|((stage, _, _), errors)| {
                 (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
             })
-            .map(|((_, step, _, _), _)| *step)
+            .map(|((_, step, _), _)| *step)
             .collect();
         let mut all = ValidationErrors::default();
-        for ((stage, step, _, _), errors) in self.buckets {
+        for ((stage, step, _), errors) in self.buckets {
             if stage >= Stage::Step5 && stopped.contains(&step) {
                 continue;
             }

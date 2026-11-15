@@ -198,7 +198,7 @@ pub fn create_job(
 ///
 /// The combined Job lists the attached Environments before the Job
 /// Template's own, in the Job's Environment order (a Session enters them
-/// first; Template Schemas §1.1 item 7), and records on each Step
+/// first; Template Schemas §1.1 *jobEnvironments*), and records on each Step
 /// the Job Environments its Sessions enter ([`job::Step::environments`]);
 /// [`CreatedJob::disabled_environments`] lists, per Step, the ones an
 /// `enableIf` disabled or a group superseded, and
@@ -557,9 +557,9 @@ fn control_flow_job(
     if let Some(aborted) = aborted {
         match aborted.error {
             ModelError::ModelValidation(ve) => {
-                // A Step stopped by an error that is not part of its
-                // selection (an ambiguous entry name) has its later errors
-                // left out by `finish`; the abort is reported anyway.
+                // A Step stopped by a §7.4.1 step 2–4 error has its later
+                // errors left out by `finish`; the abort is reported
+                // anyway.
                 let subject = if all_staged.stopped(aborted.subject) {
                     staged::ANY
                 } else {

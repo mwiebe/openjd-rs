@@ -1107,6 +1107,46 @@ environment:
 }
 
 #[test]
+fn check_environment_templates_reports_an_ambiguous_entry_only_for_a_step_known_to_be_enabled() {
+    // An ambiguous name is an error only for an enabled entry (Template
+    // Schemas §3.2.1 item 3), so before Job creation it is reported only
+    // for a Step known to be enabled (RFC 0011 `<Environment>` item 3).
+    let src = |enable_if: &str| {
+        format!(
+            r#"
+steps:
+- name: P
+  outputVariables: [{{name: Ok, type: BOOL}}]
+  script: {{actions: {{onRun: {{command: echo, args: [p]}}}}}}
+- name: S
+  enableIf: {enable_if}
+  dependencies:
+  - {{dependsOn: P}}
+  - {{environment: X, required: false}}
+  script: {{actions: {{onRun: {{command: echo, args: [s]}}}}}}
+"#
+        )
+    };
+    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    let known = jt_ok(&src("\"true\""), HEADER);
+    let err = check_environment_templates(&known, &attached, &template_ctx(&known)).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            "JobTemplate -> steps[1] -> dependencies[1] -> environment:\n\tnames Environment 'X', \
+           which 2 attached Environment Templates define (EnvironmentTemplate[0], \
+           EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas §3.2.1 \
+           item 3).",
+        ],
+    );
+    let pending = jt_ok(&src("\"Steps.P.Output.Ok\""), HEADER);
+    check_environment_templates(&pending, &attached, &template_ctx(&pending))
+        .unwrap_or_else(|e| panic!("expected no errors before Job creation, got:\n{e}"));
+}
+
+#[test]
 fn an_entry_value_of_a_step_not_known_to_be_enabled_gets_only_its_scope_check() {
     let src = |value: &str| {
         format!(
@@ -1421,7 +1461,10 @@ steps:
 }
 
 #[test]
-fn an_ambiguous_entry_does_not_hide_the_steps_abort() {
+fn an_ambiguous_entry_of_a_step_whose_enable_if_fails_is_not_checked() {
+    // An ambiguous name is an error only for an enabled entry (Template
+    // Schemas §3.2.1 item 3), so it is part of the Step's Environment
+    // selection, which a Step whose `enableIf` fails never makes.
     let jt = jt_ok(
         r#"
 parameterDefinitions:
@@ -1434,30 +1477,13 @@ steps:
 "#,
         HEADER,
     );
-    let x = || {
-        env_ok(
-            r#"
-specificationVersion: environment-2023-09
-extensions: [EXPR, ENV_PARAMS]
-environment:
-  name: X
-  activation: ON_REQUEST
-  script: {actions: {onEnter: {command: echo, args: [x]}}}
-"#,
-        )
-    };
-    let err = create_with(&jt, &[x(), x()], &[]).unwrap_err().to_string();
-    assert!(
-        err.starts_with("Model validation error: 2 validation errors for Submission"),
-        "{err}"
-    );
-    assert!(
-        err.contains("JobTemplate -> steps[0] -> enableIf:\n\tcould not be evaluated: Cannot convert 'a' to int"),
-        "{err}"
-    );
-    assert!(
-        err.contains("which 2 attached Environment Templates define"),
-        "{err}"
+    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+    let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[0] -> \
+         enableIf:\n\tcould not be evaluated: Cannot convert 'a' to int\n  int(Param.S) > 0\n  \
+         ^~~~~~~~~~~~"
     );
 }
 
@@ -1770,30 +1796,35 @@ environment:
 }
 
 #[test]
-fn an_ambiguous_entry_whose_enable_if_fails_is_rejected_for_a_skipped_step() {
-    let jt = jt_ok(
-        r#"
+fn an_ambiguous_entry_is_not_checked_for_a_skipped_step() {
+    // Whether its own `enableIf` fails or is absent, an entry of a skipped
+    // Step is never checked, an ambiguous name included (Template Schemas
+    // §3.2.1 item 3, RFC 0011 `<Environment>` item 3).
+    for entry_enable_if in [", enableIf: \"int(Param.S) > 0\"", ""] {
+        let jt = jt_ok(
+            &format!(
+                r#"
 parameterDefinitions:
-- {name: F, type: BOOL, default: false}
-- {name: S, type: STRING, default: abc}
+- {{name: F, type: BOOL, default: false}}
+- {{name: S, type: STRING, default: abc}}
 steps:
 - name: A
   enableIf: "Param.F"
-  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
-  script: {actions: {onRun: {command: echo, args: [a]}}}
-"#,
-        HEADER,
-    );
-    let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
-    let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
-    assert!(
-        err.starts_with(
-            "Model validation error: 1 validation error for Submission\nJobTemplate \
-                         -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'X', \
-                         which 2 attached Environment Templates define"
-        ),
-        "{err}"
-    );
+  dependencies: [{{environment: X{entry_enable_if}}}]
+  script: {{actions: {{onRun: {{command: echo, args: [a]}}}}}}
+"#
+            ),
+            HEADER,
+        );
+        let envs = [attached_x("ON_REQUEST", ""), attached_x("ON_REQUEST", "")];
+        let job = create_with(&jt, &envs, &[])
+            .unwrap_or_else(|e| panic!("{entry_enable_if}: {e}"))
+            .job;
+        assert!(
+            matches!(step(&job, "A").binding, StepBinding::Skipped),
+            "{entry_enable_if}"
+        );
+    }
 }
 
 #[test]
@@ -2122,17 +2153,26 @@ steps:
 }
 
 #[test]
-fn an_undecided_entry_named_by_three_attachments_is_rejected() {
+fn an_ambiguous_enabled_entry_fails_the_steps_selection() {
+    // At Job creation for a Step enabled then, and at step input binding
+    // for one whose `enableIf` is decided then (Template Schemas §3.2.1
+    // item 3, RFC 0011 `<Environment>` item 3).
     let jt = jt_ok(
         r#"
 parameterDefinitions:
-- {name: F, type: BOOL, default: false}
-- {name: S, type: STRING, default: abc}
+- {name: F, type: BOOL, default: true}
 steps:
+- name: P
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [p]}}}
 - name: A
   enableIf: "Param.F"
-  dependencies: [{environment: X, enableIf: "int(Param.S) > 0"}]
+  dependencies: [{environment: X, required: false}]
   script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  enableIf: "Steps.P.Output.Ok"
+  dependencies: [{dependsOn: P}, {environment: X}]
+  script: {actions: {onRun: {command: echo, args: [b]}}}
 "#,
         HEADER,
     );
@@ -2142,9 +2182,34 @@ steps:
         attached_x("ON_REQUEST", ""),
     ];
     let err = create_with(&jt, &envs, &[]).unwrap_err().to_string();
-    assert!(
-        err.contains("which 3 attached Environment Templates define"),
-        "{err}"
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[1] -> \
+         dependencies[0] -> environment:\n\tnames Environment 'X', which 3 attached Environment \
+         Templates define (EnvironmentTemplate[0], EnvironmentTemplate[1], \
+         EnvironmentTemplate[2]); an entry must match exactly one (Template Schemas §3.2.1 item \
+         3)."
+    );
+    let job = create_with(&jt, &envs, &[("F", "false")])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .job;
+    let err = advance(
+        &jt,
+        &envs,
+        &[("F", "false")],
+        &job,
+        "B",
+        "P",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Step 'B' failed in its enablement group:\nModel validation error: 1 validation error \
+         for Submission\nJobTemplate -> steps[2] -> dependencies[1] -> environment:\n\tnames \
+         Environment 'X', which 3 attached Environment Templates define \
+         (EnvironmentTemplate[0], EnvironmentTemplate[1], EnvironmentTemplate[2]); an entry \
+         must match exactly one (Template Schemas §3.2.1 item 3)."
     );
 }
 

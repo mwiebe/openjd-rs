@@ -388,7 +388,7 @@ since a disabled Environment is simply left out of the Step's sets.
 `exclusive_group` (§4 item 7) names a group of Environments of which a Step's Sessions enter
 at most one. For each Step, of the Environments its Sessions would enter that share a group
 and whose `enableIf` is not `false` for it, only the first in the Job's Environment order
-(attached ones first, then `jobEnvironments`; §1.1 item 7) is entered, and the others are
+(attached ones first, then `jobEnvironments`; §1.1 *jobEnvironments*) is entered, and the others are
 *superseded*, which disables them for the Step (§3.2.2); they still apply to the Step, so
 constraint 7 holds for them (§3.2 constraint 7). Job creation takes them in that order and
 does not evaluate a superseded one's `enableIf` (§7.4.1 step 6). It is a plain `String`, so pass 11

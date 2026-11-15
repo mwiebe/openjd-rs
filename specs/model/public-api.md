@@ -293,7 +293,7 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
 pub struct CreatedJob {
     /// The combined Job: attached Environments first, in attachment order,
     /// then the Job Template's `jobEnvironments` (the Job's Environment
-    /// order, Template Schemas §1.1 item 7).
+    /// order, Template Schemas §1.1 *jobEnvironments*).
     pub job: job::Job,
     /// The document of each `job.job_environments` entry, index for index.
     pub environment_documents: Vec<job::Document>,
@@ -640,7 +640,7 @@ for `StepEnvironmentStatus`, which gained `exclusive_group` and `superseded_by`.
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need
 none (with CONTROL_FLOW, the per-Step ones only for a Step known to be
-enabled; an ambiguous name and the attachment-level errors always): resolution by name of each entry whose `enableIf` is known to be
+enabled; the attachment-level errors always): resolution by name of each entry whose `enableIf` is known to be
 `true` (absent, the boolean scalar, or an expression whose value template
 validation knows, §7.6 rule 5; any other is left to job creation),
 constraint 5; constraint 7 over the attachments that apply to each Step

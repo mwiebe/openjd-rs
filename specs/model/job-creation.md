@@ -400,7 +400,7 @@ budgets template validation and the session runtime apply.
    and Step Environments are not listed. The attached Environments are known before anything
    else (§7.4.1), so it is concrete before any TEMPLATE-scope expression, including a Step's
    `let`. The order is the order a Session that entered all of them would enter them, since
-   the combined Job lists the attached Environments first (Template Schemas §1.1 item 7, the
+   the combined Job lists the attached Environments first (Template Schemas §1.1 *jobEnvironments*, the
    Job's Environment order; prototype plan P2). It is bound
    with `EXPR` alone: template validation rejects a reference without ENV_PARAMS, and every
    `resolved_symtab` keeps only the symbols a field references, so a Job that does not use it
@@ -1461,8 +1461,9 @@ step after step 4 for a Step with an error from steps 1–4 (see
 certain of, in its own order (so it can report a Step's value errors that job creation
 reports only once the Step's step 1–4 errors are fixed). With `CONTROL_FLOW`, the per-Step
 checks below are made only for a Step known to be enabled (see
-[validation.md](validation.md#known-to-be-enabled-control_flow)); an ambiguous name and the
-attachment-level errors are reported for every Step:
+[validation.md](validation.md#known-to-be-enabled-control_flow)); the attachment-level errors
+are reported for every Step. An enabled entry's ambiguous name is a per-Step check, since
+Template Schemas §3.2.1 item 3 makes it an error only for an enabled entry:
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
    for an unreachable attachment is reported when it certainly applies to some Step (by its
@@ -1775,8 +1776,10 @@ the selection of every Step, top-level and loop body, whatever its `enableIf`:
 2. `external::select_environments` runs the submission stage's Environment work over the
    shells: external Environment resolution against the attached Environment Templates,
    constraint 7, each Job Environment's `enableIf` and `exclusiveGroup` per Step, and the
-   checks of the values. Its errors are filed per Step (`StagedErrors::errors_by_step`); an
-   ambiguous Environment name is a Job-level error and is always reported.
+   checks of the values. Its errors are filed per Step (`StagedErrors::errors_by_step`),
+   including an enabled entry's ambiguous Environment name, which Template Schemas §3.2.1
+   item 3 makes an error only for an enabled entry, so a skipped Step never reports it (RFC
+   0011 `<Environment>` item 3).
 3. `combine_step_host_requirements` resolves each entered Environment's host requirements
    for the Step, and keeps them per source rather than combining them with the Step's own.
 
@@ -1811,9 +1814,7 @@ part of its selection, so `CreatedJob::warnings` holds it only for a Step whose 
 applied at creation, and `check_environment_templates` only for a Step known to be enabled;
 each selection also carries its own in `EnvironmentSelection::warnings`, for the caller to
 report when it applies a selection made later (`openjd run` prints them then);
-one about an attachment (item 4) is reported whatever the Steps' `enableIf`. An entry whose
-`enableIf` fails is still checked for an ambiguous name, reported at Job creation whatever
-its Step's `enableIf` ("What stays at Job creation"). A `let` binding that an entry reads and that fails at
+one about an attachment (item 4) is reported whatever the Steps' `enableIf`. A `let` binding that an entry reads and that fails at
 Job creation (`10 // Param.D` with D 0) fails the Step's selection with the binding's error at
 `steps[i] -> let[j]`, as it stops an `ENV_PARAMS` Step before its entries are resolved
 (`binding::creation_scope_symtab`); its entries are then not evaluated, and a skipped Step

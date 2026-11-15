@@ -54,7 +54,7 @@ cargo test --workspace
 cargo test -p openjd-sessions
 ```
 
-The workspace has 10,300+ unit and integration tests across all crates (10,441 passing and 42 ignored by
+The workspace has 10,300+ unit and integration tests across all crates (10,447 passing and 42 ignored by
 `cargo test --workspace` on Linux at the time of writing).
 
 ### Cross-user tests (Docker)
@@ -81,7 +81,7 @@ Current coverage: 87.3% line coverage (see [COVERAGE_REPORT.md](COVERAGE_REPORT.
 
 ## Conformance
 
-Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 2,261 tests, with 22 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `1ec05b0`, which adds the draft `ENV_PARAMS` and `CONTROL_FLOW` extensions' tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
+Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 2,271 tests, with 22 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `8af3691`, which adds the draft `ENV_PARAMS` and `CONTROL_FLOW` extensions' tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
 
 | Category | Tests |
 |----------|-------|
@@ -89,18 +89,18 @@ Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDes
 | Template validation (EXPR) | 227 |
 | Template validation (FEATURE_BUNDLE_1) | 42 |
 | Template validation (TASK_CHUNKING) | 12 |
-| Template validation (ENV_PARAMS) | 201 |
+| Template validation (ENV_PARAMS) | 202 |
 | Template validation (CONTROL_FLOW) | 258 |
-| Environment template validation (all extensions, including 47 for ENV_PARAMS and 4 for CONTROL_FLOW) | 110 |
+| Environment template validation (all extensions, including 48 for ENV_PARAMS and 4 for CONTROL_FLOW) | 111 |
 | Job execution (base) | 204 |
-| Job execution (EXPR) | 185 |
+| Job execution (EXPR) | 187 |
 | Job execution (FEATURE_BUNDLE_1) | 14 |
 | Job execution (TASK_CHUNKING) | 18 |
 | Job execution (REDACTED_ENV_VARS) | 8 |
 | Job execution (WRAP_ACTIONS) | 64 |
-| Job execution (ENV_PARAMS) | 195 |
-| Job execution (CONTROL_FLOW) | 262 |
-| **Total** | **2,261** |
+| Job execution (ENV_PARAMS) | 199 |
+| Job execution (CONTROL_FLOW) | 264 |
+| **Total** | **2,271** |
 
 ## Architecture
 

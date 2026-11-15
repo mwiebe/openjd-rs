@@ -1156,7 +1156,7 @@ value.
 
 Template validation does not know the Environment Templates the Job will be submitted with,
 and an attached Environment of a grouped Job Environment's group comes first in the Job's
-Environment order (§1.1 item 7) and may supersede it, which disables it for the Step
+Environment order (§1.1 *jobEnvironments*) and may supersede it, which disables it for the Step
 (§3.2.2). So a Job Environment with an `exclusiveGroup` is never known here to be entered
 (§4, after item 10; JT-189), and every check below that applies only to an Environment known to be
 entered leaves it to job creation: the single-layer rule (pass 10) does not count it, and
@@ -1491,9 +1491,8 @@ with `Loop.*` unknown) if it has one: an `until` loop runs its first iteration. 
   gets only the undefined-variable check of their scope, since resolving a value is part of
   its selection, RFC 0011 `<Environment>` item 3, "Before Job creation");
 - pass 10: the single-wrap-layer rule;
-- `check_environment_templates`: an entry that names nothing or a missing `required`
-  Environment, the values, constraint 7, and the `ALWAYS` error, though an ambiguous
-  Environment name is always reported;
+- `check_environment_templates`: an entry that names nothing, a missing `required`
+  Environment or an ambiguous name, the values, constraint 7, and the `ALWAYS` error;
 - the literal combined host requirements (`host_requirements::check_literal_combinations`).
 
 For any other Step these checks are left to job creation, which makes them when the Step's

@@ -136,8 +136,9 @@ definition is reported as `openjd run` reports it. Then
 `openjd_model::check_environment_templates` runs every check of job creation's submission
 stage that needs no Job Parameter values. With `CONTROL_FLOW`, the per-Step checks are made only for a Step known to be enabled
 ([validation.md](../model/validation.md#known-to-be-enabled-control_flow)); for any other
-Step they are left to `openjd run`, except an ambiguous name, which is always reported, and
-the attachment-level errors. The checks:
+Step they are left to `openjd run`, except the attachment-level errors. An enabled entry's
+ambiguous name is one of the per-Step checks, since Template Schemas §3.2.1 item 3 makes it an
+error only for an enabled entry. The checks:
 
 - each entry whose `enableIf` is known to be `true` (absent, the boolean scalar, or an
   expression whose value template validation knows, such as `"true"`, Template Schemas §7.6

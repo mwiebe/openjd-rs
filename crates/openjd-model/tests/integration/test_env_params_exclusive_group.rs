@@ -523,7 +523,7 @@ fn a_superseded_attachment_is_held_to_constraint_7_but_not_its_values() {
 
 #[test]
 fn an_attached_environment_supersedes_a_job_environment_of_its_group() {
-    // §1.1 item 7: the attached Environments come first in the Job's
+    // §1.1 *jobEnvironments*: the attached Environments come first in the Job's
     // Environment order, so they supersede the Job Template's own. B has a
     // parameter without a default, which the Step supplies.
     let jt = |deps: &str| {

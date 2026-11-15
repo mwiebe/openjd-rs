@@ -68,7 +68,7 @@ pub struct Environment {
     /// by Environments of which a Step's Sessions enter at most one. For
     /// each Step, of the Environments its Sessions would enter that share a
     /// group and whose `enableIf` is not `false` for it, only the first in
-    /// the Job's Environment order (§1.1 item 7) is entered; the others are
+    /// the Job's Environment order (§1.1 *jobEnvironments*) is entered; the others are
     /// *superseded* for the Step, which disables them for it (§3.2.2), so
     /// the Step's values for them are not checked. They still apply to the
     /// Step, so constraint 7 still holds for them (§3.2 constraint 7). Job
@@ -208,7 +208,7 @@ pub(crate) enum Known {
 }
 
 /// Apply the `exclusiveGroup` bullet of §4 (after item 10) to one Step's
-/// Environments, given in the Job's Environment order (§1.1 item 7) as each
+/// Environments, given in the Job's Environment order (§1.1 *jobEnvironments*) as each
 /// one's [`Environment::group`] and its state before the rule
 /// ([`Environment::known_state`], or a sharper one): one with a group is
 /// known to be entered only when, in addition, every earlier one of its
