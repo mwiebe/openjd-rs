@@ -609,7 +609,9 @@ Added when the prototype was ported onto the `ENV_PARAMS` prototype, for spec `1
   wrap-stack preflight is removed.
 * Restacked onto the `ENV_PARAMS` prototype at `78ff6e72`, for spec `8af3691`: an ambiguous name is an error only for an
   enabled entry (Template Schemas §3.2.1 item 3), so it is part of the Step's Environment selection, and a skipped Step
-  or one whose `enableIf` fails never reports it. A disabled entry with an ambiguous name applies to each match.
+  or one whose `enableIf` fails never reports it. A disabled entry with an ambiguous name applies to each match. An
+  ambiguous attachment's parameter that no Step can supply is likewise a constraint 7 error of each Step it applies to
+  (`Attachments::ambiguous_required`); only the attachment named like a Job Environment stays at Job creation.
 
 ### Model specs to update
 

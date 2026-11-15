@@ -2438,3 +2438,182 @@ steps:
         assert_errors(&err.to_string(), "JobTemplate", &[error]);
     }
 }
+
+// ── Ambiguous names in a Step's Environment selection ──
+
+/// Two attached `X` with `activation`, each with a parameter `V` that has
+/// no `default`, so no Step can supply it (Template Schemas §3.2.1 item 3).
+fn ambiguous_required_x(activation: &str) -> [EnvironmentTemplate; 2] {
+    let params = "\n  envParameterDefinitions: [{name: V, type: STRING}]";
+    [
+        attached_x(activation, params),
+        attached_x(activation, params),
+    ]
+}
+
+/// The two attachment errors for [`ambiguous_required_x`], with `entered`
+/// the sentence on how the attachment applies to the Steps.
+fn ambiguous_required_errors(entered: &str) -> String {
+    let one = |doc: usize| {
+        format!(
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
+             'X' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], \
+             EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it \
+             (Template Schemas §3.2.1 item 3), and it has parameters without a default that no \
+             Step can supply: V. {entered}, and the submission is rejected (§3.2.1)."
+        )
+    };
+    format!(
+        "Model validation error: 2 validation errors for Submission\n{}\n{}",
+        one(0),
+        one(1)
+    )
+}
+
+const BY_DEFAULT_ENTERED: &str = "Its activation is BY_DEFAULT, so it applies to every Step that \
+                                  does not decline it with a disabled entry, and at least one \
+                                  Step does not decline it";
+
+fn ambiguous_required_template(enable_if: &str) -> JobTemplate {
+    jt_ok(
+        &format!(
+            r#"
+parameterDefinitions:
+- {{name: F, type: BOOL, default: false}}
+steps:
+- name: P
+  outputVariables: [{{name: Ok, type: BOOL}}]
+  dependencies: [{{environment: X, enableIf: "false"}}]
+  script: {{actions: {{onRun: {{command: echo, args: [p]}}}}}}
+- name: S
+  enableIf: {enable_if}
+  dependencies: [{{dependsOn: P}}]
+  script: {{actions: {{onRun: {{command: echo, args: [s]}}}}}}
+"#
+        ),
+        HEADER,
+    )
+}
+
+#[test]
+fn an_ambiguous_attachment_no_step_can_supply_fails_only_a_step_it_applies_to_that_runs() {
+    // `BY_DEFAULT` X ×2: P declines both with a disabled entry (§3.2.1 item
+    // 3), so only S's selection meets X's constraint 7 (RFC 0011
+    // `<Environment>` item 3).
+    let envs = ambiguous_required_x("BY_DEFAULT");
+    let expected = ambiguous_required_errors(BY_DEFAULT_ENTERED);
+    // Skipped at Job creation: the Job is created.
+    let skipped = ambiguous_required_template("\"Param.F\"");
+    let job = create_with(&skipped, &envs, &[])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .job;
+    assert_eq!(step(&job, "S").binding, StepBinding::Skipped);
+    // Enabled at Job creation: Job creation fails.
+    let err = create_with(&skipped, &envs, &[("F", "true")]).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+    // Decided at step input binding: S fails then.
+    let pending = ambiguous_required_template("\"Steps.P.Output.Ok\"");
+    let job = create_with(&pending, &envs, &[])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .job;
+    let err = advance(
+        &pending,
+        &envs,
+        &[],
+        &job,
+        "S",
+        "P",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!("Step 'S' failed in its enablement group:\n{expected}")
+    );
+    // Before Job creation: only for a Step known to be enabled.
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    check_environment_templates(&pending, &attached, &template_ctx(&pending))
+        .unwrap_or_else(|e| panic!("expected no errors before Job creation, got:\n{e}"));
+    let known = ambiguous_required_template("\"true\"");
+    let err = check_environment_templates(&known, &attached, &template_ctx(&known)).unwrap_err();
+    assert_eq!(err.to_string(), expected);
+}
+
+#[test]
+fn an_ambiguous_always_attachment_no_step_can_supply_is_not_checked_for_a_skipped_step() {
+    // `ALWAYS` X ×2 and a single Step: a skipped Step has no Environment
+    // selection, so the Job is created; an enabled one fails it.
+    let envs = ambiguous_required_x("ALWAYS");
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+steps:
+- name: S
+  enableIf: "Param.F"
+  script: {actions: {onRun: {command: echo, args: [s]}}}
+"#,
+        HEADER,
+    );
+    create_with(&jt, &envs, &[]).unwrap_or_else(|e| panic!("{e}"));
+    let err = create_with(&jt, &envs, &[("F", "true")]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        ambiguous_required_errors("Its activation is ALWAYS, so every Session enters it")
+    );
+}
+
+#[test]
+fn a_disabled_entry_with_an_ambiguous_name_declines_each_match_in_a_steps_selection() {
+    // §3.2.1 item 3: not an error, before Job creation, at Job creation, or
+    // at step input binding, and each `BY_DEFAULT` match is declined.
+    let jt = jt_ok(
+        r#"
+parameterDefinitions:
+- {name: F, type: BOOL, default: false}
+steps:
+- name: P
+  outputVariables: [{name: Ok, type: BOOL}]
+  script: {actions: {onRun: {command: echo, args: [p]}}}
+- name: A
+  dependencies: [{environment: X, enableIf: "Param.F"}]
+  script: {actions: {onRun: {command: echo, args: [a]}}}
+- name: B
+  enableIf: "Steps.P.Output.Ok"
+  dependencies: [{dependsOn: P}, {environment: X, enableIf: "false"}]
+  script: {actions: {onRun: {command: echo, args: [b]}}}
+"#,
+        HEADER,
+    );
+    let envs = [attached_x("BY_DEFAULT", ""), attached_x("BY_DEFAULT", "")];
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    check_environment_templates(&jt, &attached, &template_ctx(&jt))
+        .unwrap_or_else(|e| panic!("expected no errors before Job creation, got:\n{e}"));
+    let job = create_with(&jt, &envs, &[])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .job;
+    let b = advance(
+        &jt,
+        &envs,
+        &[],
+        &job,
+        "B",
+        "P",
+        &[("Ok", ExprValue::Bool(true))],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(b.binding, StepBinding::Bound);
+    for doc in 0..2 {
+        let document = openjd_model::job::Document::environment_template(doc, None);
+        // P has no entry, so it enters both; A and B decline both.
+        assert!(
+            step(&job, "P").enters_environment(&document, "X"),
+            "P {doc}"
+        );
+        assert!(
+            !step(&job, "A").enters_environment(&document, "X"),
+            "A {doc}"
+        );
+        assert!(!b.enters_environment(&document, "X"), "B {doc}");
+    }
+}

@@ -138,7 +138,8 @@ stage that needs no Job Parameter values. With `CONTROL_FLOW`, the per-Step chec
 ([validation.md](../model/validation.md#known-to-be-enabled-control_flow)); for any other
 Step they are left to `openjd run`, except the attachment-level errors. An enabled entry's
 ambiguous name is one of the per-Step checks, since Template Schemas §3.2.1 item 3 makes it an
-error only for an enabled entry. The checks:
+error only for an enabled entry, and so is an ambiguous attachment's parameter that no Step
+can supply, a constraint 7 error of each Step it applies to. The checks:
 
 - each entry whose `enableIf` is known to be `true` (absent, the boolean scalar, or an
   expression whose value template validation knows, such as `"true"`, Template Schemas §7.6
