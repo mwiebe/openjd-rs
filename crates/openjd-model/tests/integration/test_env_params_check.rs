@@ -168,19 +168,24 @@ fn an_ambiguous_attachment_named_like_a_job_environment_gets_only_the_job_enviro
     // §3.2.1 item 4: an entry naming X refers to the Job Environment, so
     // item 3 never applies to the two attachments named X. Each gets one
     // error, item 4's, and none for the ambiguous name, in check and in
-    // job creation alike.
-    let jt = r#"
-specificationVersion: jobtemplate-2023-09
-extensions: [ENV_PARAMS, EXPR]
-name: J
-jobEnvironments:
-- {name: X, variables: {W: w}}
-steps:
-- name: S
-  dependencies: [{environment: X}]
-  script: {actions: {onRun: {command: x}}}
-"#;
-    for activation in ["ALWAYS", "BY_DEFAULT"] {
+    // job creation alike. A disabled entry naming X declines the Job
+    // Environment, not the attachments.
+    let jt = |job_env: &str, entry: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: \
+             J\njobEnvironments:\n- {{name: X, {job_env}variables: {{W: w}}}}\nsteps:\n- \
+             name: S\n  dependencies: [{{environment: X{entry}}}]\n  script: {{actions: \
+             {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    let jts = [
+        jt("", ""),
+        jt("activation: BY_DEFAULT, ", ", enableIf: false"),
+    ];
+    for (jt, activation) in jts
+        .iter()
+        .flat_map(|jt| ["ALWAYS", "BY_DEFAULT"].map(|a| (jt, a)))
+    {
         let env = format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
              environment:\n  name: X\n  activation: {activation}\n  \
