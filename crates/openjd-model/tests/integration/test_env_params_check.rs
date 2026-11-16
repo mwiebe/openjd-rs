@@ -164,6 +164,43 @@ fn an_ambiguous_name_is_rejected() {
 }
 
 #[test]
+fn an_ambiguous_attachment_named_like_a_job_environment_gets_only_the_job_environment_error() {
+    // §3.2.1 item 4: an entry naming X refers to the Job Environment, so
+    // item 3 never applies to the two attachments named X. Each gets one
+    // error, item 4's, and none for the ambiguous name, in check and in
+    // job creation alike.
+    let jt = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- {name: X, variables: {W: w}}
+steps:
+- name: S
+  dependencies: [{environment: X}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+    for activation in ["ALWAYS", "BY_DEFAULT"] {
+        let env = format!(
+            "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+             environment:\n  name: X\n  activation: {activation}\n  \
+             envParameterDefinitions: [{{name: V, type: STRING}}]\n  variables: {{W: w}}\n"
+        );
+        let item_4 = |doc: usize| {
+            format!(
+                "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
+                 Environment 'X' has the same name as a jobEnvironments entry of the Job \
+                 Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 \
+                 item 4), and it has parameters without a default that no Step can supply: V. Its \
+                 activation is {activation}, so every Session enters it, and the submission is \
+                 rejected (§3.2.1)."
+            )
+        };
+        check_err_same_as_apply(jt, &[&env, &env], &[&item_4(0), &item_4(1)]);
+    }
+}
+
+#[test]
 fn two_attachments_of_one_name_that_no_entry_names_are_accepted() {
     // Plan A11.
     let jt = job_ok(

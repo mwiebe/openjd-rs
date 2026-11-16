@@ -909,7 +909,9 @@ that has entries lists both.
      them, so each such attachment gets one error at its `envParameterDefinitions`, as in step
      1, whatever its `enableIf` or group, when it applies to some Step that is not stopped (for
      a `BY_DEFAULT` one, a Step that does not decline it), and those parameters are not
-     reported per Step.
+     reported per Step. Same-named attachments whose name is also a Job Environment's get only
+     step 1's error: an entry with that name refers to the Job Environment and is not matched
+     to the attachments, so item 3 does not apply to them.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It

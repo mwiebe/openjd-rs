@@ -1396,17 +1396,19 @@ fn the_single_layer_and_conflict_errors_are_filed_under_their_step() {
 
 #[test]
 fn the_unreachable_attachments_errors_follow_the_attachment_order() {
-    // Both attachments are named E, like a Job Environment, and each has a
-    // parameter without a default: each gets two errors (named like a Job
-    // Environment; defined twice), the first attachment's first.
+    // Attachments 0 and 2 are both named A (§3.2.1 item 3), and attachment
+    // 1 is named E, like a Job Environment (item 4). Each has a parameter
+    // without a default, so each gets one error, in attachment order, not
+    // with the item 4 error first.
     let jt = format!(
         "{HEAD}jobEnvironments:\n- {{name: E, activation: ON_REQUEST, variables: {{V: \
          e}}}}\n{}",
         "steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n"
     );
-    let e0 = env("name: E, envParameterDefinitions: [{name: X, type: INT}]");
+    let e0 = env("name: A, envParameterDefinitions: [{name: X, type: INT}]");
     let e1 = env("name: E, envParameterDefinitions: [{name: Y, type: INT}]");
-    assert_eq!(err_text(&jt, &[&e0, &e1], &[]), "Model validation error: 4 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a disabled entry, and at least one Step does not decline it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a disabled entry, and at least one Step does not decline it, and the submission is rejected (§3.2.1).");
+    let e2 = env("name: A, envParameterDefinitions: [{name: Z, type: INT}]");
+    assert_eq!(err_text(&jt, &[&e0, &e1, &e2], &[]), "Model validation error: 3 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'A' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[2]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: X. Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a disabled entry, and at least one Step does not decline it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment 'E' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: Y. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nEnvironmentTemplate[2] -> environment -> envParameterDefinitions:\n\tEnvironment 'A' is defined by 2 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[2]), so no enabled 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: Z. Its activation is BY_DEFAULT, so it applies to every Step that does not decline it with a disabled entry, and at least one Step does not decline it, and the submission is rejected (§3.2.1).");
 }
 
 // ── Round 4 ──────────────────────────────────────────────────────────

@@ -419,8 +419,8 @@ impl<'a> Attachments<'a> {
     /// Template lists `ENV_PARAMS`, `job_lists_env_params`, since only
     /// then could an entry have named it; and an error when it has
     /// parameters without a `default`), an ambiguous name with such
-    /// parameters, and every literal `default` that fails its checks
-    /// (§4.5 item 2).
+    /// parameters that is not also a Job Environment's name, and every
+    /// literal `default` that fails its checks (§4.5 item 2).
     fn new(
         attached: &'a [AttachedEnvironmentTemplate<'a>],
         job_env_names: &HashSet<&str>,
@@ -527,13 +527,19 @@ impl<'a> Attachments<'a> {
         // One without a `default` rejects the submission where it applies
         // to a Step; say so once per attachment, rather than per Step with
         // "must supply" advice that an entry could only follow by naming
-        // the ambiguous name.
+        // the ambiguous name. An entry naming a Job Environment's name is
+        // not resolved against the attachments, so item 3 does not apply
+        // to attachments with that name: item 4's error, above, is their
+        // only one.
         for (doc, att) in attached.iter().enumerate() {
             let env = att.template.environment();
             let Some(others) = by_name.get(env.name.as_str()).filter(|d| d.len() > 1) else {
                 continue;
             };
             unreachable.insert(doc);
+            if job_env_names.contains(env.name.as_str()) {
+                continue;
+            }
             let required = required_names(env);
             if required.is_empty() || env.activation() == EnvironmentActivation::OnRequest {
                 continue;
