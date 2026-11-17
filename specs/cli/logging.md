@@ -18,9 +18,13 @@ openjd-sessions subprocess loop
   └── log::info!(openjd_log_content = LogContent::COMMAND_OUTPUT.bits(); "{line}")
       │
       └── SessionLogger::log(&record)
-          ├── Extract openjd_log_content from record's key-value pairs
+          ├── Extract openjd_log_content (and whether openjd_session_tag is present)
+          │   from record's key-value pairs
           ├── Check if COMMAND_OUTPUT bit (0x08) is set, or EXCEPTION_INFO
-          │   (0x10) is set and the level is Warn or more severe
+          │   (0x10) is set and the level is Warn or more severe, or, on a
+          │   session-tagged record, BANNER (0x01) other than the Service
+          │   start/end banners, or with --verbose a PROCESS_CONTROL health
+          │   probe record
           └── If so: println!("{timestamp}\t{message}")
 ```
 
@@ -30,7 +34,8 @@ The sessions crate uses `log`'s key-value feature to attach structured metadata 
 records. The `openjd_log_content` key carries a `LogContent` bitflag value that classifies
 the log line's content type.
 
-The CLI's `SessionLogger` displays two kinds of line:
+The CLI's `SessionLogger` displays two kinds of line (`shows_record` in `main.rs`), and
+for a session-tagged record a third (below):
 
 1. Lines with the `COMMAND_OUTPUT` bit set (bit 3, value 8): subprocess output.
 2. Lines with the `EXCEPTION_INFO` bit set (bit 4, value 16) at `Warn` or more severe:
@@ -40,13 +45,36 @@ The CLI's `SessionLogger` displays two kinds of line:
 Everything else is filtered out: internal session lifecycle messages, action status
 updates, and other metadata that would clutter the user's terminal output.
 
+The logger routes by content, not by level: a `warn`-level record with the
+`COMMAND_OUTPUT` bit is printed exactly like an `info` output line (same timestamp,
+no level marker), because it is addressed to the template author about their action's
+output — today the sessions runtime's `Received openjd_redacted_env for 'NAME' but the
+REDACTED_ENV_VARS extension is not declared; the variable is not set.` — while the
+runtime's operational `log::warn!` records, which carry no `openjd_log_content`, are
+dropped. See `specs/sessions/logging.md` § Log levels and classification.
+
+One exception: a record that carries the `openjd_session_tag` key-value — one logged by a
+Session created with `SessionConfig::log_tag`, which `openjd run` does for every Service
+Session (`Service <name>`) — is also displayed when its `BANNER` bit is set. The sessions
+runtime enters a Service Session's Environments and runs its actions internally, so the
+CLI cannot print `Entering Environment: …` / `Service onEnter: …` banners for it the way it
+does for the Task Session; a tagged Session's section banners are single tagged `BANNER`
+lines (`[Service Files] --------- Entering Environment: Shared`), and the logger lets them
+through, except `Starting Service: …` and `Ending Service: …`, which the CLI frames itself
+(`DUPLICATE_SESSION_BANNERS`). With `--verbose` it also lets through a tagged Session's
+health-probe records (`health probe ok`, `health probe failed (n of m): …`, `is not yet
+READY: …`, with the `PROCESS_CONTROL` bit), so a `TCP_CONNECT` or `STDOUT` check's timeline,
+which has no command output of its own, is visible (`shows_tagged_record` in `main.rs`). The
+Task Session has no tag, so its four-line `BANNER` records stay filtered and the CLI's own
+banners are not duplicated. See [run.md § Output](run.md#output).
+
 ### Visitor Pattern
 
 The `log::Log::log()` method receives a `&Record` whose key-value pairs must be extracted
 via the visitor pattern:
 
 ```rust
-struct Visitor { bits: Option<u64> }
+struct Visitor { bits: Option<u64>, session_tagged: bool }
 
 impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
     fn visit_pair(
@@ -54,8 +82,10 @@ impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
         key: log::kv::Key<'kvs>,
         value: log::kv::Value<'kvs>,
     ) -> Result<(), log::kv::Error> {
-        if key.as_str() == "openjd_log_content" {
-            self.bits = value.to_u64();
+        match key.as_str() {
+            "openjd_log_content" => self.bits = value.to_u64(),
+            "openjd_session_tag" => self.session_tagged = true,
+            _ => {}
         }
         Ok(())
     }

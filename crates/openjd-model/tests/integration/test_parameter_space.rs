@@ -357,7 +357,7 @@ fn numeric_range_format_strings_use_template_scope() {
 fn int_format_string_unterminated() {
     check_err_exact(
         &job_with_int_value_param(r#"{"name": "foo", "type": "INT", "range": ["{{Param.Value"]}"#),
-        "Validation error: 'jobtemplate-2023-09' failed checks: Failed to parse interpolation expression at [0, 13]. Reason: Braces mismatch.\n  {{Param.Value\n  ^~",
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tFailed to parse interpolation expression at [0, 13]. Reason: Braces mismatch.\n  {{Param.Value\n  ^~",
     );
 }
 
@@ -862,7 +862,7 @@ fn int_disallow_floats() {
                 r#"{{"taskParameterDefinitions": [{{"name": "foo", "type": "INT", "range": [1, {value}]}}]}}"#
             )),
             &format!(
-                "Validation error: 'jobtemplate-2023-09' failed checks: Expected integer, got float: {shown}"
+                "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tExpected integer, got float: {shown}"
             ),
         );
     }
@@ -882,7 +882,7 @@ fn int_range_list_element_of_wrong_kind() {
             &job_with_param_space(&format!(
                 r#"{{"taskParameterDefinitions": [{{"name": "foo", "type": "INT", "range": [1, {element}]}}]}}"#
             )),
-            &format!("Validation error: 'jobtemplate-2023-09' failed checks: {message}"),
+            &format!("Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\t{message}"),
         );
     }
 }
@@ -894,7 +894,7 @@ fn int_disallow_bool() {
         &job_with_param_space(
             r#"{"taskParameterDefinitions": [{"name": "foo", "type": "INT", "range": [true]}]}"#,
         ),
-        "Validation error: 'jobtemplate-2023-09' failed checks: Expected integer, got boolean",
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tExpected integer, got boolean",
     );
 }
 
@@ -905,7 +905,7 @@ fn int_disallow_float_strings() {
         &job_with_param_space(
             r#"{"taskParameterDefinitions": [{"name": "foo", "type": "INT", "range": ["1.1"]}]}"#,
         ),
-        "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '1.1' as integer",
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tCannot parse '1.1' as integer",
     );
 }
 
@@ -919,7 +919,7 @@ fn int_literal_string_with_single_braces_not_int() {
                 r#"{{"taskParameterDefinitions": [{{"name": "foo", "type": "INT", "range": ["{literal}"]}}]}}"#
             )),
             &format!(
-                "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '{literal}' as integer"
+                "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tCannot parse '{literal}' as integer"
             ),
         );
     }
@@ -932,7 +932,7 @@ fn int_literal_string_not_int() {
         &job_with_param_space(
             r#"{"taskParameterDefinitions": [{"name": "foo", "type": "INT", "range": ["notint"]}]}"#,
         ),
-        "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse 'notint' as integer",
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> parameterSpace -> taskParameterDefinitions[0]:\n\tCannot parse 'notint' as integer",
     );
 }
 

@@ -285,6 +285,11 @@ pub fn openjd_expr::functions::conversion::int_from_float(&'_ mut dyn openjd_exp
 pub fn openjd_expr::functions::conversion::int_from_int(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
 pub fn openjd_expr::functions::conversion::int_from_string(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
 pub fn openjd_expr::functions::conversion::string_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
+pub mod openjd_expr::functions::host_port
+pub fn openjd_expr::functions::host_port::is_ipv4_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
+pub fn openjd_expr::functions::host_port::is_ipv6_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
+pub fn openjd_expr::functions::host_port::join_host_port_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
+pub fn openjd_expr::functions::host_port::split_host_port_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
 pub mod openjd_expr::functions::list
 pub fn openjd_expr::functions::list::flatten_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
 pub fn openjd_expr::functions::list::join_fn(&'_ mut dyn openjd_expr::function_library::EvalContext, &[openjd_expr::value::ExprValue]) -> core::result::Result<openjd_expr::value::ExprValue, openjd_expr::error::ExpressionError>
@@ -472,6 +477,7 @@ pub const openjd_expr::path_mapping::MAX_PATH_LEN: usize
 pub fn openjd_expr::path_mapping::is_uri(&str) -> bool
 pub mod openjd_expr::profile
 #[non_exhaustive] pub enum openjd_expr::profile::ExprExtension
+pub openjd_expr::profile::ExprExtension::Service
 impl openjd_expr::profile::ExprExtension
 pub const openjd_expr::profile::ExprExtension::ALL: &'static [openjd_expr::profile::ExprExtension]
 impl core::clone::Clone for openjd_expr::profile::ExprExtension
@@ -905,6 +911,7 @@ pub fn openjd_expr::value::format_float(f64) -> alloc::string::String
 pub fn openjd_expr::value::normalize_path_separators(&str, openjd_expr::path_mapping::PathFormat) -> alloc::string::String
 pub macro openjd_expr::symtab!
 #[non_exhaustive] pub enum openjd_expr::ExprExtension
+pub openjd_expr::ExprExtension::Service
 impl openjd_expr::profile::ExprExtension
 pub const openjd_expr::profile::ExprExtension::ALL: &'static [openjd_expr::profile::ExprExtension]
 impl core::clone::Clone for openjd_expr::profile::ExprExtension

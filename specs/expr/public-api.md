@@ -260,12 +260,22 @@ impl ExprRevision {
     pub const CURRENT: ExprRevision = ExprRevision::V2026_02;
 }
 
-/// Expression-language extensions. Defined as empty-but-`#[non_exhaustive]`
-/// — no expr-level extensions exist today, the API shape is reserved for
-/// the first.
+/// Expression-language extensions: which additional functions a profile
+/// registers once EXPR is available. `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum ExprExtension {}
+pub enum ExprExtension {
+    /// SERVICE (RFC 0009): adds join_host_port, split_host_port, is_ipv4,
+    /// is_ipv6 (Expression Language §2.2.4) and the repr_sh(int) /
+    /// repr_sh(list[int]) signatures (§2.2.6). A profile without it does not
+    /// have them; `ExprExtension::ALL == &[Service]`.
+    Service,
+}
+
+impl ExprExtension {
+    /// Every variant, in a stable order; what `ExprProfile::latest()` enables.
+    pub const ALL: &'static [ExprExtension];
+}
 
 /// Host-context state available to expression evaluation. Today this gates
 /// `apply_path_mapping`.
@@ -1625,9 +1635,9 @@ impl std::error::Error for ExpressionError;   // source() returns &kind
 ## Function Implementations (`functions::*`)
 
 Accessible via module paths like `openjd_expr::functions::arithmetic::add_int`.
-Every submodule (`arithmetic`, `comparison`, `conversion`, `list`,
-`math`, `misc`, `path`, `path_parse`, `regex`, `repr`, `string`) is
-public. The implementations have the shape required by `FunctionImpl`:
+Every submodule (`arithmetic`, `comparison`, `conversion`, `host_port`,
+`list`, `math`, `misc`, `path`, `path_parse`, `regex`, `repr`, `string`)
+is public. The implementations have the shape required by `FunctionImpl`:
 
 ```rust
 pub fn <name>(
@@ -1756,7 +1766,7 @@ revision is defined today.
 Enums marked `#[non_exhaustive]`:
 
 - `ExprRevision`
-- `ExprExtension` (empty today — reserved for future expression-level extensions)
+- `ExprExtension` (`Service` today; `#[non_exhaustive]` for future expression-level extensions)
 - `TypeCode`
 - `ExpressionErrorKind`
 - `ExprValue` (outer enum) — so new primitive types can be added to

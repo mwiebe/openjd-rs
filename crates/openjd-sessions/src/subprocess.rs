@@ -20,7 +20,6 @@ use crate::action_filter::{ActionFilter, ActionMessageKind, ActionMessageValue};
 use crate::error::SessionError;
 use crate::logging::LogContent;
 use crate::runner::CancelMethod;
-use crate::session_log;
 use crate::session_user::SessionUser;
 use std::sync::Arc;
 
@@ -900,6 +899,14 @@ pub async fn run_subprocess(
     if args.is_empty() {
         return Err(SessionError::Runtime("No command specified".into()));
     }
+    // Attribute every record about this action to it when it runs
+    // concurrently with another action (RFC 0009 rule 3); `None` otherwise.
+    let action_tag: Option<String> = filter.action_tag().map(str::to_string);
+    let session_tag: Option<String> = filter.session_tag().map(str::to_string);
+    let tag = crate::logging::LogTag {
+        session: session_tag.as_deref(),
+        action: action_tag.as_deref(),
+    };
 
     // Cross-user execution must go through the helper binary.
     if config.user.as_deref().is_some_and(|u| !u.is_process_user()) {
@@ -923,9 +930,10 @@ pub async fn run_subprocess(
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         crate::win32_locate::locate_windows_executable(args, Some(&config.env_vars), &wd).map_err(
             |msg| {
-                session_log!(
+                crate::session_tagged_log!(
                     info,
                     session_id,
+                    tag,
                     LogContent::EXCEPTION_INFO | LogContent::PROCESS_CONTROL,
                     "{}",
                     msg
@@ -952,18 +960,20 @@ pub async fn run_subprocess(
     }
 
     // Log the command line (redacting any openjd_redacted_env tokens)
-    session_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
+        tag,
         LogContent::FILE_PATH | LogContent::PROCESS_CONTROL,
         "Running command {}",
         format_command_for_log(args)
     );
 
     // Spawn the process via tokio::process::Command (same-user only;
-    // cross-user was rejected above).
-    #[cfg(windows)]
-    let win32_process_handle: Option<windows::Win32::Foundation::HANDLE> = None;
+    // cross-user was rejected above). Nothing non-`Send` is held across an
+    // await here, so this future can be `tokio::spawn`ed — the Service
+    // Session runtime relies on that to run a Service's `onRun` in the
+    // background (RFC 0009).
 
     #[allow(unused_mut)]
     let (mut child, pid, stdout_for_reading): (
@@ -985,9 +995,10 @@ pub async fn run_subprocess(
             cmd.stdout(std::process::Stdio::piped());
         }
         let mut c = cmd.spawn().map_err(|e| {
-            session_log!(
+            crate::session_tagged_log!(
                 info,
                 session_id,
+                tag,
                 LogContent::EXCEPTION_INFO | LogContent::PROCESS_CONTROL,
                 "Process failed to start: '{}': {}",
                 args[0],
@@ -1007,16 +1018,18 @@ pub async fn run_subprocess(
         (Some(c), p, stdout)
     };
 
-    session_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
+        tag,
         LogContent::PROCESS_CONTROL,
         "Command started as pid: {}",
         pid
     );
-    session_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
+        tag,
         LogContent::BANNER | LogContent::COMMAND_OUTPUT,
         "Output:"
     );
@@ -1064,7 +1077,7 @@ pub async fn run_subprocess(
                 biased;
 
                 _ = &mut drain_deadline, if cancel_requested => {
-                    session_log!(info, session_id, LogContent::PROCESS_CONTROL,
+                    crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL,
                         "Stdout drain grace period expired, stopping read loop");
                     break;
                 }
@@ -1077,12 +1090,12 @@ pub async fn run_subprocess(
 
                     match (&config.cancel_method, time_limit) {
                         (_, Some(limit)) if limit.is_zero() => {
-                            session_log!(info, session_id, LogContent::PROCESS_CONTROL, "Urgent cancel (time_limit=0), sending SIGKILL to process group {}", pid);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Urgent cancel (time_limit=0), sending SIGKILL to process group {}", pid);
                             send_terminate(pid);
                             terminate_sent = true;
                         }
                         (CancelMethod::Terminate, _) => {
-                            session_log!(info, session_id, LogContent::PROCESS_CONTROL, "Sending SIGKILL to process group {}", pid);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGKILL to process group {}", pid);
                             send_terminate(pid);
                             terminate_sent = true;
                         }
@@ -1094,7 +1107,7 @@ pub async fn run_subprocess(
                             if let Some(dir) = &config.working_dir {
                                 write_cancel_info(dir, delay);
                             }
-                            session_log!(info, session_id, LogContent::PROCESS_CONTROL, "Sending SIGTERM to process group {} (grace period: {:?})", pid, delay);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGTERM to process group {} (grace period: {:?})", pid, delay);
                             send_notify(pid);
                             spawn_delayed_terminate(pid, delay);
                             // Deliberately do NOT set terminate_sent here —
@@ -1112,7 +1125,7 @@ pub async fn run_subprocess(
                     timed_out = true;
                     cancel_requested = true;
                     drain_deadline.as_mut().reset(tokio::time::Instant::now() + STDOUT_DRAIN_AFTER_KILL);
-                    session_log!(info, session_id, LogContent::PROCESS_CONTROL, "Action timed out, sending SIGKILL to process group");
+                    crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Action timed out, sending SIGKILL to process group");
                     send_terminate(pid);
                     terminate_sent = true;
                 }
@@ -1133,7 +1146,7 @@ pub async fn run_subprocess(
                             line_buf.clear();
                             let (display, pass_through) = process_line(&line, filter, session_id, &message_tx, &mut saw_fail);
                             if pass_through && filter.min_log_level() <= 20 {
-                                session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
+                                crate::session_tagged_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
                             }
                             if config.debug_collect_stdout {
                                 stdout_collected.push_str(&display);
@@ -1171,31 +1184,16 @@ pub async fn run_subprocess(
             }
         }
     } else {
-        // Windows cross-user: wait on the raw process handle
-        #[cfg(windows)]
-        {
-            win32_process_handle.map(|h| {
-                use std::os::windows::process::ExitStatusExt;
-                use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-                unsafe {
-                    let _ = WaitForSingleObject(h, 60000);
-                    let mut code = 0u32;
-                    let _ = GetExitCodeProcess(h, &mut code);
-                    let _ = windows::Win32::Foundation::CloseHandle(h);
-                    std::process::ExitStatus::from_raw(code)
-                }
-            })
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
+        // Unreachable in practice: the spawn block above always yields a
+        // child (cross-user execution was rejected before it).
+        None
     };
 
     let exit_code = exit_status.and_then(|s| s.code());
-    session_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
+        tag,
         LogContent::PROCESS_CONTROL,
         "Process exit code: {}",
         exit_code.map_or("N/A".to_string(), |c| c.to_string())
@@ -1276,7 +1274,14 @@ pub(crate) fn process_line(
                     None
                 }
             }
-            _ => None,
+            ActionMessageKind::ServiceReady => {
+                if let ActionMessageValue::String(s) = cb.value {
+                    Some(ActionMessage::ServiceReady(s))
+                } else {
+                    None
+                }
+            }
+            ActionMessageKind::SessionRuntimeLoglevel => None,
         };
         if let Some(msg) = msg {
             let _ = message_tx.send(msg);

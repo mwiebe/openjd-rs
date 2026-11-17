@@ -74,8 +74,15 @@ impl TempDir {
 
 The Python library's `TempDir` has explicit `cleanup()` and no `__del__`. The Rust crate
 goes further: `cleanup()` is the primary API, but `TempDir` also implements `Drop` as a
-safety net that performs a best-effort `remove_dir_all` if `cleanup()` was never called.
-Errors from the `Drop` path are silently ignored (no async, no error propagation).
+safety net that performs a best-effort `remove_dir_all` if `cleanup()` was never called
+and the directory was not kept. Errors from the `Drop` path are silently ignored (no async,
+no error propagation).
+
+`keep(&mut self)` marks the directory kept: neither `cleanup()` nor `Drop` removes it
+afterwards. `Session::with_config` calls it on the working and embedded-files directories
+when `retain_working_dir` is set, so a retained directory survives the `Session` being
+dropped. The crate-private `mark_cleaned_up()` records the same flag for a nested
+directory that its parent's cleanup removes; `keep` calls it.
 
 Callers should still prefer explicit `cleanup()` because:
 

@@ -57,12 +57,123 @@ of the actual call site. A macro preserves the correct source location.
 The `kv` feature syntax (`key = value;`) is only available in the `log` macros, not
 through a programmatic API, which further necessitates a macro wrapper.
 
+## session_action_log! Macro — per-action attribution (RFC 0009)
+
+```rust
+macro_rules! session_action_log {
+    ($level:ident, $session_id:expr, $action:expr, $content:expr, $($arg:tt)+) => {
+        $crate::session_tagged_log!(
+            $level,
+            $session_id,
+            $crate::logging::LogTag { session: None, action: ($action as Option<&str>) },
+            $content,
+            $($arg)+
+        )
+    };
+}
+```
+
+A Service Session's `onHealthCheck` runs *while* `onRun` runs, so banners
+no longer attribute output lines to the action that produced them. RFC 0009
+"Concurrency with `onRun`" rule 3 requires every captured stdout/stderr line
+of a Service Session to be attributable to its action, and describes two
+implementation forms: a structured field, or a `[<action>] ` text prefix.
+`session_action_log!` emits both at once when `$action` is `Some`:
+
+- the structured field `openjd_action = "<action name>"` (alongside
+  `session_id`, `openjd_log_content`, `openjd_timestamp_usec`), for
+  consumers that read the record's key-values;
+- the prefix `[<action name>] ` on the message, for the single plain-text
+  log.
+
+With `$action == None` it is exactly `session_log!`, so the untagged path is
+unchanged. `session_action_log!` is shorthand for `session_tagged_log!` (below)
+with no session tag.
+
+Who sets the tag: `ScriptRunnerBase::action_tag` (set by the Service Session
+to `"onHealthCheck"`, or `"onWrapServiceHealthCheck"` when wrapped) is
+copied into `ActionFilter::action_tag` for the action's run, and
+`subprocess::run_subprocess` / `cross_user_helper::run_via_helper` emit every
+record about the action — `Running command …`, `Command started as pid`,
+`Output:`, each `COMMAND_OUTPUT` line, cancel and timeout notices, `Process
+exit code` — through `session_tagged_log!` with that tag. The runner's
+`Phase: Running action` subsection banner becomes a single tagged
+`PROCESS_CONTROL` line for a tagged action. `onRun`, `onEnter`, `onExit`,
+Environment actions and Tasks have no action tag and log exactly as before
+(unless the Session has a session tag, next).
+
+## LogTag and session_tagged_log! — session-wide attribution
+
+```rust
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogTag<'a> {
+    pub session: Option<&'a str>,   // SessionConfig::log_tag
+    pub action: Option<&'a str>,    // the concurrently running action (rule 3)
+}
+impl LogTag<'_> {
+    pub fn prefix(&self) -> String;   // "[<session>] [<action>] ", absent parts omitted
+    pub fn is_empty(&self) -> bool;
+}
+
+macro_rules! session_tagged_log {
+    ($level:ident, $session_id:expr, $tag:expr, $content:expr, $($arg:tt)+) => { … };
+}
+```
+
+A single-host runner that merges several Sessions' logs into one stream —
+`openjd run`, whose Job's Service Sessions log alongside the Task Session —
+loses attribution once a Service's `onRun` output interleaves with Task
+output (the RFC's rule-3 assumption, "`onRun` is the only stream present",
+does not hold there). `SessionConfig::log_tag: Option<String>` is the
+Session-wide answer: the runner sets it (the CLI to `Service <name>`, with
+`(from <document>)` for an external Service), the Session stores it and
+copies it onto every runner it builds (`EnvironmentScriptRunner`,
+`StepScriptRunner`, `new_runner_base`, `new_detached_runner_base`:
+`ScriptRunnerBase::session_tag`) and onto the `ActionFilter` of each action
+(`set_session_tag`), and `session_tagged_log!` emits, for the tags that are
+set:
+
+- the structured fields `openjd_session_tag = "<tag>"` and/or
+  `openjd_action = "<action>"`;
+- the message prefix `[<session>] [<action>] ` in that order — the session
+  tag first, so a Service's concurrent check reads `[Service Files]
+  [onHealthCheck] CHECK_OK` and its `onRun` `[Service Files] line`. The
+  action tag's meaning (rule 3) is unchanged; the session tag is purely
+  additive.
+
+With both `None` it is exactly `session_log!`. The `log_tag` also changes the
+shape of the Session's **section banners**: `Session::log_banner(title)` calls
+`log_section_banner_tagged(session_id, log_tag, title)`, which with a tag
+emits one `BANNER` line, `[<tag>] --------- <title>`, instead of the four
+lines below — separator lines interleaved with another Session's output
+would be noise, and this is the same reduction the runner applies to its
+`Phase: Running action` subsection banner for a tagged action. All of the
+Session's section banners go through it (`Entering Environment: …`,
+`Exiting Environment: …`, `Running Task`, `Session Cleanup`, and the Service
+Session's `Starting Service: …`, `Service onEnter: …`, `Service onRun: …
+(launch N)`, `Ending Service: …`, `Service onExit: …`). A consumer that merges
+streams can therefore show a tagged Session's banners (the CLI does, for the
+Service Sessions) while still printing its own for the untagged Session.
+Redaction is applied to a line before any prefix is added, so the prefix
+never hides or splits a redacted value. `log_tag: None` (the default) leaves
+every record exactly as before.
+
 ## Banner Helpers
 
 ```rust
 pub fn log_section_banner(session_id: &str, title: &str);
+pub fn log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
+pub fn log_session_note_tagged(session_id: &str, session_tag: Option<&str>, text: &str);
 pub fn log_subsection_banner(session_id: &str, title: &str);
 ```
+
+`log_section_banner_tagged` with `Some(tag)` emits the single tagged line
+described above; with `None` it is `log_section_banner`.
+`log_session_note_tagged` is for a one-line note about the Session's
+structure that a reader of a merged log needs beside the banners (the runtime
+has no caller today: a Service Session enters every Environment it is given,
+so it no longer logs a skip): with a tag it is a tagged `BANNER` line
+`[<tag>] <text>` (no `--------- ` prefix), without one a `PROCESS_CONTROL` line.
 
 Emit formatted banner lines matching the Python library's output:
 
@@ -113,6 +224,40 @@ to provide visual structure in log output.
 | `runner/step_script.rs` | `BANNER` | Subsection banner before action execution |
 | `embedded_files.rs` | `FILE_PATH` | File write paths |
 | `embedded_files.rs` | `FILE_CONTENTS` | File data content (debug level only) |
+| `action_filter.rs` | `COMMAND_OUTPUT` (WARN) | `Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is not declared; the variable is not set.` — see below |
+
+## Log levels and classification
+
+The `log` level of a record and its `LogContent` are independent axes, as in Python
+(`LOG.warning(..., extra=LogExtraInfo(openjd_log_content=...))`): the level says how
+serious the record is, the content says *what it is about* and therefore where a
+consumer routes it. Almost every record of the crate is `info`. The exceptions, and
+how they are classified:
+
+- **Operational warnings** about the runtime itself — the sticky-bit warning in
+  `Session::with_config`, a cross-user helper dropped without `shutdown()`, a
+  `CTRL_BREAK` / delayed-terminate fallback in `subprocess.rs`, the
+  `redactions_enabled = true` malformed `openjd_redacted_env` notice — are plain
+  `log::warn!` records with **no** `openjd_log_content`. They are for whoever runs the
+  runtime, not the template author, and a consumer that routes by `LogContent` leaves
+  them out of the action's output (the CLI's `SessionLogger` drops them).
+- **Warnings addressed to the template author** about *their action's output* carry
+  `LogContent::COMMAND_OUTPUT` at level `warn`, through `session_tagged_log!` so they
+  carry the action's `session_id`, `openjd_timestamp_usec` and session / action tags
+  like every other line of the action. Today there is one: the `ActionFilter`'s
+  `Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is not
+  declared; the variable is not set.` (see
+  [action-filter.md](action-filter.md#when-the-document-does-not-declare-redacted_env_vars)),
+  which matches the classification of Python's `Received openjd_redacted_env message but
+  REDACTED_ENV_VARS extension is not enabled` warning. Routing it with the command output
+  puts it next to the redacted `NAME=********` line it explains, in the one stream the
+  author reads. It is subject to the action's `openjd_session_runtime_loglevel` like
+  the output it accompanies (suppressed above `WARNING`); the `info`-level output lines
+  are suppressed above `INFO`.
+
+A consumer must therefore not assume `COMMAND_OUTPUT` implies `info`, nor that `warn`
+implies "not the action's output": route by `openjd_log_content`, and read the level
+for severity.
 
 ## Consumer Integration
 

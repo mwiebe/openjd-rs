@@ -154,6 +154,55 @@ pub enum SessionError {
     /// is recorded, so the Session stays `Ready`.
     #[error("Environment '{environment}': invalid Environment parameter values: {reason}")]
     InvalidEnvironmentParameters { environment: String, reason: String },
+    /// RFC 0009: a Service Session is not in the expected phase for the
+    /// requested operation (see
+    /// [`ServiceSessionState`](crate::service_session::ServiceSessionState)).
+    #[error(
+        "Service Session must be in {} state, current: {current}",
+        format_service_expected(.expected)
+    )]
+    InvalidServiceState {
+        /// The states the operation accepts.
+        expected: Vec<crate::service_session::ServiceSessionState>,
+        /// The state the Service Session was in.
+        current: crate::service_session::ServiceSessionState,
+    },
+
+    /// RFC 0009: a Service's `onEnter` or `onExit` action did not succeed. An
+    /// `onEnter` failure is a *start failure*; an `onExit` failure is an
+    /// *onExit failure* (reported, but it does not change the scope's outcome).
+    #[error("Service '{name}' {action} failed: {reason}")]
+    ServiceScriptFailed {
+        /// The Service's `name`.
+        name: String,
+        /// `onEnter` or `onExit`.
+        action: String,
+        /// Why the action did not succeed: its exit code, a timeout, or a
+        /// cancelation.
+        reason: String,
+    },
+
+    /// RFC 0009: a Service's `TCP_CONNECT` health check names a port, or
+    /// the caller's endpoint assignment omits one, that the Service does not
+    /// declare — the two inputs to a Service Session disagree.
+    #[error("Service '{name}' port '{port}' has no endpoint assignment")]
+    ServicePortUnassigned {
+        /// The Service's `name`.
+        name: String,
+        /// The port's `name`.
+        port: String,
+    },
+}
+
+fn format_service_expected(states: &[crate::service_session::ServiceSessionState]) -> String {
+    match states {
+        [single] => single.to_string(),
+        _ => states
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(" or "),
+    }
 }
 
 fn format_expected(states: &[SessionState]) -> String {

@@ -1059,6 +1059,74 @@ steps:
         assert!(stdout.contains(expected), "stdout: {stdout}");
     }
 
+    /// RFC 0009: a Service Session gets the run's path-mapping rules, so a
+    /// PATH parameter in a Service action is mapped as in a Task.
+    #[test]
+    fn test_run_path_mapping_rules_apply_to_a_service() {
+        let mut template_f = NamedTempFile::with_suffix(".json").unwrap();
+        let (source_format, source_path, dest_path, param_value, expected) = if cfg!(windows) {
+            (
+                "WINDOWS",
+                r"D:\\home\\work",
+                r"E:\\mnt\\work",
+                r"D:\home\work",
+                r"SvcMapped:E:\mnt\work",
+            )
+        } else {
+            (
+                "POSIX",
+                "/home/test",
+                "/mnt/test",
+                "/home/test",
+                "SvcMapped:/mnt/test",
+            )
+        };
+        write!(template_f, r#"{{
+            "specificationVersion": "jobtemplate-2023-09",
+            "extensions": ["SERVICE", "ENV_PARAMS", "EXPR"],
+            "name": "Job",
+            "parameterDefinitions": [{{"name": "TestPath", "type": "PATH"}}],
+            "services": [{{
+                "name": "S",
+                "ports": [{{"name": "main"}}],
+                "healthCheck": {{"type": "STDOUT"}},
+                "script": {{"actions": {{"onRun": {{"command": "python", "args": ["-c", "import time; print('SvcMapped:{{{{Param.TestPath}}}}'); print('openjd_service_ready: up', flush=True); time.sleep(60)"], "cancelation": {{"mode": "TERMINATE"}}}}}}}}
+            }}],
+            "steps": [{{
+                "name": "TestStep",
+                "dependencies": [{{"service": "S"}}],
+                "script": {{"actions": {{"onRun": {{"command": "python", "args": ["-c", "print('task')"]}}}}}}
+            }}]
+        }}"#).unwrap();
+
+        let mut rules_f = NamedTempFile::with_suffix(".rules.json").unwrap();
+        write!(
+            rules_f,
+            r#"{{
+            "version": "pathmapping-1.0",
+            "path_mapping_rules": [{{
+                "source_path_format": "{source_format}",
+                "source_path": "{source_path}",
+                "destination_path": "{dest_path}"
+            }}]
+        }}"#
+        )
+        .unwrap();
+
+        let rules_arg = format!("file://{}", rules_f.path().display());
+        let param_arg = format!("TestPath={param_value}");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            template_f.path().to_str().unwrap(),
+            "-p",
+            &param_arg,
+            "--path-mapping-rules",
+            &rules_arg,
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains(expected), "stdout: {stdout}");
+    }
+
     // --- Run local session tests ---
 
     #[test]
@@ -2865,10 +2933,17 @@ steps:
             "",
         ]);
         assert_eq!(code, 0, "stderr: {stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Working directory preserved at:"))
+            .unwrap_or_else(|| panic!("stdout: {stdout}"));
+        // The directory must actually survive the Session's teardown.
+        let path = line.rsplit("preserved at: ").next().unwrap().trim();
         assert!(
-            stdout.contains("Working directory preserved at:"),
-            "stdout: {stdout}"
+            std::path::Path::new(path).is_dir(),
+            "{path} not preserved\n{stdout}"
         );
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3747,6 +3822,623 @@ steps:
         assert!(stdout.contains("TaskParamStep"), "stdout: {stdout}");
         assert!(stdout.contains("Total tasks: 9"), "stdout: {stdout}");
     }
+
+    /// A Service selects Environments exactly as a Step does, so the summary
+    /// lists a Service's disabled and superseded Environments and its
+    /// optional entries that named nothing in the same form as a Step's.
+    #[test]
+    fn test_summary_shows_a_services_disabled_superseded_and_not_found_entries() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+  - name: Skip
+    enableIf: "Job.Name == 'other'"
+    variables: {{K: v}}
+  - name: G1
+    exclusiveGroup: g
+    variables: {{K: v}}
+  - name: G2
+    exclusiveGroup: g
+    variables: {{K: v}}
+services:
+  - name: X
+    dependencies: [{{environment: Missing, required: false}}]
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    dependencies: [{{service: X}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected = "\
+    Session environments:
+      - G1 (JobTemplate)
+    Disabled environments:
+      - Skip (JobTemplate): disabled
+      - G2 (JobTemplate): superseded by G1 (JobTemplate)
+    Optional entries not found:
+      - dependencies[0]: Missing
+";
+        let services = &stdout[stdout.find("--- Services in 'J' ---").expect(&stdout)..];
+        assert!(services.contains(expected), "stdout: {stdout}");
+    }
+
+    /// RFC 0009 `<Service>` items 4 and 5: the summary shows the Job
+    /// Environments a Service's Sessions enter, the one it declines (Client,
+    /// which lists it, so entering it would be a cycle), its combined host
+    /// requirements, its own with those of each Environment, resolved with
+    /// the Service's values, and those effective values, as it does for a
+    /// Step.
+    #[test]
+    fn test_summary_shows_a_services_environments_and_combined_host_requirements() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR, FEATURE_BUNDLE_1]
+name: J
+jobEnvironments:
+  - name: E
+    envParameterDefinitions: [{{name: M, type: INT, default: 1024}}]
+    hostRequirements: {{amounts: [{{name: amount.worker.memory, min: "{{{{Env.Param.M}}}}"}}]}}
+    variables: {{K: v}}
+  - name: Client
+    dependencies: [{{service: X}}]
+    variables: {{K: v}}
+services:
+  - name: X
+    # Client waits for X to be READY, so X's Sessions decline it.
+    dependencies: [{{environment: E, parameters: {{M: 2048}}}}, {{environment: Client, enableIf: false}}]
+    hostRequirements: {{attributes: [{{name: attr.worker.preemptible, anyOf: ["false"]}}]}}
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected = "\
+--- Services in 'J' ---
+  - X (scope: every Step)
+    Ports: main (TCP)
+    Health check: TCP_CONNECT
+    Restart policy: maxRestarts 0, completedTasks none
+    Session environments:
+      - E (JobTemplate)
+    Declined environments:
+      - Client (JobTemplate)
+    Host requirements:
+      - amount.worker.memory: min 2048
+      - attr.worker.preemptible: anyOf false
+    Environment parameters:
+      E (JobTemplate):
+        - M (INT): 2048
+";
+        assert!(stdout.contains(expected), "stdout: {stdout}");
+        // The Step enters both Environments with the default.
+        assert!(
+            stdout.contains(
+                "  Session environments:\n    - E (JobTemplate)\n    - Client (JobTemplate)\n  \
+                 Host requirements:\n    - amount.worker.memory: min 1024\n"
+            ),
+            "stdout: {stdout}"
+        );
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["services"][0]["session_environments"],
+            serde_json::json!([{"name": "E", "source": "JobTemplate"}])
+        );
+        assert_eq!(
+            value["services"][0]["host_requirements"],
+            serde_json::json!({
+                "amounts": [{"name": "amount.worker.memory", "min": 2048.0}],
+                "attributes": [{"name": "attr.worker.preemptible", "anyOf": ["false"]}]
+            })
+        );
+        assert_eq!(
+            value["services"][0]["environment_parameters"],
+            serde_json::json!([{
+                "environment": "E",
+                "document": "JobTemplate",
+                "values": [{"name": "M", "type": "INT", "value": "2048"}]
+            }])
+        );
+    }
+
+    /// RFC 0010 §3.3 for a Service (RFC 0009 `<Service>` item 5): a
+    /// requirement of the Service's own, or of an Environment it enters,
+    /// that resolves to nothing is discarded, and the summary lists it
+    /// under the Service as it does for a Step.
+    #[test]
+    fn test_summary_lists_a_services_discarded_host_requirements() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR, FEATURE_BUNDLE_1]
+name: J
+jobEnvironments:
+  - name: E
+    envParameterDefinitions: [{{name: G, type: INT, default: 1}}]
+    hostRequirements: {{amounts: [{{name: amount.worker.gpu, min: "{{{{ Env.Param.G if Env.Param.G > 0 else None }}}}"}}]}}
+    variables: {{K: v}}
+services:
+  - name: X
+    dependencies: [{{environment: E, parameters: {{G: 0}}}}]
+    hostRequirements: {{attributes: [{{name: "custom:attr.a", anyOf: "{{{{ None }}}}"}}]}}
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+  - name: Y
+    hostRequirements: {{attributes: [{{name: "custom:attr.y", anyOf: "{{{{ None }}}}"}}]}}
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    dependencies: [{{service: X}}, {{service: Y}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected = "\
+    Session environments:
+      - E (JobTemplate)
+    Discarded host requirements:
+      - attribute custom:attr.a (Service)
+      - amount amount.worker.gpu (Environment E, JobTemplate)
+";
+        assert!(stdout.contains(expected), "stdout: {stdout}");
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert!(
+            value["services"][0].get("host_requirements").is_none(),
+            "{stdout}"
+        );
+        assert_eq!(
+            value["services"][0]["discarded_host_requirements"],
+            serde_json::json!([
+                {"kind": "attribute", "name": "custom:attr.a"},
+                {"kind": "amount", "name": "amount.worker.gpu",
+                 "environment": {"name": "E", "source": "JobTemplate"}},
+            ])
+        );
+        // Each Service lists its own: Y, the second, enters E with G = 1.
+        assert_eq!(
+            value["services"][1]["discarded_host_requirements"],
+            serde_json::json!([{"kind": "attribute", "name": "custom:attr.y"}])
+        );
+    }
+
+    /// RFC 0010 §3.2 (last paragraph) with RFC 0009 `<StepDependency>`
+    /// item 3: `check --environment` applies constraint 7 to a Service as
+    /// to a Step, with the message job creation (`summary`) gives.
+    #[test]
+    fn test_check_environment_applies_constraint_7_to_a_service() {
+        let mut job = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            job,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: J
+services:
+  - name: X
+    dependencies: [{{environment: Q}}]
+    ports: [{{name: main}}]
+    healthCheck: {{type: STDOUT}}
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    dependencies: [{{service: X}}, {{environment: Q, parameters: {{R: s}}}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let mut env = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            env,
+            r#"specificationVersion: "environment-2023-09"
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: Q
+  activation: ON_REQUEST
+  envParameterDefinitions: [{{name: R, type: STRING}}]
+  variables: {{K: "{{{{Env.Param.R}}}}"}}
+"#
+        )
+        .unwrap();
+        let job_path = job.path().to_str().unwrap();
+        let env_path = env.path().to_str().unwrap();
+        let expected = format!(
+            "Model validation error: 1 validation error for Submission\nJobTemplate -> \
+             services[0]:\n\tmust supply, in an 'environment:' dependency, every parameter \
+             without a default of each Environment that applies to it (every attached \
+             Environment with activation ALWAYS, each one with activation BY_DEFAULT that the \
+             Service does not decline, and each one with activation ON_REQUEST that \
+             the Service requests; Template Schemas §3.2.1, RFC 0009 <StepDependency> item 3), \
+             whatever that Environment's own enableIf is; missing: 'R' of Environment 'Q' ({env_path})."
+        );
+        let (code, _stdout, stderr) = run_cli(&["check", job_path, "--environment", env_path]);
+        assert_ne!(code, 0);
+        assert!(stderr.contains(&expected), "stderr: {stderr}");
+        let (code, _stdout, stderr) = run_cli(&["summary", job_path, "--environment", env_path]);
+        assert_ne!(code, 0);
+        assert!(stderr.contains(&expected), "stderr: {stderr}");
+    }
+
+    /// RFC 0009: a Job Template's `services` are listed with their scope,
+    /// ports (with protocol and any pinned number), health check type and
+    /// restart policy; a Step's dependency count tells Steps from Services
+    /// and names the Services; an `externalServices` entry is listed with
+    /// its ports and, without `--environment`, as unsatisfied.
+    #[test]
+    fn test_summary_lists_services_and_requirements() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: ServiceJob
+externalServices:
+  - name: Cache
+    ports:
+      - name: main
+      - name: stats
+        protocol: UDP
+services:
+  - name: Coord
+    description: Hands out work items.
+    dependencies:
+      - dependsOn: Prepare
+    ports:
+      - name: api
+      - name: metrics
+        port: 9100
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxRestarts: 2
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: coord
+steps:
+  - name: Prepare
+    script:
+      actions:
+        onRun:
+          command: prep
+  - name: Work
+    dependencies:
+      - dependsOn: Prepare
+      - service: "Coord"
+      - service: "Cache"
+    script:
+      actions:
+        onRun:
+          command: work
+          args: ["{{{{ Service.Coord.api.port }}}}", "{{{{ Service.Cache.main.port }}}}"]
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected_steps = "\
+2. 'Work' (1 total Tasks)
+  3 dependencies (1 Step, 2 Service)
+    Services: 'Coord', 'Cache'
+";
+        assert!(stdout.contains(expected_steps), "stdout: {stdout}");
+        let expected_services = "\
+--- Services in 'ServiceJob' ---
+  - Coord (scope: Step Work)
+    Hands out work items.
+    Ports: api (TCP), metrics (TCP, port 9100)
+    Health check: STDOUT
+    Restart policy: maxRestarts 2, completedTasks KEEP
+    Dependencies: 'Prepare'
+    Session environments:
+      (none)
+
+--- Required Services in 'ServiceJob' ---
+  - Cache (ports: main (TCP), stats (UDP)) — not satisfied: attach an Environment Template that declares it with --environment
+";
+        assert!(stdout.contains(expected_services), "stdout: {stdout}");
+
+        // The Step summary names Service dependencies and the Services in
+        // the Step's scope.
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--step", "Work"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "Dependencies (3):\n- 'Prepare'\n- Service 'Coord'\n- Service 'Cache'\n\n\
+                 Services in scope (1):\n- 'Coord'\n"
+            ),
+            "stdout: {stdout}"
+        );
+
+        // JSON: the same data, structured.
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["services"],
+            serde_json::json!([{
+                "name": "Coord",
+                "description": "Hands out work items.",
+                "scope": "Step Work",
+                "ports": [
+                    {"name": "api", "protocol": "TCP"},
+                    {"name": "metrics", "protocol": "TCP", "port": 9100}
+                ],
+                "health_check": "STDOUT",
+                "restart_policy": {"max_restarts": 2, "completed_tasks": "KEEP"},
+                "dependencies": [{"step_name": "Prepare"}],
+                "session_environments": []
+            }]),
+            "{value}"
+        );
+        assert_eq!(
+            value["external_services"],
+            serde_json::json!([{
+                "name": "Cache",
+                "ports": [
+                    {"name": "main", "protocol": "TCP"},
+                    {"name": "stats", "protocol": "UDP"}
+                ]
+            }]),
+            "{value}"
+        );
+        assert_eq!(value["steps"][1]["dependencies"], 3, "{value}");
+        assert_eq!(
+            value["steps"][1]["service_dependencies"],
+            serde_json::json!(["Coord", "Cache"]),
+            "{value}"
+        );
+        let (code, stdout, _) = run_cli(&["summary", path, "--step", "Work", "--output", "json"]);
+        assert_eq!(code, 0);
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["dependencies"],
+            serde_json::json!([
+                {"step_name": "Prepare"},
+                {"service_name": "Coord"},
+                {"service_name": "Cache"}
+            ]),
+            "{value}"
+        );
+        assert_eq!(value["services"], serde_json::json!(["Coord"]), "{value}");
+    }
+
+    /// With `--environment`, the summary is of the combined Job: the
+    /// attached Service appears with its document, and the requirement it
+    /// satisfies says so.
+    #[test]
+    fn test_summary_with_environment_binds_requirements() {
+        let consumer = templates_dir().join("service_required_consumer.yaml");
+        let provider = templates_dir().join("service_required_provider.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            consumer.to_str().unwrap(),
+            "--environment",
+            provider.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains(&format!(
+                "  - R (from {}) (scope: every Step)\n",
+                provider.display()
+            )),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "  - R (ports: main (TCP)) — satisfied by {}\n",
+                provider.display()
+            )),
+            "stdout: {stdout}"
+        );
+        let (code, stdout, _) = run_cli(&[
+            "summary",
+            consumer.to_str().unwrap(),
+            "--environment",
+            provider.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0);
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["external_services"][0]["satisfied_by"],
+            serde_json::json!(provider.display().to_string()),
+            "{value}"
+        );
+        assert_eq!(
+            value["services"][0]["document"],
+            serde_json::json!(provider.display().to_string()),
+            "{value}"
+        );
+    }
+
+    /// RFC 0009 "Services run inside Environments" with `--environment`:
+    /// each Service of the combined Job is summarized with its own
+    /// Environment statuses, the Job Template's Service X (which declines
+    /// D, has Skip disabled and an optional entry that names nothing) as
+    /// well as the attached Service C bound through `externalServices`
+    /// (which declines its own document's Environment), in text and JSON.
+    #[test]
+    fn test_summary_with_environment_shows_each_services_own_environment_statuses() {
+        let mut job = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            job,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: J
+externalServices:
+  - name: C
+    ports: [{{name: main}}]
+jobEnvironments:
+  - name: Skip
+    enableIf: "Job.Name == 'other'"
+    variables: {{K: v}}
+  - name: D
+    variables: {{K: v}}
+services:
+  - name: X
+    dependencies: [{{environment: D, enableIf: false}}, {{environment: Missing, required: false}}]
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    dependencies: [{{service: X}}, {{service: C}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let mut env = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            env,
+            r#"specificationVersion: "environment-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+services:
+  - name: C
+    dependencies: [{{environment: Own, enableIf: false}}]
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: serve}}}}}}
+environment:
+  name: Own
+  variables: {{V: v}}
+"#
+        )
+        .unwrap();
+        let job_path = job.path().to_str().unwrap();
+        let env_path = env.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", job_path, "--environment", env_path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected = format!(
+            "\
+--- Services in 'J' ---
+  - C (from {env_path}) (scope: Step A)
+    Ports: main (TCP)
+    Health check: TCP_CONNECT
+    Restart policy: maxRestarts 0, completedTasks none
+    Session environments:
+      (none)
+    Declined environments:
+      - Own ({env_path})
+  - X (scope: Step A)
+    Ports: main (TCP)
+    Health check: TCP_CONNECT
+    Restart policy: maxRestarts 0, completedTasks none
+    Session environments:
+      - Own ({env_path})
+    Disabled environments:
+      - Skip (JobTemplate): disabled
+    Declined environments:
+      - D (JobTemplate)
+    Optional entries not found:
+      - dependencies[1]: Missing
+
+"
+        );
+        assert!(stdout.contains(&expected), "stdout: {stdout}");
+
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            job_path,
+            "--environment",
+            env_path,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let c = &value["services"][0];
+        assert_eq!(c["name"], "C", "{value}");
+        assert_eq!(c["session_environments"], serde_json::json!([]), "{value}");
+        assert_eq!(
+            c["declined_environments"],
+            serde_json::json!([{"name": "Own", "source": env_path}]),
+            "{value}"
+        );
+        assert_eq!(c.get("disabled_environments"), None, "{value}");
+        assert_eq!(c.get("optional_entries_not_found"), None, "{value}");
+        let x = &value["services"][1];
+        assert_eq!(x["name"], "X", "{value}");
+        assert_eq!(
+            x["session_environments"],
+            serde_json::json!([{"name": "Own", "source": env_path}]),
+            "{value}"
+        );
+        assert_eq!(
+            x["disabled_environments"],
+            serde_json::json!([{"name": "Skip", "source": "JobTemplate", "status": "disabled"}]),
+            "{value}"
+        );
+        assert_eq!(
+            x["declined_environments"],
+            serde_json::json!([{"name": "D", "source": "JobTemplate"}]),
+            "{value}"
+        );
+        assert_eq!(
+            x["optional_entries_not_found"],
+            serde_json::json!([{"dependency_index": 1, "environment": "Missing"}]),
+            "{value}"
+        );
+    }
+
+    /// RFC 0009: a Step whose `dependencies` are all `service:` entries has
+    /// its dependency count marked `(all Services)`, in the job summary.
+    #[test]
+    fn test_summary_counts_a_step_with_only_service_dependencies() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: J
+services:
+  - name: X
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+  - name: Z
+    ports: [{{name: main}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+steps:
+  - name: A
+    dependencies: [{{service: X}}, {{service: Z}}]
+    script: {{actions: {{onRun: {{command: run}}}}}}
+"#
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", f.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "1. 'A' (1 total Tasks)\n  2 dependencies (all Services)\n    Services: 'X', 'Z'\n"
+            ),
+            "stdout: {stdout}"
+        );
+    }
 }
 
 // ============================================================
@@ -3970,36 +4662,54 @@ mod python_compat {
 // Group: Interruption (SIGINT / Ctrl+Break) handling
 // ============================================================
 
+/// Deliver an interruption to the CLI process only (not the whole
+/// test-process group).
+///
+/// Unix: SIGINT via `kill`. Windows: CTRL_BREAK_EVENT via
+/// `GenerateConsoleCtrlEvent` — the CLI is spawned with
+/// CREATE_NEW_PROCESS_GROUP so the event reaches only its group, and
+/// because that flag disables Ctrl+C for the child, Ctrl+Break is the
+/// only console event that can interrupt it.
+fn send_interrupt(child: &std::process::Child) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+        unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()).is_ok() }
+    }
+}
+
+/// Spawn `openjd run <template> <args…>` with piped stdout, in its own
+/// process group on Windows so a console control event reaches it alone.
+fn spawn_run_piped(template: &std::path::Path, extra: &[&str]) -> std::process::Child {
+    let mut args = vec!["run", template.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let mut cmd = cli_command(&args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn openjd")
+}
+
 mod interruption {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
-
-    /// Deliver an interruption to the CLI process only (not the whole
-    /// test-process group).
-    ///
-    /// Unix: SIGINT via `kill`. Windows: CTRL_BREAK_EVENT via
-    /// `GenerateConsoleCtrlEvent` — the CLI is spawned with
-    /// CREATE_NEW_PROCESS_GROUP so the event reaches only its group, and
-    /// because that flag disables Ctrl+C for the child, Ctrl+Break is the
-    /// only console event that can interrupt it.
-    fn send_interrupt(child: &std::process::Child) -> bool {
-        #[cfg(unix)]
-        {
-            Command::new("kill")
-                .args(["-INT", &child.id().to_string()])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        #[cfg(windows)]
-        {
-            use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
-            unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()).is_ok() }
-        }
-    }
 
     /// End-to-end coverage for the RESULTS-phase rule "treat any observed
     /// interruption as a failed run" (specs/cli/run.md): an interrupted run
@@ -4320,3 +5030,3740 @@ steps:
 /// `ENV_PARAMS` end to end; see the module.
 #[path = "cli_tests/env_params.rs"]
 mod env_params;
+
+// ============================================================
+// Group: RFC 0009 Services (openjd run orchestrates Service Sessions)
+// ============================================================
+
+mod services {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn run_service_template(name: &str, extra: &[&str]) -> (i32, String, String) {
+        let template = templates_dir().join(name);
+        let mut args = vec!["run", template.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    }
+
+    fn read_trace(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Byte offset of `needle` in `haystack`, panicking with the output when
+    /// absent — used to assert the relative order of log lines.
+    fn pos(haystack: &str, needle: &str) -> usize {
+        haystack
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} in output:\n{haystack}"))
+    }
+
+    /// RFC 0009 example 1: a Service listed by both Steps (scope Steps
+    /// First, Second, §9.1) with a TCP_CONNECT health check is READY before
+    /// the first Task, is reached by Tasks of two Steps through
+    /// `Service.Store.main.connectAddress` / `.port`, and is stopped after
+    /// the last Step (constraints 1, 3, 6).
+    #[test]
+    fn test_job_service_tcp_consumed_by_two_steps() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_tcp.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (scope: Steps First, Second) endpoints: main -> 127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Store' is READY"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:First-1"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:First-2"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:Second"), "{stdout}");
+        assert!(
+            pos(&stdout, "Starting Service: Store") < pos(&stdout, "Running step 'First'")
+                && pos(&stdout, "Service 'Store' is READY") < pos(&stdout, "TASK_REPLY"),
+            "the Service starts when Step First is about to run (before its Job \
+             Environments and its `Running step` line) and is READY before any Task:\n{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Running step 'Second'") < pos(&stdout, "Stopping Service: Store"),
+            "the Service must outlive every Step in its scope:\n{stdout}"
+        );
+        assert!(stdout.contains("Service 'Store' stopped"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        assert_eq!(
+            read_trace(&trace),
+            vec!["task First-1 ECHO:First-1", "task First-2 ECHO:First-2"]
+        );
+    }
+
+    /// RFC 0009 §9.3 item 3 / §9 item 7 (conformance
+    /// `service-udp-port-echo`): a Service whose only port is UDP is
+    /// allocated a UDP port on loopback, reported with a `/udp` suffix in
+    /// the endpoints line, becomes READY through its STDOUT check, and is
+    /// reached by the Tasks with datagrams to `connectAddress`:`port`.
+    #[test]
+    fn test_job_service_udp_echo() {
+        let (code, stdout, stderr) = run_service_template("service_job_udp.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'Udp' (scope: Step Ping) endpoints: "))
+            .unwrap_or_else(|| panic!("no endpoints line in:\n{stdout}"));
+        assert!(
+            line.contains("dgram -> 127.0.0.1:") && line.trim_end().ends_with("/udp"),
+            "the UDP port is suffixed /udp: {line}"
+        );
+        assert!(stdout.contains("UDP_BOUND"), "{stdout}");
+        assert!(stdout.contains("Service 'Udp' is READY"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY udp-echo:Ping-1"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY udp-echo:Ping-2"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'Udp' is READY") < pos(&stdout, "TASK_REPLY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Udp' stopped"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 2"), "{stdout}");
+    }
+
+    /// A metrics sink with a UDP ingest port: a Service with
+    /// a UDP port and a TCP port and no `healthCheck` becomes READY
+    /// through the default TCP_CONNECT, which probes the TCP port only
+    /// (§9 item 7, §9.4 item 2). The endpoints line suffixes only the UDP
+    /// port; the Task reaches both ports.
+    #[test]
+    fn test_job_service_mixed_tcp_udp_default_health_check_probes_tcp_only() {
+        let (code, stdout, stderr) = run_service_template("service_job_tcp_udp.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'Metrics' (scope: Step Report) endpoints: "))
+            .unwrap_or_else(|| panic!("no endpoints line in:\n{stdout}"));
+        let (ingest, api) = line
+            .split_once("endpoints: ")
+            .unwrap()
+            .1
+            .split_once(", ")
+            .unwrap();
+        assert!(
+            ingest.starts_with("ingest -> 127.0.0.1:") && ingest.trim_end().ends_with("/udp"),
+            "{line}"
+        );
+        assert!(
+            api.starts_with("api -> 127.0.0.1:") && !api.contains("/udp"),
+            "{line}"
+        );
+        assert!(stdout.contains("SINK_LISTENING"), "{stdout}");
+        assert!(stdout.contains("Service 'Metrics' is READY"), "{stdout}");
+        assert!(
+            stdout.contains("TASK_REPLY COUNT=2 frame-1,frame-2"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
+    /// RFC 0009 example 2: a Service scoped to one Step with a STDOUT health check starts
+    /// (onEnter, onRun) before the Step's first Task and stops (onExit) once
+    /// the Step's three Tasks are done, before the next Step runs
+    /// (constraints 3, 6, 7).
+    #[test]
+    fn test_step_service_stdout_lifecycle_brackets_the_step() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_stdout.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Coordinator' is READY: coordinator listening"),
+            "{stdout}"
+        );
+        assert_eq!(
+            read_trace(&trace),
+            vec![
+                "service enter",
+                "service run",
+                "task 1 assignment 1",
+                "task 2 assignment 2",
+                "task 3 assignment 3",
+                "service exit",
+                "after task",
+            ]
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Coordinator") < pos(&stdout, "Running step 'After'"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+    }
+
+    /// COMMAND health check, phase 1: `onHealthCheck` runs concurrently with
+    /// `onRun` (tagged `[onHealthCheck]`), fails while the connection is
+    /// refused, and makes the Service READY when it exits 0.
+    #[test]
+    fn test_command_health_check() {
+        let (code, stdout, stderr) = run_service_template("service_command_health_check.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: COMMAND (readinessTimeoutSeconds 60, readinessIntervalSeconds 1, \
+                 healthIntervalSeconds 30, failureThreshold 3)"
+            ),
+            "{stdout}"
+        );
+        // Every line of the Service Session carries the Service tag; the
+        // concurrent check's lines carry its action tag after it (RFC 0009
+        // rule 3), while onRun's carry the Service tag alone.
+        assert!(
+            stdout.contains("[Service Slow] [onHealthCheck] CHECK_OK"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\t[Service Slow] SLOW_LISTENING"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Slow' is READY"), "{stdout}");
+        assert!(
+            pos(&stdout, "SLOW_LISTENING") < pos(&stdout, "Service 'Slow' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT hello"), "{stdout}");
+    }
+
+    /// RFC 0009 `<ServiceHealthCheck>` after READY and "Failure and restart"
+    /// step 2: a COMMAND probe fails `failureThreshold` times after
+    /// Task 1 makes the service sick; the instance is UNHEALTHY, `onRun` is
+    /// canceled, and with `maxRestarts: 1` / `KEEP` a second instance is
+    /// relaunched in the same Service Session and serves Tasks 2 and 3.
+    /// Task 1 completes against instance 1 (conformance
+    /// `service-health-command-fails-after-ready-relaunches`).
+    #[test]
+    fn test_health_command_fails_after_ready_relaunches() {
+        let dir = TempDir::new().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_command_fails.yaml",
+            &["-p", &format!("MarkerDir={}", dir.path().display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unhealthy =
+            "Service 'Store' (scope: Step Work) is UNHEALTHY: 2 consecutive health probes \
+                         failed (failureThreshold: 2); last probe: onHealthCheck exit code: 1";
+        assert!(stdout.contains(unhealthy), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (scope: Step Work) is UNREADY: instance UNHEALTHY: 2 consecutive \
+                 health probes failed (failureThreshold: 2); last probe: onHealthCheck exit \
+                 code: 1 (completedTasks: KEEP)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Store' onRun in its Service Session (relaunch 1 of 1): \
+                 instance UNHEALTHY"
+            ),
+            "{stdout}"
+        );
+        // The Session's own lines: the probe failures and the forced cancel.
+        assert!(
+            stdout.contains("[Service Store] [onHealthCheck] CHECK_UNHEALTHY"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        for needle in [
+            "INSTANCE 1 LISTENING",
+            "TASK 1 GOT INSTANCE 1",
+            "TASK 1 INSTANCE 1 DONE",
+            "INSTANCE 2 LISTENING",
+            "TASK 2 INSTANCE 2 DONE",
+            "TASK 3 INSTANCE 2 DONE",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT INSTANCE 1"), "{stdout}");
+        assert!(
+            pos(&stdout, unhealthy) < pos(&stdout, "INSTANCE 2 LISTENING"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// RFC 0009 `<ServiceHealthCheck>` item 6: two failures below a
+    /// `failureThreshold` of 3, then a success, leave the instance READY;
+    /// nothing is relaunched and every Task is served by instance 1
+    /// (conformance `service-health-threshold-tolerates-blips`).
+    #[test]
+    fn test_health_threshold_tolerates_blips() {
+        let dir = TempDir::new().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_threshold_blips.yaml",
+            &[
+                "--verbose",
+                "-p",
+                &format!("MarkerDir={}", dir.path().display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for needle in [
+            "[Service Store] [onHealthCheck] CHECK_BLIP 1",
+            "[Service Store] [onHealthCheck] CHECK_BLIP 2",
+            "[Service Store] [onHealthCheck] CHECK_OK 3",
+            // --verbose: the probe timeline, as the runtime counts it.
+            "[Service Store] Service 'Store' health probe failed (1 of 3): onHealthCheck exit code: 1",
+            "[Service Store] Service 'Store' health probe failed (2 of 3): onHealthCheck exit code: 1",
+            "[Service Store] Service 'Store' health probe ok; failure count reset from 2",
+            "[Service Store] Service 'Store' health probe ok",
+            "TASK 1 INSTANCE 1 DONE",
+            "TASK 2 INSTANCE 1 DONE",
+            "TASK 3 INSTANCE 1 DONE",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("INSTANCE 2"), "{stdout}");
+        assert!(!stdout.contains("UNHEALTHY"), "{stdout}");
+        assert!(!stdout.contains("Relaunching"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// TCP_CONNECT after READY: the service closes its listener and hangs.
+    /// Two refused connections make the instance UNHEALTHY; `onRun` is
+    /// canceled; with `maxRestarts` 0 the Service is FAILED and the Job
+    /// fails before Task 2; `onExit` still runs (conformance
+    /// `service-health-tcp-port-closed-while-process-hangs`).
+    #[test]
+    fn test_health_tcp_port_closed_while_process_hangs_fails_the_job() {
+        let (code, stdout, stderr) =
+            run_service_template("service_health_tcp_port_closed.yaml", &["--verbose"]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for needle in [
+            "STORE_LISTENING",
+            "TASK 1 GOT hello",
+            "STORE_LISTENER_CLOSED",
+            "STORE_EXIT_RAN",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (scope: Step Work) is UNHEALTHY: 2 consecutive health probes failed \
+                 (failureThreshold: 2); last probe: TCP connect to port 'main' (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Store' (scope: Step Work) is FAILED: instance UNHEALTHY: 2 consecutive"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("0 of 0 relaunch(es) used (restartPolicy.maxRestarts)"),
+            "{stdout}"
+        );
+        // The terminal failure is stated once in the log (`is FAILED`) and
+        // once in the Results; it is not echoed to stderr.
+        assert!(!stderr.contains("ERROR: Service 'Store'"), "{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Service 'Store' (scope: Step Work) failed: instance UNHEALTHY")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert!(stdout.contains("Session ended with errors."), "{stdout}");
+        // The launch line names the probed ports; the canceled instance's
+        // exit is logged after UNHEALTHY and before the FAILED verdict.
+        assert!(
+            stdout.contains(
+                "health check: TCP_CONNECT on main (readinessTimeoutSeconds 60, \
+                 readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"
+            ),
+            "{stdout}"
+        );
+        let canceled = "Service 'Store' onRun (launch 1) canceled; exit code: N/A";
+        assert!(
+            pos(&stdout, "is UNHEALTHY") < pos(&stdout, canceled)
+                && pos(&stdout, canceled) < pos(&stdout, "is FAILED"),
+            "{stdout}"
+        );
+        // One `Starting Service` banner — the CLI's framed one — and the
+        // Session's working directory on it.
+        assert_eq!(
+            stdout.matches("--------- Starting Service: Store").count(),
+            1,
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[Service Store] --------- Starting Service"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[Service Store] --------- Ending Service"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Store' working directory: "),
+            "{stdout}"
+        );
+        // --verbose: every TCP_CONNECT probe result, attributed to the
+        // Service Session — the refused connection before READY, then the
+        // refused connections after the listener closed.
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' is not yet READY: TCP connect to port 'main' \
+                 (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' health probe failed (1 of 2): TCP connect to \
+                 port 'main' (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        // Without --verbose the probe timeline is not printed.
+        let (_, quiet, _) = run_service_template("service_health_tcp_port_closed.yaml", &[]);
+        assert!(!quiet.contains("health probe ok"), "{quiet}");
+        assert!(!quiet.contains("health probe failed"), "{quiet}");
+    }
+
+    /// STDOUT with `healthIntervalSeconds`: the heartbeat stops after Task
+    /// 1; two silent intervals make the instance UNHEALTHY and, with
+    /// `maxRestarts` 0, fail the Job (conformance
+    /// `service-health-stdout-heartbeat-missed`).
+    #[test]
+    fn test_health_stdout_heartbeat_missed_fails_the_job() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_stdout_heartbeat_missed.yaml",
+            &["--verbose"],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // --verbose: each silent interval is a failed probe, attributed to
+        // the Service Session. (The heartbeat stops with Task 1, before a
+        // post-READY beat could count as a passing probe.)
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' health probe failed (1 of 2): no \
+                 openjd_service_ready line within 1s"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "health check: STDOUT (readinessTimeoutSeconds 60, healthIntervalSeconds 1, \
+                 failureThreshold 2)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Store' is READY: beat"),
+            "{stdout}"
+        );
+        for needle in [
+            "TASK 1 GOT hello",
+            "STORE_HEARTBEAT_STOPPED",
+            "STORE_EXIT_RAN",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (scope: Step Work) is UNHEALTHY: 2 consecutive health probes failed \
+                 (failureThreshold: 2); last probe: no openjd_service_ready line within 1s"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Failed Service: Store (scope: Step Work): instance UNHEALTHY"),
+            "{stdout}"
+        );
+    }
+
+    /// STDOUT without `healthIntervalSeconds`: no heartbeat is expected, so
+    /// a service that prints `openjd_service_ready` once and is then silent
+    /// stays READY for every Task (conformance
+    /// `service-health-stdout-no-heartbeat-configured`).
+    #[test]
+    fn test_health_stdout_no_heartbeat_configured_runs_every_task() {
+        let (code, stdout, stderr) =
+            run_service_template("service_health_stdout_no_heartbeat.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: STDOUT (readinessTimeoutSeconds 60, no heartbeat after READY)"
+            ),
+            "{stdout}"
+        );
+        for needle in [
+            "STORE_READY_ONCE",
+            "TASK 1 SERVED AS 1",
+            "TASK 2 SERVED AS 2",
+            "TASK 3 SERVED AS 3",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("UNHEALTHY"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// Constraint 2: a Service that lists `service:Back` and reads Back's
+    /// endpoint starts only once Back is READY, and sees its endpoint.
+    #[test]
+    fn test_service_depending_on_an_earlier_service_starts_after_it() {
+        let (code, stdout, stderr) = run_service_template("service_reference_chain.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Front"),
+            "Front must not start before Back is READY:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("FRONT_GOT_FROM_BACK BACK_VALUE"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT front:BACK_VALUE"), "{stdout}");
+        // Constraint 4: stopped in reverse start order.
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+    }
+
+    /// Template Schemas §9.1 rule 1 / constraints 3 and 6: an opaque
+    /// consumer. Step Use lists `service:Sidecar` and never references
+    /// `Service.Sidecar.*`; the dependency alone puts it in the scope. The
+    /// Sidecar is READY before Use's Task runs and is stopped (onExit run)
+    /// once Use completes, before Unrelated runs.
+    #[test]
+    fn test_step_depending_on_a_service_without_referencing_it_is_in_its_scope() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("sidecar.up");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependency_without_reference.yaml",
+            &["-p", &format!("MarkerFile={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Sidecar' (scope: Step Use) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Service 'Sidecar' is READY") < pos(&stdout, "TASK_SEES_SIDECAR True"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "TASK_SEES_SIDECAR True") < pos(&stdout, "Stopping Service: Sidecar")
+                && pos(&stdout, "[Service Sidecar] SIDECAR_EXIT")
+                    < pos(&stdout, "Service 'Sidecar' stopped")
+                && pos(&stdout, "Service 'Sidecar' stopped")
+                    < pos(&stdout, "Running step 'Unrelated'"),
+            "the Sidecar stops once Use completes, before Unrelated:\n{stdout}"
+        );
+        assert!(stdout.contains("UNRELATED_SEES_SIDECAR False"), "{stdout}");
+        assert!(!marker.exists(), "onExit removed the marker");
+    }
+
+    /// §9 item 4 / constraints 2 and 4 / §9.1 rule 2: a Service -> Service
+    /// dependency chain declared with no `Service.*` reference. Front lists
+    /// service:Mid, Mid lists service:Back, Use lists service:Front. Scope
+    /// flows through the chain (every Service is scoped to Step Use), Back
+    /// is READY before Mid starts and Mid before Front, and they stop in
+    /// reverse: Front, Mid, Back.
+    #[test]
+    fn test_service_dependency_chain_without_references_orders_start_and_stop() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependency_chain_no_reference.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for svc in ["Back", "Mid", "Front"] {
+            assert!(
+                stdout.contains(&format!(
+                    "Service '{svc}' (scope: Step Use) endpoints: main -> "
+                )),
+                "{svc} is scoped to Use through the chain:\n{stdout}"
+            );
+        }
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Mid")
+                && pos(&stdout, "Service 'Mid' is READY") < pos(&stdout, "Starting Service: Front")
+                && pos(&stdout, "Service 'Front' is READY") < pos(&stdout, "TASK_RAN"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Mid")
+                && pos(&stdout, "Stopping Service: Mid") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+        assert_eq!(
+            read_trace(&trace),
+            [
+                "back launch",
+                "mid launch",
+                "front launch",
+                "task",
+                "front exit",
+                "mid exit",
+                "back exit",
+            ]
+        );
+    }
+
+    /// Template Schemas §3.2 (RFC 0009): a dependency names a Step with
+    /// `dependsOn` or a Service with `service`, so `:` is an ordinary
+    /// character in a Step name even with SERVICE declared; `Use` lists a
+    /// Step named `Layer: Beauty` and the Service and runs after both.
+    #[test]
+    fn test_colon_in_step_name_is_allowed_with_service() {
+        let (code, stdout, stderr) =
+            run_service_template("service_colon_step_name_allowed.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "BEAUTY_STEP_RAN") < pos(&stdout, "USE_STEP_RAN"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Running step 'Layer: Beauty'"), "{stdout}");
+        // `check` and `summary` agree.
+        let template = templates_dir().join("service_colon_step_name_allowed.yaml");
+        let (code, _stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_eq!(code, 0, "{stderr}");
+        let (code, stdout, stderr) =
+            run_cli(&["summary", template.to_str().unwrap(), "--step", "Use"]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Dependencies (2):\n- 'Layer: Beauty'\n- Service 'Store'\n"),
+            "{stdout}"
+        );
+    }
+
+    /// Template Schemas §3.2 item 2: without SERVICE the `service` key is
+    /// gated like every other SERVICE property.
+    #[test]
+    fn test_service_key_without_service_is_gated() {
+        let template = templates_dir().join("service_key_without_service_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[1] -> dependencies[0] -> service:\n\tservice requires the SERVICE \
+                 extension."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Template Schemas §3.2: an entry giving both keys is rejected.
+    #[test]
+    fn test_dependency_with_both_keys_is_rejected() {
+        let template = templates_dir().join("service_dependency_both_keys_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[1] -> dependencies[0]:\n\tmust have exactly one of 'dependsOn', 'step', \
+                 'service', or 'environment', not both 'dependsOn' and 'service'."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Template Schemas §9 scope rule 3: a Step that references
+    /// a Service it does not list in `dependencies` is rejected, and the
+    /// message names the missing entry.
+    #[test]
+    fn test_reference_without_dependency_is_rejected_naming_the_missing_entry() {
+        let template = templates_dir().join("service_reference_without_dependency_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[1] -> script -> actions -> onRun -> args[2]:\n\tFailed to parse \
+                 interpolation expression at [0, 29]. Step 'Render' references \
+                 Service.Cache.main.port but does not list service: Cache in dependencies."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Constraint 2: Services neither of which depends on the other start
+    /// concurrently — each takes ~2 s to become READY and both launch before
+    /// either is READY.
+    #[test]
+    fn test_independent_services_start_concurrently() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_concurrent_start.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let lines = read_trace(&trace);
+        let stamp = |event: &str| -> f64 {
+            lines
+                .iter()
+                .find(|l| l.starts_with(event))
+                .and_then(|l| l.rsplit(' ').next())
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(|| panic!("missing {event:?} in trace {lines:?}"))
+        };
+        assert!(
+            stamp("Beta launch") < stamp("Alpha ready")
+                && stamp("Alpha launch") < stamp("Beta ready"),
+            "launches must overlap: {lines:?}"
+        );
+        assert!(stdout.contains("TASK_RAN"), "{stdout}");
+    }
+
+    /// RFC 0009 example 3: an external Service from an Environment Template
+    /// attached with `--environment`, published to Tasks of a Job Template
+    /// that does not use SERVICE through a TASK-scoped Environment's
+    /// variables; the template's own parameter reaches the Service.
+    #[test]
+    fn test_external_service_from_environment_template() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_external_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_external_consumer.yaml",
+            &[
+                "--environment",
+                env_path,
+                "-p",
+                "CachePayload=from-the-queue",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // An external Service is logged with its document.
+        assert!(
+            pos(
+                &stdout,
+                &format!("Service 'Cache' (from {env_path}) is READY")
+            ) < pos(&stdout, "Entering Environment: CacheClient"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("FRAME 1 CACHE_SAYS from-the-queue"),
+            "{stdout}"
+        );
+        // An external Service's lines are tagged with its document too.
+        assert!(
+            stdout.contains(&format!(
+                "\t[Service Cache (from {env_path})] CACHE_LISTENING"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("FRAME 2 CACHE_SAYS from-the-queue"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Exiting Environment: CacheClient")
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
+            "{stdout}"
+        );
+    }
+
+    /// Exploratory report bug B1 / Template Schemas §1.2 item 3: an attached
+    /// Environment Template's strings are evaluated under *its* extensions.
+    /// The queue's client Environment composes `KV_ADDR` with
+    /// `join_host_port` (a `SERVICE` function) in `variables`, `onEnter`,
+    /// and `onExit`; the Job Template declares no extensions at all. Before
+    /// the fix the run failed with `Failed to resolve env var 'KV_ADDR':
+    /// Unknown function: 'join_host_port'`.
+    #[test]
+    fn test_attached_environment_uses_its_own_extensions_not_the_jobs() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_external_kv_join.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_external_kv_consumer.yaml",
+            &["--environment", env_path],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            !stderr.contains("Unknown function: 'join_host_port'"),
+            "stderr:\n{stderr}"
+        );
+        // variables, onEnter, and onExit of the attached Environment all
+        // resolved `join_host_port`, and the Task read the composed value.
+        let port_of = |needle: &str| -> String {
+            let at = pos(&stdout, needle) + needle.len();
+            stdout[at..]
+                .trim_start()
+                .split(['\n', '\r'])
+                .next()
+                .unwrap()
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let enter_port = port_of("KVCLIENT_ENTER 127.0.0.1:");
+        let exit_port = port_of("KVCLIENT_EXIT 127.0.0.1:");
+        assert_eq!(enter_port, exit_port, "{stdout}");
+        assert!(
+            enter_port.parse::<u16>().is_ok(),
+            "port in {enter_port:?}:\n{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT KV_SAYS hello"), "{stdout}");
+        assert!(
+            pos(&stdout, &format!("Service 'Kv' (from {env_path}) is READY"))
+                < pos(&stdout, "Entering Environment: KvClient"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
+    /// The inverse of the previous test: a Job Template that declares
+    /// `SERVICE` attaches a plain `[EXPR]`-only Environment Template. The
+    /// attached Environment is evaluated under its own profile (its `upper()`
+    /// works), the Job's Service and Tasks under the Job's, and the Service
+    /// Session enters the attached Job Environment too (it is `ALWAYS`: a
+    /// document without `ENV_PARAMS` has only `ALWAYS` Environments).
+    #[test]
+    fn test_plain_environment_template_attached_to_a_service_job() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let tdir = templates_dir();
+        let env_path = tdir.join("env_plain_expr_greeting.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_tcp.yaml",
+            &[
+                "--environment",
+                env_path,
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // Entered once in the Service Session (before the Service is READY)
+        // and once in the Task Session. Store's scope is Steps First, Second,
+        // so its Service Session opens once Step First is about to run —
+        // after the Task Session entered the Job Environments.
+        assert_eq!(
+            stdout
+                .matches("GREETING_ENTER HELLO FROM THE QUEUE")
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Starting Service: Store")
+                < pos(&stdout, "[Service Store] GREETING_ENTER")
+                && pos(&stdout, "[Service Store] GREETING_ENTER")
+                    < pos(&stdout, "Service 'Store' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_REPLY ECHO:Second"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// Exploratory report stumble S6: a Service's `onEnter` prints
+    /// `openjd_redacted_env: SECRET=hunter2` but the Job Template declares no
+    /// `REDACTED_ENV_VARS`. The directive is dropped, and the run log says
+    /// so with one warning in the Service Session's output stream (tagged
+    /// `[Service Vault]`, naming `SECRET` and never `hunter2`), the Service's
+    /// own `onRun` sees `SECRET` unset while the plain `openjd_env` next to
+    /// it is honored, and the Task — which never sees a Service's variables —
+    /// sees it unset too.
+    #[test]
+    fn test_service_on_enter_redacted_env_without_the_extension_warns() {
+        let (code, stdout, stderr) =
+            run_service_template("service_redacted_env_no_extension.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let warning = "[Service Vault] Received openjd_redacted_env for 'SECRET' but the \
+                       REDACTED_ENV_VARS extension is not declared; the variable is not set.";
+        assert_eq!(stdout.matches(warning).count(), 1, "{stdout}");
+        // The warning comes with the redacted directive line, before onRun.
+        assert!(
+            pos(&stdout, warning)
+                < pos(
+                    &stdout,
+                    "[Service Vault] openjd_redacted_env: SECRET=********"
+                )
+                && pos(&stdout, warning) < pos(&stdout, "VAULT_SECRET UNSET"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("hunter2"), "{stdout}");
+        assert!(!stderr.contains("hunter2"), "{stderr}");
+        assert!(
+            stdout.contains("[Service Vault] VAULT_SECRET UNSET"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Vault] VAULT_NOTE set-in-onEnter"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_SECRET UNSET"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
+    /// Template Schemas §1.2.2 item 2: Service names are scoped to their
+    /// document. The RFC's Valkey Job Template (inline Service `Cache`) is
+    /// submitted with the RFC's queue-cache attachment (external Service
+    /// `Cache`): both start, on different ports, and each consumer reaches
+    /// its own document's Service — the Task through `Service.Cache.*`
+    /// (the Job Template's), the attached client Environment's
+    /// `VALKEY_HOST` / `VALKEY_PORT` through the external one.
+    #[test]
+    fn test_same_named_services_in_two_documents_stay_distinct() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_same_name_queue_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) =
+            run_service_template("service_same_name_job.yaml", &["--environment", env_path]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+
+        // Two Services named Cache, each labeled by its document in the log.
+        // Neither depends on the other, so they start concurrently and the
+        // order of their endpoint lines is not fixed.
+        let external = format!("Service 'Cache' (from {env_path})");
+        assert!(
+            stdout.contains(&format!(
+                "{external} (scope: every Step) endpoints: main -> 127.0.0.1:"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Cache' (scope: Step ProcessFrames) endpoints: main -> 127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains(&format!("{external} is READY")), "{stdout}");
+        assert!(stdout.contains("\tService 'Cache' is READY"), "{stdout}");
+        assert_eq!(
+            stdout.matches("is READY").count(),
+            2,
+            "exactly two Services became READY: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("Starting Service: Cache (from {env_path})")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Starting Service: Cache\n"), "{stdout}");
+
+        // Each listener announced its own port; the Task reached each one
+        // through its own document's Service and the ports differ.
+        let port_after = |marker: &str| -> u16 {
+            let at = pos(&stdout, marker);
+            stdout[at + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let job_port = port_after("JOB_CACHE_LISTENING ");
+        let queue_port = port_after("QUEUE_CACHE_LISTENING ");
+        assert_ne!(job_port, queue_port, "{stdout}");
+        for frame in 1..=2 {
+            assert!(
+                stdout.contains(&format!(
+                    "FRAME {frame} JOB_TEMPLATE_CACHE {job_port} SAYS JOB_CACHE"
+                )),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(&format!(
+                    "FRAME {frame} QUEUE_CACHE {queue_port} SAYS QUEUE_CACHE"
+                )),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(&format!("FRAME {frame} PORTS_DIFFER True")),
+                "{stdout}"
+            );
+        }
+        // The client Environment resolved the external Cache's port, not
+        // the Job Template's.
+        assert!(
+            pos(&stdout, &format!("{external} is READY"))
+                < pos(&stdout, "Entering Environment: CacheClient"),
+            "{stdout}"
+        );
+        // Both stopped, in reverse start order: the Job Template's first.
+        assert!(
+            pos(&stdout, "Stopping Service: Cache\n")
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("All actions completed successfully!"),
+            "{stdout}"
+        );
+    }
+
+    /// As above, with the Job Template's same-named inline Service scoped to
+    /// Step Work (the only Step that lists it): the Task's
+    /// `Service.Cache.*` is the inline `Cache` (names are per document), the attached
+    /// Environment's variables the queue's, and the inline `Cache` stops
+    /// before Step Done, which is outside its scope.
+    #[test]
+    fn test_step_scoped_service_named_like_an_external_service() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_same_name_queue_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_name_step_service.yaml",
+            &[
+                "--environment",
+                env_path,
+                "-p",
+                "QueueCachePayload=FROM_QUEUE",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let external = format!("Service 'Cache' (from {env_path})");
+        assert!(
+            stdout.contains(&format!("{external} (scope: every Step) endpoints:")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Cache' (scope: Step Work) endpoints:"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Cache' is READY: step cache on"),
+            "{stdout}"
+        );
+        let port_after = |marker: &str| -> u16 {
+            let at = pos(&stdout, marker);
+            stdout[at + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let step_port = port_after("Service 'Cache' is READY: step cache on ");
+        let queue_port = port_after("QUEUE_CACHE_LISTENING ");
+        assert_ne!(step_port, queue_port, "{stdout}");
+        assert!(
+            stdout.contains(&format!("STEP_CACHE {step_port} SAYS STEP_CACHE")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("QUEUE_CACHE {queue_port} SAYS FROM_QUEUE")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("PORTS_DIFFER True"), "{stdout}");
+        // The inline Cache stops with its scope, before Step Done runs and
+        // before the every-Step external one.
+        assert!(
+            pos(&stdout, "Stopping Service: Cache\n") < pos(&stdout, "Running step 'Done'"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("DONE_STEP_RAN"), "{stdout}");
+        assert!(
+            pos(&stdout, "Stopping Service: Cache\n")
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
+            "{stdout}"
+        );
+    }
+
+    /// "Failure and restart" with `completedTasks: RERUN`: the running Task
+    /// is canceled (not a Task failure), `onRun` is relaunched in the same
+    /// Service Session, and every completed Task of the Step runs again in
+    /// a new Task Session.
+    #[test]
+    fn test_rerun_relaunch_requeues_completed_tasks() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_relaunch.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'Flaky' (scope: Step Work) is UNREADY: onRun exited while the scope \
+                 still had work (exit code: 1) (completedTasks: RERUN)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Canceling the running Task of Step 'Work': a Service with completedTasks: RERUN \
+                 is UNREADY; the Task returns to the queue"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Flaky' onRun in its Service Session (relaunch 1 of 1)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Returning Step(s) 'Work' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched\n"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("New Task Session for the requeued Tasks"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("All actions completed successfully!"),
+            "{stdout}"
+        );
+        // Task 1 completed, Task 2 was canceled, then Tasks 1-3 ran again.
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines.iter().filter(|l| *l == "service launch").count(),
+            2,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 1 done").count(),
+            2,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 2 done").count(),
+            1,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 3 done").count(),
+            1,
+            "{lines:?}"
+        );
+        let crash = lines.iter().position(|l| l == "service crash").unwrap();
+        assert!(
+            lines[..crash].contains(&"task 2 start".to_string())
+                && !lines[..crash].contains(&"task 2 done".to_string()),
+            "the crash must land while Task 2 runs: {lines:?}"
+        );
+    }
+
+    /// `RERUN` on a Service whose scope is every Step (a Job Environment
+    /// references it) returns every Step to pending ("RERUN and Step
+    /// dependencies"): Step A's completed Task runs again. Helper is scoped
+    /// to Step B, whose Task was running, so its scope never completed: its
+    /// Service Session continues across the RERUN (constraint 6) and is not
+    /// started again (constraint 8 applies only to a Session that ended).
+    #[test]
+    fn test_rerun_on_every_step_service_returns_every_step_to_pending() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_job_scope.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched\n"
+            ),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        // The CLI's own banner (`\t--------- …`), one per Service Session
+        // opened; the Session's tagged `[Service Helper] --------- Starting
+        // Service: Helper` line follows each.
+        assert_eq!(
+            stdout
+                .matches("\t--------- Starting Service: Helper")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("\t--------- Starting Service: Shared")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        // A1 ran, B1 was canceled, then A1, B1, B2 ran.
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+        let lines = read_trace(&trace);
+        // Shared's relaunch runs in the background while the Task Session
+        // is torn down, so the two "shared launch" lines are checked by
+        // count rather than by position.
+        assert_eq!(
+            lines.iter().filter(|l| *l == "shared launch").count(),
+            2,
+            "{lines:?}"
+        );
+        let without_launches: Vec<&String> =
+            lines.iter().filter(|l| *l != "shared launch").collect();
+        assert_eq!(
+            without_launches,
+            vec![
+                "task A1 start",
+                "task A1 done",
+                "helper launch",
+                "task B1 start",
+                "shared crash",
+                "task A1 start",
+                "task A1 done",
+                "task B1 start",
+                "task B1 done",
+                "task B2 start",
+                "task B2 done",
+                "helper exit",
+            ]
+        );
+    }
+
+    /// "Failure and restart" with `completedTasks: KEEP`: the running Task
+    /// continues and completes, completed Tasks stand, the Service is
+    /// relaunched before the next Task is gated on it.
+    #[test]
+    fn test_keep_crash_lets_tasks_continue() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_keep_crash.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("(completedTasks: KEEP)")
+                && stdout.contains("Relaunching Service 'Flaky' onRun in its Service Session"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines,
+            vec![
+                "service launch",
+                "task 1 start",
+                "task 1 done",
+                "task 2 start",
+                "service crash",
+                "service launch",
+                "task 2 done",
+                "task 3 start",
+                "task 3 done",
+            ]
+        );
+    }
+
+    /// A relaunch that begins a new Service Session changes the Service's
+    /// endpoints (RFC 0009 "Dependents of a relaunched Service"): a Service
+    /// that lists it is stopped and started again in a new Service Session
+    /// with the new value (no attempt consumed; its own `completedTasks:
+    /// KEEP` keeps its scope's completed Tasks), a TASK-scoped Environment
+    /// that captured it is re-entered, and later Tasks resolve the new port.
+    /// With `KEEP` on the relaunched Service, the Task running during the
+    /// relaunch completes.
+    #[test]
+    fn test_new_session_restarts_dependents_and_reenters_environments() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_new_session_dependents.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("CounterFile={}", counter.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' onRun in its Service Session (relaunch 1 of 2)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' in a new Service Session (relaunch 2 of 2): onRun \
+                 exited before becoming READY (exit code: 7)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks: KEEP; no relaunch attempt consumed)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is starting again in a new Service Session: \
+                 Service 'Back' is READY"
+            ),
+            "{stdout}"
+        );
+        // Front's stop is not a relaunch of its own: its first instance's
+        // Session ends and a new one begins, within maxRestarts 0.
+        assert!(!stdout.contains("Relaunching Service 'Front'"), "{stdout}");
+        assert!(!stdout.contains("Returning Step(s)"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Re-entering 1 Environment(s): a Service they may reference has new endpoints"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+
+        let lines = read_trace(&trace);
+        let port_of = |prefix: &str| -> String {
+            lines
+                .iter()
+                .find(|l| l.starts_with(prefix))
+                .and_then(|l| l.rsplit(' ').next())
+                .unwrap_or_else(|| panic!("missing {prefix:?} in {lines:?}"))
+                .to_string()
+        };
+        let old_port = port_of("back launch 1 port ");
+        let new_port = port_of("back launch 3 port ");
+        assert_ne!(old_port, new_port, "{lines:?}");
+        assert_eq!(port_of("back launch 2 port "), old_port, "{lines:?}");
+        // Back is Job-wide (the Client Environment lists it) and so is
+        // READY before Client is entered; Front is scoped to Step Work (which
+        // lists it) and starts when Work is about to run, after the Task
+        // Session has entered Client. Front's own Service Session enters
+        // Client too, since Client is ALWAYS and does not list Front (RFC
+        // 0009 "Services run inside Environments"), so each new Session of
+        // Front enters it once more.
+        let expected: Vec<String> = [
+            format!("back launch 1 port {old_port}"),
+            // Front, scoped to Work, is READY before the Task Session
+            // enters Client: its own Session enters Client first.
+            format!("env enter backport {old_port}"),
+            format!("front launch backport {old_port}"),
+            format!("env enter backport {old_port}"),
+            format!("task 1 start backport {old_port}"),
+            "task 1 done".to_string(),
+            format!("task 2 start backport {old_port}"),
+            "back crash".to_string(),
+            format!("back launch 2 port {old_port}"),
+            format!("back launch 3 port {new_port}"),
+            "task 2 done".to_string(),
+            format!("env enter backport {new_port}"),
+            format!("front launch backport {new_port}"),
+            format!("env enter backport {new_port}"),
+            format!("task 3 start backport {new_port}"),
+            "task 3 done".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(lines, expected);
+    }
+
+    /// The same template with Front's `completedTasks` omitted: a dependent
+    /// that has not said its state survives a new instance is stopped and
+    /// started again as a `RERUN` Service, so Work's completed Task returns
+    /// to the queue and runs again against the new instances (RFC 0009
+    /// "Dependents of a relaunched Service").
+    #[test]
+    fn test_new_session_dependent_without_completed_tasks_reruns_its_scope() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let counter = dir.path().join("counter");
+        let original =
+            std::fs::read_to_string(templates_dir().join("service_new_session_dependents.yaml"))
+                .unwrap();
+        // Drop Front's `completedTasks: KEEP` (the one following
+        // `maxRestarts: 0`); Back's stays.
+        let marker = "      maxRestarts: 0\n";
+        let at = original.find(marker).unwrap() + marker.len();
+        let keep = "      completedTasks: KEEP\n";
+        let keep_at = at + original[at..].find(keep).unwrap();
+        let template = format!(
+            "{}{}",
+            &original[..keep_at],
+            &original[keep_at + keep.len()..]
+        );
+        assert_eq!(
+            template.matches("\n      completedTasks: KEEP\n").count(),
+            1,
+            "{template}"
+        );
+        let path = dir.path().join("omitted.yaml");
+        std::fs::write(&path, template).unwrap();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path.to_str().unwrap(),
+            "-p",
+            &format!("TraceFile={}", trace.display()),
+            "-p",
+            &format!("CounterFile={}", counter.display()),
+        ]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks omitted, read as RERUN; no relaunch attempt \
+                 consumed)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Returning Step(s) 'Work' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Relaunching Service 'Front'"), "{stdout}");
+        // Task 1 ran twice: once against the old instances, once again after
+        // Front's restart; Tasks 2 and 3 once each after it.
+        let lines = read_trace(&trace);
+        let starts: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("task ") && l.contains(" start "))
+            .map(|l| l.split(" start").next().unwrap())
+            .collect();
+        assert_eq!(
+            starts,
+            ["task 1", "task 2", "task 1", "task 2", "task 3"],
+            "{lines:?}"
+        );
+    }
+
+    /// "Failure and restart" step 4 when the scope's last Task is already
+    /// running: the Service's restarts run out mid-Task under `KEEP`, so the
+    /// Service is FAILED and the running Task in its scope is canceled and
+    /// fails, without a retry. A Step that depends on the scope must not
+    /// run, and the Job fails.
+    #[test]
+    fn test_service_failed_during_last_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_fail_during_last_task.yaml", &[]);
+        assert!(!stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "\tCanceling the running Task of Step 'A': a Service in whose scope it falls is \
+                 FAILED; the Task fails and is not retried\n"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\tTask canceled; it fails with its Service's scope\n"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "is FAILED: onRun exited") < pos(&stdout, "Canceling the running Task"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step A) is FAILED: onRun exited while the scope still had \
+                 work (exit code: 1); 0 of 0 relaunch(es) used (restartPolicy.maxRestarts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_MUST_NOT_RUN"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) failed: onRun exited"),
+            "{stdout}"
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// "Failure and restart" step 4 fails only the Tasks in the scope: a
+    /// Task of Step Between, outside S's scope, completes though S becomes
+    /// FAILED while it runs; Step C, in the scope, does not run.
+    #[test]
+    fn test_service_failed_during_a_task_outside_its_scope_lets_the_task_finish() {
+        let (code, stdout, stderr) =
+            run_service_template("service_fail_during_task_outside_scope.yaml", &[]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("STEP_A_DONE"), "{stdout}");
+        assert!(stdout.contains("BETWEEN_DONE"), "{stdout}");
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(!stdout.contains("STEP_C_MUST_NOT_RUN"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'S' (scope: Steps A, C) is FAILED")
+                < pos(&stdout, "BETWEEN_DONE"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Failed Service: S (scope: Steps A, C): onRun exited"),
+            "{stdout}"
+        );
+    }
+
+    /// A Job Environment kept across two Steps of a Step-scoped Service's
+    /// scope is re-entered when the gate before the second Step relaunches
+    /// the Service in a new Session, so the second Step sees the new port.
+    #[test]
+    fn test_kept_job_environment_is_reentered_after_a_new_session_between_steps() {
+        let dir = TempDir::new().unwrap();
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_kept_job_environment_reentered_after_new_session.yaml",
+            &["-p", &format!("Counter={}", counter.display())],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let ports: Vec<&str> = stdout
+            .lines()
+            .filter_map(|l| l.split("endpoints: main -> 127.0.0.1:").nth(1))
+            .collect();
+        assert_eq!(ports.len(), 2, "{stdout}");
+        assert_ne!(ports[0], ports[1], "{stdout}");
+        assert!(
+            stdout.contains(&format!("A_CPORT={}", ports[0])),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("B_CPORT={}", ports[1])),
+            "{stdout}"
+        );
+    }
+
+    /// A Step-scoped Service's new Session during a Task re-enters the Task
+    /// Session's Environments from the first Job Environment that lists a
+    /// Step-scoped Service; the ones below it stay entered.
+    #[test]
+    fn test_step_scoped_new_session_reenters_from_the_first_listing_job_environment() {
+        let dir = TempDir::new().unwrap();
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_scoped_new_session_reenters_from_listing_environment.yaml",
+            &["-p", &format!("Counter={}", counter.display())],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let reenter = pos(&stdout, "Re-entering 3 Environment(s)");
+        let after = &stdout[reenter..];
+        let task2 = after.find("TASK_2 CPORT=").expect("task 2");
+        let window = &after[..task2];
+        for name in ["SE", "Plain2", "Client"] {
+            assert!(
+                window.contains(&format!("\t--------- Exiting Environment: {name}\n")),
+                "{name} exited:\n{stdout}"
+            );
+        }
+        for name in ["JW", "Plain1"] {
+            assert!(
+                !window.contains(&format!("\t--------- Exiting Environment: {name}\n")),
+                "{name} kept:\n{stdout}"
+            );
+        }
+        assert!(window.contains("\tCLIENT_ENTER "), "{stdout}");
+        assert!(!window.contains("\tJW_ENTER"), "{stdout}");
+    }
+
+    /// RFC 0009 constraint 6: when a Step-scoped Service's scope completes,
+    /// the Task Session exits a Job Environment that lists it before the
+    /// Service is stopped.
+    #[test]
+    fn test_scope_end_exits_a_listing_job_environment_before_stopping_the_service() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_scope_end_exits_listing_job_environment_first.yaml",
+            &[],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            pos(&stdout, "\tCLIENT_EXIT") < pos(&stdout, "--------- Stopping Service: Coord")
+                && pos(&stdout, "--------- Stopping Service: Coord") < pos(&stdout, "STEP_B_RAN"),
+            "{stdout}"
+        );
+    }
+
+    /// The same with two listing Job Environments: the Task Session exits
+    /// down to the first, so both exit before the Service stops.
+    #[test]
+    fn test_scope_end_exits_every_listing_job_environment_first() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_scope_end_exits_both_listing_job_environments.yaml",
+            &[],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            pos(&stdout, "\tJ2_EXIT") < pos(&stdout, "\tJ1_EXIT ")
+                && pos(&stdout, "\tJ1_EXIT ") < pos(&stdout, "--------- Stopping Service: S")
+                && pos(&stdout, "--------- Stopping Service: S") < pos(&stdout, "STEP_B_RAN"),
+            "{stdout}"
+        );
+    }
+
+    /// The same through a bound `externalServices` requirement: the Job
+    /// Environment that lists the requirement is exited before the attached
+    /// Service bound to it is stopped.
+    #[test]
+    fn test_scope_end_exits_a_job_environment_listing_a_requirement_first() {
+        let provider = templates_dir().join("service_requirement_scope_end_provider.yaml");
+        let (code, stdout, stderr) = run_service_template(
+            "service_requirement_scope_end_exits_listing_job_environment_first.yaml",
+            &["--environment", provider.to_str().unwrap()],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            pos(&stdout, "\tRCLIENT_EXIT ") < pos(&stdout, "--------- Stopping Service: R")
+                && pos(&stdout, "--------- Stopping Service: R") < pos(&stdout, "STEP_B_RAN"),
+            "{stdout}"
+        );
+    }
+
+    /// RFC 0009: a Job Environment that lists Service X cannot be entered
+    /// until X is READY. With X scoped to the one Step that requests an
+    /// `ON_REQUEST` Environment listing it, X is started for that Step
+    /// before the Task Session enters the Environment, and the
+    /// Environment resolves X's port.
+    #[test]
+    fn test_step_scoped_service_is_ready_before_a_listing_job_environment_is_entered() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_scoped_listed_by_on_request_environment.yaml",
+            &[],
+        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let pos = |s: &str| {
+            stdout
+                .find(s)
+                .unwrap_or_else(|| panic!("{s:?} in {stdout}"))
+        };
+        assert!(
+            pos("STEP_B_RAN") < pos("Service 'Coord' is READY"),
+            "{stdout}"
+        );
+        assert!(
+            pos("Service 'Coord' is READY") < pos("--------- Entering Environment: Client"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\tCPORT="), "{stdout}");
+        assert!(!stdout.contains("CPORT=\n"), "{stdout}");
+    }
+
+    /// "Failure and restart" step 4 for a job-wide Service (listed by a Job
+    /// Environment) whose restarts run out during the run's last Task: the
+    /// Task is canceled, the verdict is collected at `stop_all`, and the Job
+    /// must fail.
+    #[test]
+    fn test_job_wide_service_failed_during_last_task_fails_the_job() {
+        let (code, stdout, stderr) =
+            run_service_template("service_job_wide_fail_during_last_task.yaml", &[]);
+        // The running Task is in the scope, and is canceled (step 4).
+        assert!(!stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(
+            stdout.contains("\tCanceling the running Task of Step 'A': a Service in whose scope"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'S' (scope: every Step) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'S' (scope: every Step) failed: onRun exited"),
+            "{stdout}"
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 6: a relaunch still in flight when the scope's last Task
+    /// completes is cut short, not awaited. The Job succeeds, Step B runs,
+    /// and the run does not wait out `readinessTimeoutSeconds` (5 s here).
+    #[test]
+    fn test_relaunch_in_flight_at_scope_end_is_cut_short() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let start = std::time::Instant::now();
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_in_flight_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        // An exit on its own is logged as `exited`, with its code.
+        assert!(
+            stdout.contains("Service 'S' onRun (launch 1) exited; exit code: 1"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "waited out the relaunch: {elapsed:?}\n{stdout}"
+        );
+    }
+
+    /// "Failure and restart" step 4 when the Service's `onExit` is still
+    /// running as the scope's last Task completes: the FAILED verdict was
+    /// decided while the scope had work and stands whatever the teardown
+    /// timing. Step B must not run and the Job fails.
+    #[test]
+    fn test_service_failed_with_slow_on_exit_during_last_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_fail_slow_on_exit_during_last_task.yaml", &[]);
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("SVC_ONEXIT"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_MUST_NOT_RUN"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 3 at the gate: an instance failure between Tasks (here,
+    /// during a slow Step Environment `onEnter`) is observed by the readiness
+    /// gate before the next Task, which then does not run.
+    #[test]
+    fn test_service_failure_between_tasks_is_caught_by_the_gate() {
+        let (code, stdout, stderr) = run_service_template("service_fails_between_tasks.yaml", &[]);
+        assert!(stdout.contains("ENV_ENTERED"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("TASK_A_RAN"), "{stdout}");
+        assert!(!stdout.contains("Running Task"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 4 when the dependent is declared before the Service it
+    /// lists: stop order follows the dependency graph, not declaration order.
+    #[test]
+    fn test_stop_order_follows_dependencies_not_declaration_order() {
+        let (code, stdout, stderr) =
+            run_service_template("service_stop_order_dependent_declared_first.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Front"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "FRONT_ONEXIT") < pos(&stdout, "BACK_ONEXIT"),
+            "{stdout}"
+        );
+    }
+
+    /// A relaunch that became READY during the scope's last Task, with no
+    /// gate afterwards to collect it, is stopped at scope end like any READY
+    /// instance: one `onExit`, one `stopped` line, and the Job succeeds.
+    #[test]
+    fn test_relaunch_ready_at_scope_end_is_stopped_once() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_ready_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("Stopping Service: S"), "{stdout}");
+        assert_eq!(stdout.matches("SVC_ONEXIT").count(), 1, "{stdout}");
+        assert!(stdout.contains("Service 'S' stopped"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'S' stopped") < pos(&stdout, "STEP_B_RAN"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+    }
+
+    /// A relaunch that becomes READY during a Task is watched like any READY
+    /// instance: when it exits during the same Task with no attempts left,
+    /// the Service is FAILED, Step B does not run, and the Job fails.
+    #[test]
+    fn test_relaunched_instance_exit_during_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_relaunch_exits_during_task.yaml", &[]);
+        assert_eq!(stdout.matches("SVC_EXITING_5").count(), 2, "{stdout}");
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step A) is FAILED: onRun exited while the scope still had \
+                 work (exit code: 5); 1 of 1 relaunch(es) used (restartPolicy.maxRestarts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Scope completion is signaled when the last Task returns, before the
+    /// Step Environments exit: a relaunch that exits during a slow Step
+    /// Environment onExit is not a failure. Step B runs and the Job succeeds.
+    #[test]
+    fn test_relaunch_exit_after_last_task_during_env_exit_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_fails_during_env_exit.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("ENV_EXIT_END"), "{stdout}");
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+    }
+
+    /// A new-Session relaunch still in its onEnter when the scope completes
+    /// is cut short and returns Stopped, not a start failure.
+    #[test]
+    fn test_relaunch_on_enter_cut_short_at_scope_end_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let start = std::time::Instant::now();
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_on_enter_cut_short_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'S' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "waited out the slow onEnter: {:?}\n{stdout}",
+            start.elapsed()
+        );
+    }
+
+    /// Two Services that do not depend on one another are stopped in reverse
+    /// registration order (the `stop_order` tie-break).
+    #[test]
+    fn test_independent_services_stop_in_reverse_registration_order() {
+        let (code, stdout, stderr) =
+            run_service_template("service_stop_order_independent_services.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Stopping Service: Second") < pos(&stdout, "Stopping Service: First"),
+            "{stdout}"
+        );
+    }
+
+    /// `--preserve` keeps every Service Session's working directory, and the
+    /// Session is still torn down in full (onExit runs) before the
+    /// `preserved at` line.
+    #[test]
+    fn test_preserve_keeps_the_service_working_directory_after_teardown() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_ready_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display()), "--preserve"],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(stdout.matches("SVC_ONEXIT").count(), 1, "{stdout}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'S' stopped; working directory preserved at: "))
+            .unwrap_or_else(|| panic!("no preserved-at line:\n{stdout}"));
+        let path = line.rsplit("preserved at: ").next().unwrap().trim();
+        assert!(
+            std::path::Path::new(path).is_dir(),
+            "{path} not preserved\n{stdout}"
+        );
+        assert!(
+            pos(&stdout, "SVC_ONEXIT") < pos(&stdout, "preserved at: "),
+            "{stdout}"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// A new-Session relaunch promoted to READY during a Task, whose
+    /// instance fails again (same-Session relaunch) before the next gate:
+    /// the dependent is still restarted against the new endpoints.
+    #[test]
+    fn test_new_session_during_task_restarts_dependent_after_a_further_relaunch() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_new_session_during_task_then_same_session_relaunch.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("CounterFile={}", counter.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'Back' in a new Service Session (relaunch 2 of 3)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' onRun in its Service Session (relaunch 3 of 3)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks: KEEP; no relaunch attempt consumed)"
+            ),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let port_of = |prefix: &str, nth: usize| -> String {
+            trace
+                .lines()
+                .filter(|l| l.starts_with(prefix))
+                .nth(nth)
+                .unwrap_or_else(|| panic!("no {prefix} #{nth} in\n{trace}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let new_back_port = port_of("back launch 4", 0);
+        assert_ne!(new_back_port, port_of("back launch 1", 0), "{trace}");
+        assert_eq!(port_of("front launch", 1), new_back_port, "{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
+    /// RFC 0009 "Failure and restart" step 1: only the Tasks in the
+    /// Service's scope are canceled. W (scope A, C; RERUN) exits while B
+    /// runs: B's Task completes, then A and C return to the queue.
+    #[test]
+    fn test_rerun_does_not_cancel_a_task_of_a_step_outside_the_scope() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_outside_running_step_scope.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(!stdout.contains("Task canceled"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Returning Step(s) 'A', 'C' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched"
+            ),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Running step 'B'").count(), 1, "{stdout}");
+        assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        // The requeue follows the running Step's completion, before D (the
+        // next Step, outside the scope) runs.
+        assert!(
+            pos(&stdout, "Returning Step(s) 'A', 'C'") < pos(&stdout, "Running step 'D'"),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(
+            trace.lines().collect::<Vec<_>>(),
+            ["A ran", "B start", "W died", "B done", "A ran", "D ran", "C ran"],
+            "{stdout}"
+        );
+    }
+
+    /// Two `RERUN` Services failing during one Task are returned together:
+    /// the in-Task watcher cancels at the first, the requeue gate observes
+    /// the second, and one requeue covers both scopes.
+    #[test]
+    fn test_two_rerun_services_failing_in_one_task_are_requeued_together() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_two_services_fail_in_one_task.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(stdout.matches("Returning Step(s)").count(), 1, "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'B' to the queue"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("New Task Session for the requeued Tasks")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("W died").count(), 1, "{trace}");
+        assert_eq!(trace.matches("V died").count(), 1, "{trace}");
+        assert_eq!(trace.matches("A1 done").count(), 2, "{trace}");
+        assert_eq!(trace.matches("B2 done").count(), 1, "{trace}");
+        assert_eq!(trace.matches("C1 done").count(), 1, "{trace}");
+    }
+
+    /// A `RERUN` relaunch a gate observes between Steps (the Service exited
+    /// during A's Step Environment onExit) is held until the running
+    /// out-of-scope Step completes, then requeued: A runs again before C.
+    #[test]
+    fn test_rerun_observed_by_a_gate_between_steps_is_requeued() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_observed_between_steps.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'C' to the queue"),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("A ran").count(), 2, "{trace}");
+        assert_eq!(trace.matches("B3 done").count(), 1, "{trace}");
+        assert!(pos(&trace, "B3 done") < pos(&trace, "C ran"), "{trace}");
+        assert!(trace.contains("W launch 2"), "{trace}");
+    }
+
+    /// A scope already pending (out-of-scope failure) is merged into the
+    /// requeue when a Service in scope then fails during the same Task.
+    #[test]
+    fn test_pending_rerun_scope_is_merged_into_an_in_scope_cancel() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_outside_scope_then_in_scope_same_task.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Canceling the running Task of Step 'B'")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Returning Step(s)").count(), 1, "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'B', 'C' to the queue"),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("A1 done").count(), 2, "{trace}");
+        assert_eq!(trace.matches("C1 done").count(), 1, "{trace}");
+    }
+
+    /// Job-wide counterpart of the Step-scoped Environment-exit test: the
+    /// run's last Task returns while a relaunch is in flight; its exit
+    /// during the Job Environment's slow onExit is not a failure.
+    #[test]
+    fn test_job_wide_relaunch_exit_during_job_env_exit_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_wide_relaunch_fails_during_job_env_exit.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("ENV_EXIT_END"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert_eq!(stdout.matches("Service 'S' stopped").count(), 1, "{stdout}");
+    }
+
+    /// A Service with a requested port keeps its number across a new
+    /// Service Session (its own earlier allocation is not "another
+    /// Service's"); so does a pinned dependent restarted for new upstream
+    /// endpoints.
+    #[test]
+    fn test_pinned_ports_survive_a_new_session_and_a_dependent_restart() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let free_port = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let (port_p, port_d) = (free_port(), free_port());
+        let (code, stdout, stderr) = run_service_template(
+            "service_pinned_ports_new_session.yaml",
+            &[
+                "-p",
+                &format!("Marker={}", marker.display()),
+                "-p",
+                &format!("PortP={port_p}"),
+                "-p",
+                &format!("PortD={port_d}"),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'P' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'D' (scope: Step S) is starting again in a new Service Session: \
+                 Service 'P' is READY"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("already allocated"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert_eq!(
+            stdout
+                .matches(&format!(
+                    "Service 'P' (scope: Step S) endpoints: main -> 127.0.0.1:{port_p}"
+                ))
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches(&format!(
+                    "Service 'D' (scope: Step S) endpoints: main -> 127.0.0.1:{port_d}"
+                ))
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("TASK_2_SEES P={port_p} D={port_d}")),
+            "{stdout}"
+        );
+    }
+
+    /// The pinned-port precheck considers only the Services the selection
+    /// may start: two Services pinning one port but scoped to different
+    /// Steps run under `--step A`, and fail up front without a selection.
+    #[test]
+    fn test_pinned_port_precheck_covers_only_the_services_the_selection_may_start() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let port_arg = format!("Port={port}");
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_pinned_port_different_steps.yaml",
+            &["-p", &port_arg, "--step", "A"],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains(&format!("STEP_A_RAN {port}")), "{stdout}");
+        assert!(!stdout.contains("Starting Service: SB"), "{stdout}");
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_pinned_port_different_steps.yaml",
+            &["-p", &port_arg],
+        );
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(&format!(
+                "Service 'SB' port 'p' requests TCP port {port}, which is already allocated to \
+                 another Service of this run (Service 'SA' port 'p')"
+            )),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+    }
+
+    /// A readiness timeout cancels `onRun`, awaits its exit (`canceled; exit
+    /// code: N/A`, before the `is UNREADY` line), and relaunches in the same
+    /// Service Session; a second timeout exhausts the attempts.
+    #[test]
+    fn test_readiness_timeout_relaunches_in_the_same_session_then_fails() {
+        let (code, stdout, stderr) =
+            run_service_template("service_readiness_timeout_relaunch.yaml", &[]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let canceled = "Service 'T' onRun (launch 1) canceled; exit code: N/A";
+        let unready = "Service 'T' (scope: Step S) is UNREADY: did not become READY within \
+                       readinessTimeoutSeconds (completedTasks: KEEP)";
+        let relaunch = "Relaunching Service 'T' onRun in its Service Session (relaunch 1 of 1): \
+                        did not become READY within readinessTimeoutSeconds";
+        assert!(pos(&stdout, canceled) < pos(&stdout, unready), "{stdout}");
+        assert!(pos(&stdout, unready) < pos(&stdout, relaunch), "{stdout}");
+        assert!(
+            stdout.contains("Service 'T' onRun (launch 2) canceled; exit code: N/A"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'T' (scope: Step S) is FAILED: did not become READY within \
+                 readinessTimeoutSeconds; 1 of 1 relaunch(es) used (restartPolicy.maxRestarts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+    }
+
+    /// A Step-scoped Service's new Session re-enters only the Step
+    /// Environments (down to the Step baseline), not the Job Environments,
+    /// and the next Task sees the new port through the Step Environment.
+    #[test]
+    fn test_step_scoped_new_session_reenters_only_the_step_environments() {
+        let dir = TempDir::new().unwrap();
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_env_reentered_on_new_session.yaml",
+            &["-p", &format!("Counter={}", counter.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'B' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches(
+                    "Re-entering 1 Environment(s): a Service they may reference has new endpoints"
+                )
+                .count(),
+            1,
+            "{stdout}"
+        );
+        // The Task Session's Job Environment is entered once; the Service
+        // Sessions' own entries are tagged.
+        assert_eq!(stdout.matches("\tJOB_ENV_ENTER").count(), 1, "{stdout}");
+        assert_eq!(stdout.matches("\tSE_ENTER ").count(), 2, "{stdout}");
+        let port_of = |line: &str| -> String {
+            stdout
+                .lines()
+                .find(|l| l.contains(line))
+                .unwrap_or_else(|| panic!("no {line} in\n{stdout}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let (old, new) = (port_of("\tTASK_1 "), port_of("\tTASK_2 "));
+        assert_ne!(old, new, "{stdout}");
+        assert!(stdout.contains(&format!("\tSE_ENTER {new}")), "{stdout}");
+        assert!(
+            stdout.contains(&format!("\tTASK_2 {new} {new}")),
+            "{stdout}"
+        );
+    }
+
+    /// RFC 0009 "Services run inside Environments" and `<Service>` item 4:
+    /// the Service Session enters `Conda` with its own value (from its
+    /// `let`) and the Task Session with the Step's; `StepsOnly`'s `enableIf`,
+    /// evaluated with X's value, excludes X; the `ON_REQUEST` `ServiceOnly`
+    /// is entered by X, which requests it, and not by the Step.
+    #[test]
+    fn test_service_session_enters_environments_with_its_own_values() {
+        let (code, stdout, stderr) =
+            run_service_template("service_environment_composition.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'X' Session enters Job Environment(s): Conda, ServiceOnly\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service X] CONDA_ENTER valkey-ServiceEnvironmentComposition"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "[Service X] SERVICE_SEES valkey-ServiceEnvironmentComposition UNSET set"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\tCONDA_ENTER python"), "{stdout}");
+        assert!(stdout.contains("\tTASK_SEES python set UNSET"), "{stdout}");
+        assert_eq!(stdout.matches("CONDA_ENTER").count(), 2, "{stdout}");
+    }
+
+    /// An Environment from another document is entered in an attached
+    /// Service's Session under that document's profile. An external Service
+    /// enters only the Environments of its own document and of Environment
+    /// Templates attached before it (RFC 0009 "Environment Template"), so
+    /// the Environment carrying the REDACTED_ENV_VARS directive comes from an
+    /// earlier attachment: the directive is honored in the Service's Session,
+    /// with no warning, though neither the Service's document nor the Job
+    /// Template declares the extension.
+    #[test]
+    fn test_external_service_session_enters_an_earlier_attachments_environment_under_its_profile() {
+        let secrets = templates_dir().join("service_env_profile_per_document_secrets_env.yaml");
+        let env = templates_dir().join("service_env_profile_per_document_env.yaml");
+        let (code, stdout, stderr) = run_service_template(
+            "service_env_profile_per_document.yaml",
+            &[
+                "--environment",
+                secrets.to_str().unwrap(),
+                "--environment",
+                env.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(&format!(
+                "Service 'R' (from {}) Session enters Job Environment(s): Secrets\n",
+                env.display()
+            )),
+            "{stdout}"
+        );
+        assert!(stdout.contains("SERVICE_SECRET_SET True"), "{stdout}");
+        assert!(stdout.contains("TASK_SECRET_SET True"), "{stdout}");
+        assert!(
+            !stdout.contains("REDACTED_ENV_VARS extension is not declared"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("hunter2"), "{stdout}");
+    }
+
+    /// A `TCP_CONNECT` check probes every TCP port (named on the launch
+    /// line, `on a, b`), skips UDP ones, and reports READY only once all
+    /// accept.
+    #[test]
+    fn test_tcp_connect_probes_every_tcp_port_and_names_them() {
+        let (code, stdout, stderr) =
+            run_service_template("service_tcp_connect_two_ports.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: TCP_CONNECT on a, b (readinessTimeoutSeconds 30, \
+                 readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "B_LISTENING") < pos(&stdout, "Service 'Two' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_RAN"), "{stdout}");
+    }
+
+    /// Two Services named alike in two documents pinning one port are two
+    /// Services; the precheck names the holder with its document.
+    #[test]
+    fn test_pinned_port_precheck_names_the_holder_with_its_document() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let env = templates_dir().join("service_same_name_pinned_port_env.yaml");
+        let env = env.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_name_pinned_port_job.yaml",
+            &["-p", &format!("Port={port}"), "--environment", env],
+        );
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(&format!(
+                "Service 'Cache' port 'main' requests TCP port {port}, which is already \
+                 allocated to another Service of this run (Service 'Cache' (from {env}) port \
+                 'main')"
+            )),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+    }
+
+    /// A Step-scoped Service's new Session at first start (before any Task)
+    /// refreshes no Environment: the Job Environment is entered once and
+    /// exited once, and nothing is re-entered.
+    #[test]
+    fn test_first_start_new_session_does_not_reenter_the_job_environments() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_first_start_new_session_no_job_env_reentry.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'S' in a new Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Re-entering"), "{stdout}");
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let lines: Vec<&str> = trace.lines().collect();
+        assert_eq!(
+            lines.iter().filter(|l| **l == "JE enter").count(),
+            1,
+            "{trace}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| **l == "JE exit").count(),
+            1,
+            "{trace}"
+        );
+        assert!(lines.iter().any(|l| l.starts_with("A ran ")), "{trace}");
+    }
+
+    /// A dependent that opens a new Service Session on its own failure
+    /// starts only after its upstream is READY (constraint 2) and is seeded
+    /// with the upstream's current endpoints — never the stale ones, and
+    /// never while the upstream is UNREADY.
+    #[test]
+    fn test_dependent_new_session_waits_for_upstream_and_sees_new_endpoints() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependent_new_session_waits_for_upstream.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let last_port = |prefix: &str| -> String {
+            trace
+                .lines()
+                .rfind(|l| l.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no {prefix} in\n{trace}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        // Back's final port and Front's final view of it must agree.
+        let back_port = last_port("back launch 3 port ");
+        let front_backport = last_port("front launch 3 backport ");
+        assert_eq!(
+            front_backport, back_port,
+            "Front holds a stale Back port\n{trace}"
+        );
+        // And Back's first and new ports differ (a new Session really happened).
+        assert_ne!(back_port, last_port("back launch 1 port "), "{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
+    /// A new Session reached through a re-gate (a Service that lists others)
+    /// still propagates to its OWN dependents: in A←B←C, B re-gates on a new
+    /// Session and C, which lists B, is restarted and sees B's new port
+    /// (constraint 8 through the re-gate).
+    #[test]
+    fn test_regate_new_session_restarts_the_services_own_dependents() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_chain_propagates_new_session.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'C' (scope: Step Work) is stopping: Service 'B' began a new Service \
+                 Session (completedTasks: KEEP; no relaunch attempt consumed)"
+            ),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let b_port = trace
+            .lines()
+            .filter_map(|l| l.strip_prefix("B launch "))
+            .next_back()
+            .and_then(|l| l.split_whitespace().nth(2)) // "<n> port <PORT> aport <A>"
+            .unwrap()
+            .to_string();
+        let c_port = trace
+            .lines()
+            .rfind(|l| l.starts_with("C launch bport "))
+            .unwrap()
+            .rsplit(' ')
+            .next()
+            .unwrap();
+        assert_eq!(c_port, b_port, "C holds a stale B port\n{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
+    /// After a re-gate (new Session), a later SAME-Session relaunch of the
+    /// same Service does not spuriously restart its dependents (constraint 8:
+    /// a same-Session relaunch keeps its ports). C is restarted exactly once
+    /// — for B's re-gate — and launches twice.
+    #[test]
+    fn test_same_session_relaunch_after_a_regate_does_not_restart_dependents() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_then_same_session_relaunch_no_spurious_restart.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(
+            stdout
+                .matches("is stopping: Service 'B' began a new Service Session")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("C launch").count(), 2, "{trace}");
+        assert!(trace.contains("task 3 done"), "{trace}");
+    }
+
+    /// The consumed-attempt count carried through a re-gate still fails the
+    /// Service at exactly maxRestarts rather than looping forever.
+    #[test]
+    fn test_regate_still_fails_at_max_restarts() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_exhausts_attempts.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'B' (scope: Step Work) is FAILED: onRun exited before becoming READY \
+                 (exit code: 7); 3 of 3 relaunch(es) used (restartPolicy.maxRestarts)"
+            ),
+            "{stdout}"
+        );
+        // 1 start + 3 relaunches = 4 launches, no more.
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("B launch").count(), 4, "{trace}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+    }
+
+    /// RFC 0009 `<ServiceActions>`: an `openjd_fail` line from `onRun` is an
+    /// instance failure in itself. The runtime cancels `onRun` at once (the
+    /// process never gets past the line), the `is UNREADY` reason is the
+    /// message, and the relaunch stays in the Session (not a suspected port
+    /// conflict).
+    #[test]
+    fn test_on_run_openjd_fail_cancels_the_instance_and_relaunches_in_the_session() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unready = "Service 'S' (scope: Step Work) is UNREADY: onRun reported openjd_fail: \
+                       store corrupt (completedTasks: KEEP)";
+        let canceled = "Service 'S' onRun (launch 1) canceled; exit code: N/A; store corrupt";
+        let relaunch = "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1): \
+                        onRun reported openjd_fail: store corrupt";
+        assert!(pos(&stdout, unready) < pos(&stdout, canceled), "{stdout}");
+        assert!(pos(&stdout, canceled) < pos(&stdout, relaunch), "{stdout}");
+        assert!(stdout.contains("[Service S] S launch 2"), "{stdout}");
+        assert!(!stdout.contains("S1_SURVIVED"), "{stdout}");
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert!(
+            stdout.contains("TASK_1_DONE") && stdout.contains("TASK_2_DONE"),
+            "{stdout}"
+        );
+    }
+
+    /// `openjd_fail` BEFORE READY is a reported failure too: the reason is
+    /// the message and the relaunch stays in the Session (onEnter does not
+    /// run again).
+    #[test]
+    fn test_on_run_openjd_fail_before_ready_relaunches_in_the_session() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_before_ready.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step Work) is UNREADY: onRun reported openjd_fail: store \
+                 corrupt (completedTasks: KEEP)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1): onRun \
+                 reported openjd_fail: store corrupt"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("exited before becoming READY"), "{stdout}");
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert_eq!(stdout.matches("S_ONENTER").count(), 1, "{stdout}");
+        assert!(!stdout.contains("S1_SURVIVED"), "{stdout}");
+        assert!(stdout.contains("TASK_DONE"), "{stdout}");
+    }
+
+    /// A redacted value never reaches a Service failure's reason: not the
+    /// `is UNREADY` / `is FAILED` lines, not the Results, not `--output json`.
+    #[test]
+    fn test_openjd_fail_reason_is_redacted_everywhere() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_redacted.yaml",
+            &["--output", "json"],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("hunter2xyz"), "{stdout}");
+        assert!(!stderr.contains("hunter2xyz"), "{stderr}");
+        assert!(
+            stdout.contains("is UNREADY: onRun reported openjd_fail: bad ********"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "\"reason\": \"onRun reported openjd_fail: bad ********; 0 of 0 relaunch(es)"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// After `openjd_fail` the Service is UNREADY at once, while `onRun` is
+    /// still exiting under its NOTIFY_THEN_TERMINATE grace: no further Task
+    /// starts against the failed instance (constraint 3), and the restart
+    /// decision is taken once the exit lands.
+    #[test]
+    fn test_openjd_fail_gates_tasks_while_on_run_exits_under_grace() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_ntt_gates_tasks.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unready = "is UNREADY: onRun reported openjd_fail: store corrupt";
+        let relaunch = "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)";
+        // UNREADY is logged on the line, before the canceled exit (which
+        // waits out the 3 s grace), and the Task that was running completes.
+        assert!(
+            pos(&stdout, unready) < pos(&stdout, "TASK_1_DONE"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "TASK_1_DONE") < pos(&stdout, relaunch),
+            "{stdout}"
+        );
+        // Tasks 2 and 3 run only against launch 2.
+        assert!(
+            pos(&stdout, "[Service S] S launch 2") < pos(&stdout, "TASK_2_DONE"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_3_DONE"), "{stdout}");
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+    }
+
+    /// `maxRestarts` exhausted: every relaunch after an exit-before-READY
+    /// begins a new Service Session (new ports, onExit each time), then the
+    /// Service is FAILED, the Job fails with a non-zero exit code, no Task
+    /// runs, and the result names the Service.
+    #[test]
+    fn test_max_restarts_exhausted_fails_the_job() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_fail_exhausted.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Broken' in a new Service Session (relaunch 2 of 2): onRun \
+                 exited before becoming READY (exit code: 3)"
+            ),
+            "{stdout}"
+        );
+        let reason = "onRun exited before becoming READY (exit code: 3); 2 of 2 relaunch(es) \
+                      used (restartPolicy.maxRestarts)";
+        assert!(
+            stdout.contains(&format!(
+                "Service 'Broken' (scope: Step Never) is FAILED: {reason}"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "Service 'Broken' (scope: Step Never) failed: {reason}"
+            )),
+            "{stdout}"
+        );
+        assert!(!stderr.contains("ERROR: Service 'Broken'"), "{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Service 'Broken' (scope: Step Never) failed:")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("Service 'Broken' (scope: Step Never) is FAILED:")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert!(stdout.contains("Session ended with errors."), "{stdout}");
+        assert!(
+            stdout.contains(&format!(
+                "Failed Service: Broken (scope: Step Never): {reason}"
+            )),
+            "{stdout}"
+        );
+        let lines = read_trace(&trace);
+        let ports: std::collections::BTreeSet<&str> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("launch port "))
+            .collect();
+        assert_eq!(ports.len(), 3, "each new Session gets new ports: {lines:?}");
+        assert_eq!(
+            lines.iter().filter(|l| *l == "exit").count(),
+            3,
+            "{lines:?}"
+        );
+    }
+
+    /// The Task Session's cleanup runs before the result is printed: a
+    /// failure to delete its working directory is logged before the
+    /// `--- Results of local session ---` block and its `Failed Service:`
+    /// line, so the result is the last thing the run prints. Step First
+    /// leaves a directory it cannot delete (a read-only parent) in the
+    /// Session's working directory; Step Second's Service fails its scope.
+    #[cfg(unix)]
+    #[test]
+    fn test_session_cleanup_error_is_printed_before_the_result() {
+        let dir = TempDir::new().unwrap();
+        let template = dir.path().join("cleanup_then_fail.yaml");
+        std::fs::write(
+            &template,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: CleanupThenFail
+services:
+  - name: Broken
+    ports: [{name: main}]
+    healthCheck: {type: STDOUT, readinessTimeoutSeconds: 30}
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "raise SystemExit(3)"]
+steps:
+  - name: First
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; d = os.path.join(r'{{ Session.WorkingDirectory }}', 'locked'); os.makedirs(os.path.join(d, 'x')); os.chmod(d, 0o555); print('LOCKED', d)"]
+          timeout: 30
+  - name: Second
+    dependencies: [{service: "Broken"}]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_MUST_NOT_RUN')"]
+          timeout: 30
+"#,
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", template.to_str().unwrap()]);
+        // Restore the locked directory's permissions and remove what the
+        // failed cleanup left, before any assertion can fail.
+        let locked = stdout.lines().find_map(|l| {
+            l.split_once("LOCKED ")
+                .map(|(_, d)| PathBuf::from(d.trim()))
+        });
+        let session_dir = locked.as_ref().and_then(|d| d.parent().map(PathBuf::from));
+        if let (Some(locked), Some(session_dir)) = (&locked, &session_dir) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(locked, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(session_dir);
+        }
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let session_dir = session_dir.expect(&stdout);
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+        let cleanup = pos(
+            &stdout,
+            &format!(
+                "Files within temporary directory {} could not be deleted: ",
+                session_dir.display()
+            ),
+        );
+        let results = pos(&stdout, "--- Results of local session ---");
+        let failed = pos(
+            &stdout,
+            "Failed Service: Broken (scope: Step Second): onRun exited before becoming READY \
+             (exit code: 3); 0 of 0 relaunch(es) used (restartPolicy.maxRestarts)",
+        );
+        assert!(
+            pos(&stdout, "Local session ended.") < cleanup && cleanup < results && results < failed,
+            "the cleanup error must come after the session ends and before the result:\n{stdout}"
+        );
+    }
+
+    /// Exploratory report stumble S10 (`06b`): a `RERUN` Service whose
+    /// relaunch budget is exhausted while a Task runs. The Task is canceled
+    /// and returns to the queue, the Service is FAILED, and the Job fails —
+    /// without announcing a requeue that never happens or opening a new Task
+    /// Session for it.
+    #[test]
+    fn test_rerun_failed_service_does_not_announce_a_requeue() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_exhausted_mid_task.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Canceling the running Task of Step 'Work': a Service with completedTasks: RERUN \
+                 is UNREADY; the Task returns to the queue"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Task canceled; it returns to the queue (not a Task failure)"),
+            "{stdout}"
+        );
+        let reason = "onRun exited while the scope still had work (exit code: 1); 0 of 0 \
+                      relaunch(es) used (restartPolicy.maxRestarts)";
+        assert!(
+            stdout.contains(&format!(
+                "Service 'Flaky' (scope: Step Work) is FAILED: {reason}"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("Returning Step(s)"),
+            "no requeue is announced for a FAILED Service:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("New Task Session for the requeued Tasks"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Relaunching"), "{stdout}");
+        assert!(
+            stdout.contains(&format!(
+                "Failed Service: Flaky (scope: Step Work): {reason}"
+            )),
+            "{stdout}"
+        );
+        // Task 1 completed; Task 2 was canceled; Task 3 never ran.
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines,
+            vec![
+                "flaky launch",
+                "task 1 start",
+                "task 1 done",
+                "task 2 start",
+                "flaky crash"
+            ],
+            "{lines:?}"
+        );
+    }
+
+    /// The structured result carries the FAILED Service.
+    #[test]
+    fn test_failed_service_in_json_result() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, _stderr) = run_service_template(
+            "service_fail_exhausted.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "--output",
+                "json",
+            ],
+        );
+        assert_eq!(code, 1, "{stdout}");
+        let json_start = stdout.find('{').expect("json output");
+        let value: serde_json::Value = serde_json::from_str(&stdout[json_start..]).unwrap();
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["failed_services"][0]["name"], "Broken");
+        assert_eq!(value["failed_services"][0]["scope"], "Step Never");
+        assert_eq!(
+            value["failed_services"][0]["reason"],
+            "onRun exited before becoming READY (exit code: 3); 2 of 2 relaunch(es) used \
+             (restartPolicy.maxRestarts)"
+        );
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Service 'Broken' (scope: Step Never) failed:"),
+            "{value}"
+        );
+    }
+
+    /// Constraint 10: a Step whose selection schedules no Task does not
+    /// start the Services scoped to it.
+    #[test]
+    fn test_step_with_no_tasks_does_not_start_its_service() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_no_tasks.yaml",
+            &[
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+                "--tasks",
+                "[]",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Not starting Service 'Unused' for Step 'Work': no Task of this Step will run"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+        assert!(!marker.exists(), "the Service must not have started");
+        assert!(stdout.contains("Chunks run: 0"), "{stdout}");
+    }
+
+    /// An interruption cancels the running Task and stops every Service:
+    /// `onRun` is canceled and `onExit` still runs (constraint 7).
+    #[test]
+    fn test_interrupt_stops_services() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let template = templates_dir().join("service_interruptible.yaml");
+        let mut child = spawn_run_piped(
+            &template,
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut collected = String::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    let hit = line.contains("READY_FOR_SIGNAL");
+                    collected.push_str(&line);
+                    collected.push('\n');
+                    if hit {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!("task never signaled readiness. output so far:\n{collected}");
+                }
+            }
+        }
+        if !send_interrupt(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            #[cfg(windows)]
+            {
+                eprintln!("SKIPPED: no console available to deliver CTRL_BREAK_EVENT");
+                return;
+            }
+            #[cfg(not(windows))]
+            panic!("failed to deliver SIGINT to the CLI process");
+        }
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    collected.push_str(&line);
+                    collected.push('\n');
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    panic!("CLI did not exit within 60s of interruption. output:\n{collected}");
+                }
+            }
+        }
+        reader.join().unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(1), "{collected}");
+        assert!(
+            collected.contains("Interruption signal received."),
+            "{collected}"
+        );
+        assert!(collected.contains("Stopping Service: Store"), "{collected}");
+        assert!(collected.contains("Service 'Store' stopped"), "{collected}");
+        assert!(!collected.contains("EXIT_NORMAL"), "{collected}");
+        assert_eq!(read_trace(&trace), vec!["service exit"]);
+    }
+
+    /// An interruption while a re-gated Service waits for its upstream ends
+    /// the run cleanly (a Results summary, exit 1), not with the internal
+    /// "cannot order the start of Services" scheduling error.
+    #[test]
+    fn test_interrupt_while_a_regated_service_waits_ends_cleanly() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let template = templates_dir().join("service_regate_interrupt_waiting.yaml");
+        let mut child = spawn_run_piped(&template, &["-p", &format!("Trace={}", trace.display())]);
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut collected = String::new();
+        // Wait until B has re-gated (its new Service Session), so it is idle
+        // waiting for A, which is relaunching and never becomes READY.
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    let hit = line.contains("Relaunching Service 'B' in a new Service Session");
+                    collected.push_str(&line);
+                    collected.push('\n');
+                    if hit {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!("B never re-gated. output so far:\n{collected}");
+                }
+            }
+        }
+        // Let Task 1 finish so the interrupt lands in the between-Tasks gate
+        // where B waits for A — the gate that must terminate on cancel rather
+        // than erroring or spinning.
+        std::thread::sleep(Duration::from_millis(2500));
+        if !send_interrupt(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            #[cfg(windows)]
+            {
+                eprintln!("SKIPPED: no console available to deliver CTRL_BREAK_EVENT");
+                return;
+            }
+            #[cfg(not(windows))]
+            panic!("failed to deliver SIGINT to the CLI process");
+        }
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    collected.push_str(&line);
+                    collected.push('\n');
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    panic!("CLI did not exit within 60s of interruption. output:\n{collected}");
+                }
+            }
+        }
+        reader.join().unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(1), "{collected}");
+        assert!(
+            collected.contains("Interruption signal received."),
+            "{collected}"
+        );
+        assert!(
+            collected.contains("--- Results of local session ---"),
+            "{collected}"
+        );
+        assert!(
+            !collected.contains("cannot order the start of Services"),
+            "{collected}"
+        );
+    }
+
+    /// The RFC's Valkey example adapted: the Service's `onEnter` puts a fake
+    /// `valkey-server` on PATH with `openjd_env` (the RFC's `conda create`),
+    /// the Service's bare `valkey-server` `onRun` resolves through it, and
+    /// the Tasks consume the endpoint without the fake binary on their own
+    /// PATH.
+    #[test]
+    fn test_valkey_example_on_enter_provisions_the_binary() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_valkey_conda.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // onEnter's PATH export, then the fake binary found through it by
+        // onRun.
+        assert!(
+            stdout.contains("\t[Service Cache] openjd_env: PATH="),
+            "{stdout}"
+        );
+        assert!(
+            pos(
+                &stdout,
+                "\t[Service Cache] --------- Service onEnter: Cache"
+            ) < pos(
+                &stdout,
+                "\t[Service Cache] --------- Service onRun: Cache (launch 1)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("FAKE_VALKEY_LISTENING 127.0.0.1 "),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Cache' is READY"), "{stdout}");
+        for frame in 1..=3 {
+            assert!(
+                stdout.contains(&format!("FRAME {frame} CACHED done")),
+                "{stdout}"
+            );
+        }
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        let mut lines = read_trace(&trace);
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "frame 1 valkey-server-on-task-path=False",
+                "frame 2 valkey-server-on-task-path=False",
+                "frame 3 valkey-server-on-task-path=False",
+            ]
+        );
+    }
+
+    /// Template Schemas §9.1 rule 1 / RFC 0009 lifecycle constraint 6:
+    /// scope by dependency. Coord is listed by Scatter and Gather, not by
+    /// Unrelated: it starts when Scatter is about to run, one instance
+    /// persists across both Steps (Gather reads what Scatter's three Tasks
+    /// stored), and it is stopped — onExit run, `stopped` logged — before
+    /// Unrelated's Task runs, which finds its endpoint refused.
+    #[test]
+    fn test_scope_by_dependency_two_of_three_steps() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_scope_two_of_three.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Coord' (scope: Steps Gather, Scatter) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("\t--------- Starting Service: Coord")
+                .count(),
+            1,
+            "one Service Session across both Steps:\n{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Starting Service: Coord") < pos(&stdout, "Running step 'Scatter'")
+                && pos(&stdout, "Service 'Coord' is READY") < pos(&stdout, "SCATTER 1 OK"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("GATHERED part1,part2,part3"), "{stdout}");
+        assert!(
+            pos(&stdout, "GATHERED") < pos(&stdout, "Stopping Service: Coord")
+                && pos(&stdout, "[Service Coord] COORD_EXIT")
+                    < pos(&stdout, "Service 'Coord' stopped")
+                && pos(&stdout, "Service 'Coord' stopped")
+                    < pos(&stdout, "Running step 'Unrelated'"),
+            "Coord stops once its scope completes, before Unrelated:\n{stdout}"
+        );
+        assert!(stdout.contains("UNRELATED_RAN COORD_GONE True"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 5"), "{stdout}");
+        let lines = read_trace(&trace);
+        let lines: Vec<&str> = lines
+            .iter()
+            .map(String::as_str)
+            .filter(|l| !l.starts_with("endpoint "))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "coord launch",
+                "scatter 1",
+                "scatter 2",
+                "scatter 3",
+                "gather part1,part2,part3",
+                "coord exit",
+                "unrelated coord_gone=True",
+            ]
+        );
+    }
+
+    /// Template Schemas §9 item 4 / How Jobs Are Run constraint 2: a Service
+    /// with `dependencies: [{dependsOn: Prepare}]` starts only after
+    /// Prepare's Task completed. Use — listed first, listing only
+    /// `service:Indexer` and no Step of its own — runs after Prepare through
+    /// the Step edge the Service's dependencies imply.
+    #[test]
+    fn test_service_dependencies_start_after_the_listed_step() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependencies_after_step.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("INDEXER_UP_DURING_PREPARE False"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Indexer' (scope: Step Use) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Running step 'Prepare'") < pos(&stdout, "INDEXER_UP_DURING_PREPARE")
+                && pos(&stdout, "INDEXER_UP_DURING_PREPARE")
+                    < pos(&stdout, "Starting Service: Indexer")
+                && pos(&stdout, "Running step 'Prepare'") < pos(&stdout, "Running step 'Use'"),
+            "the Service starts after its dependency Step's Task completed:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Indexer] INDEXER_READ prepared-content"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("USE_GOT prepared-content"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 2"), "{stdout}");
+    }
+
+    /// `--step Use` without `--run-dependencies` skips Prepare, which the
+    /// Indexer depends on. The Service is started as if Prepare had
+    /// completed, and the log says so before the Service starts.
+    #[test]
+    fn test_service_step_dependency_outside_the_selection_is_logged() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependencies_after_step.yaml",
+            &[
+                "--step",
+                "Use",
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+            ],
+        );
+        // Without Prepare's file the Indexer's onRun exits before READY.
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let note = "Service 'Indexer' depends on Step(s) 'Prepare', which is not being run \
+                    (--step without --run-dependencies); starting it as if it had completed";
+        assert!(
+            pos(&stdout, note) < pos(&stdout, "Starting Service: Indexer"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Running step 'Prepare'"), "{stdout}");
+    }
+
+    /// Two Services of the run pin the same TCP port number: the single-host
+    /// runner knows both pins before starting anything and fails before
+    /// either is launched, with the allocator's message naming the holder.
+    #[test]
+    fn test_two_services_pinning_one_port_fail_before_any_start() {
+        let (code, stdout, stderr) =
+            run_service_template("service_same_pinned_port_invalid.yaml", &[]);
+        assert_ne!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stderr.contains(
+                "Service 'B' port 'p' requests TCP port 47213, which is already allocated to \
+                 another Service of this run (Service 'A' port 'p')"
+            ),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+        assert!(!stdout.contains("is READY"), "{stdout}");
+    }
+
+    /// Template Schemas §1.1 item 9, §1.2.2 item 2, §9.8: `externalServices`
+    /// satisfied by an attached Environment Template. `Service.R.main.*`
+    /// resolves to the attached Service's endpoint both in the Task's
+    /// arguments and in a Job Environment's variable; the attached Service
+    /// is logged with its document and has scope every Step.
+    #[test]
+    fn test_external_services_satisfied_by_environment() {
+        let env_path = templates_dir().join("service_required_provider.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_required_consumer.yaml",
+            &["--environment", env_path],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let marker = format!(
+            "Service 'R' (from {env_path}) (scope: every Step) endpoints: main -> 127.0.0.1:"
+        );
+        let at = pos(&stdout, &marker) + marker.len();
+        let port: u16 = stdout[at..]
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            stdout.contains(&format!("TASK_DIRECT {port} R_SAYS_HI")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("TASK_VIA_ENV {port} R_SAYS_HI")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("SAME_ENDPOINT True"), "{stdout}");
+        assert!(
+            pos(&stdout, &format!("Service 'R' (from {env_path}) is READY"))
+                < pos(&stdout, "Entering Environment: RClient"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
+    /// An `externalServices` entry that the attachments do not satisfy is
+    /// rejected at submission (Template Schemas §1.2.2 item 2): non-zero
+    /// exit, no Session started, and the model error at
+    /// `JobTemplate -> externalServices[0]` of the Submission, or, with no
+    /// Environment Template attached, at the Job Template's own
+    /// `externalServices[0]` (Template Schemas §7.4.1).
+    fn assert_requirement_rejected(environments: &[&str], message: &str) {
+        let mut args = Vec::new();
+        let paths: Vec<String> = environments
+            .iter()
+            .map(|e| templates_dir().join(e).to_str().unwrap().to_string())
+            .collect();
+        for p in &paths {
+            args.push("--environment");
+            args.push(p.as_str());
+        }
+        let (code, stdout, stderr) = run_service_template("service_required_consumer.yaml", &args);
+        assert_ne!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("Session start"), "{stdout}");
+        let mut message = message.to_string();
+        for (name, p) in environments.iter().zip(&paths) {
+            message = message.replace(&format!("<{name}>"), p);
+        }
+        let at = if environments.is_empty() {
+            "JobTemplate\nexternalServices[0]"
+        } else {
+            "Submission\nJobTemplate -> externalServices[0]"
+        };
+        assert!(
+            stderr.contains(&format!("1 validation error for {at}:\n\t{message}\n")),
+            "expected {message:?} in stderr:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn test_external_services_unmet_without_attachment() {
+        assert_requirement_rejected(
+            &[],
+            "required Service 'R' is not provided: no Environment Template is attached \
+             (Template Schemas §1.2.2 item 2).",
+        );
+    }
+
+    #[test]
+    fn test_external_services_unmet_by_attachment_without_the_service() {
+        assert_requirement_rejected(
+            &["env_plain_expr_greeting.yaml"],
+            "required Service 'R' is not provided: none of the attached Environment Templates \
+             (<env_plain_expr_greeting.yaml>) defines a Service named 'R' (Template Schemas \
+             §1.2.2 item 2).",
+        );
+    }
+
+    #[test]
+    fn test_external_services_ambiguous_two_attachments() {
+        assert_requirement_rejected(
+            &[
+                "service_required_provider.yaml",
+                "service_required_provider_missing_port.yaml",
+            ],
+            "required Service 'R' is ambiguous: 2 attached Environment Templates define a \
+             Service with that name (<service_required_provider.yaml>, \
+             <service_required_provider_missing_port.yaml>); a requirement must match exactly \
+             one (Template Schemas §1.2.2 item 2).",
+        );
+    }
+
+    #[test]
+    fn test_external_services_provider_missing_port() {
+        assert_requirement_rejected(
+            &["service_required_provider_missing_port.yaml"],
+            "required Service 'R' is provided by <service_required_provider_missing_port.yaml>, \
+             which is missing port 'main'; its ports: other (Template Schemas §1.2.2 item 2).",
+        );
+    }
+
+    #[test]
+    fn test_external_services_provider_protocol_mismatch() {
+        assert_requirement_rejected(
+            &["service_required_provider_udp.yaml"],
+            "required Service 'R' is provided by <service_required_provider_udp.yaml>, whose \
+             port 'main' has protocol UDP but the requirement declares TCP (Template Schemas \
+             §1.2.2 item 2).",
+        );
+    }
+
+    /// RFC 0009 "Services run inside Environments": a Service's Sessions
+    /// select Environments as a Step's do, with no exception for a
+    /// `BY_DEFAULT` (the default) Job Environment that lists the Service.
+    /// Without a decline, X's Sessions would enter XClient, which lists X:
+    /// the cycle `X -> X`, rejected. With X's disabled `environment:`
+    /// dependency, XClient is entered in the Task Session (its variable,
+    /// resolved from the Service it lists, reaches the Task) and not in X's
+    /// Service Session (X's onRun sees it unset); Plain, which lists no
+    /// Service, is entered in both.
+    #[test]
+    fn test_service_session_declines_a_by_default_environment_that_lists_it() {
+        let dir = TempDir::new().unwrap();
+        let original = std::fs::read_to_string(
+            templates_dir().join("service_env_listing_service_not_entered.yaml"),
+        )
+        .unwrap();
+        let decline = "    dependencies:\n      - environment: XClient\n        enableIf: false\n";
+        assert_eq!(original.matches(decline).count(), 1, "{original}");
+        let undeclined = dir.path().join("undeclined.yaml");
+        std::fs::write(&undeclined, original.replace(decline, "")).unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", undeclined.to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stderr.contains(
+                "Model validation error: 1 validation error for JobTemplate\nJobTemplate: \
+                 dependencies contain a cycle: Service X -> Service X (the Sessions of Service \
+                 X enter Job Environment 'XClient', which lists Service 'X', so it would wait \
+                 for itself to be READY. There is no exception for an Environment that lists \
+                 the Service: keep the Service's Sessions out of it: drop any 'environment:' dependency of the Service that requests it, and decline a BY_DEFAULT one with a disabled 'environment:' dependency of the Service, or make it ON_REQUEST and request it only from the Steps that need it; Template Schemas §3.2 constraint 3).\n"
+            ),
+            "stderr: {stderr}"
+        );
+
+        let (code, stdout, stderr) =
+            run_service_template("service_env_listing_service_not_entered.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'X' (scope: every Step) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'X' Session enters Job Environment(s): Plain\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service X] --------- Entering Environment: Plain"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[Service X] --------- Entering Environment: XClient"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service X] SERVICE_SEES_X_ENDPOINT UNSET"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service X] SERVICE_SEES_PLAIN plain-value"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\t--------- Entering Environment: XClient"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("X_SAYS_HI PLAIN plain-value"), "{stdout}");
+    }
+
+    /// RFC 0009 Service scope rule 2 through an entering edge: Front's
+    /// Sessions enter the `ON_REQUEST` Job Environment E, which lists Back,
+    /// so Back's scope is Front's (Step A) though no Step lists Back or
+    /// requests E, and Front's Session sees Back's port through E.
+    #[test]
+    fn test_service_scope_follows_a_services_entered_environment() {
+        let (code, stdout, stderr) =
+            run_service_template("service_scope_through_entered_environment.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Back' (scope: Step A) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Front' (scope: Step A) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Front] FRONT_SEES_BACK_PORT True"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Service 'Back' (scope: Step A) endpoints")
+                < pos(&stdout, "Service 'Front' (scope: Step A) endpoints"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("STEP_A_RAN"), "{stdout}");
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+    }
+
+    /// Template Schemas §4 item 3 / §9.1 rule 3: a Job Environment that lists
+    /// a Service it never references — an opaque consumer that reaches the
+    /// Service by other means — puts every Step in the Service's scope. No
+    /// Step lists or references the Service either, yet it is up Job-wide:
+    /// READY before the Environment is entered (its endpoint file exists
+    /// when the first Task reads it), still up for a second Step, and
+    /// stopped once at the end. The Environment lists Store, so Store
+    /// declines it (entering it would be a cycle) and Store's Service
+    /// Session does not enter it and never sees its variable.
+    #[test]
+    fn test_job_environment_dependency_without_reference_keeps_the_service_up_job_wide() {
+        let dir = TempDir::new().unwrap();
+        let endpoint = dir.path().join("endpoint.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_environment_dependency_opaque.yaml",
+            &["-p", &format!("EndpointFile={}", endpoint.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Store' (scope: every Step) endpoints: main -> "),
+            "{stdout}"
+        );
+        // Entered in the Task Session only, after the Service is READY and
+        // before the first Task; not in the Service Session, since Store
+        // declines Opaque, which lists it.
+        assert!(stdout.contains("OPAQUE_ENTER"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'Store' Session enters no Job Environment\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Store] SERVICE_SEES_OPAQUE UNSET"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "openjd_service_ready: STORE") < pos(&stdout, "OPAQUE_ENTER"),
+            "{stdout}"
+        );
+        // Both Tasks reach the Service through the file, with no Step
+        // listing it and the Environment's variable set.
+        assert!(stdout.contains("FIRST_GOT STORE OPAQUE yes"), "{stdout}");
+        assert!(stdout.contains("SECOND_GOT STORE"), "{stdout}");
+        assert!(
+            stdout.contains("[Service Store] STORE_EXIT False"),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("STORE_EXIT").count(), 1, "{stdout}");
+        assert!(
+            pos(&stdout, "SECOND_GOT STORE") < pos(&stdout, "[Service Store] STORE_EXIT"),
+            "{stdout}"
+        );
+    }
+
+    /// RFC 0009 "RERUN and Step dependencies": Flaky (RERUN) has scope
+    /// Steps A, B; C depends on A and is outside the scope; B depends on C.
+    /// Flaky exits while B's Task runs: A's and B's completed Tasks return to
+    /// the queue and C, a dependent of the returned Step A, returns to
+    /// pending, so C's Task runs twice.
+    #[test]
+    fn test_rerun_returns_dependent_step_outside_the_scope_to_pending() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_dependent_step.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched; dependent \
+                 Step(s) 'C' return to pending\n"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Canceling the running Task of Step 'B': a Service with completedTasks: RERUN \
+                 is UNREADY; the Task returns to the queue"
+            ),
+            "{stdout}"
+        );
+        for step in ["A", "C", "B"] {
+            assert_eq!(
+                stdout.matches(&format!("Running step '{step}'")).count(),
+                2,
+                "{stdout}"
+            );
+        }
+        assert!(stdout.contains("Chunks run: 5"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines,
+            vec![
+                "flaky launch",
+                "task A start",
+                "task A done",
+                "task C start",
+                "task C done",
+                "task B start",
+                "flaky crash",
+                "flaky launch",
+                "task A start",
+                "task A done",
+                "task C start",
+                "task C done",
+                "task B start",
+                "task B done",
+            ]
+        );
+    }
+
+    /// RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 8: Solo
+    /// (scope Step A) is stopped once A completes. Flaky (RERUN, scope Steps
+    /// A, B) exits while B runs and returns A to pending, so Solo is started
+    /// again in a new Service Session — new port, onExit run again — when A
+    /// next becomes schedulable.
+    #[test]
+    fn test_rerun_restarts_a_service_whose_scope_had_completed() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_restarts_completed_scope.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Solo' (scope: Step A) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("\t--------- Starting Service: Solo").count(),
+            2,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("\t--------- Starting Service: Flaky")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Service 'Solo' stopped") < pos(&stdout, "Running step 'B'"),
+            "Solo stops once its scope completes:\n{stdout}"
+        );
+        let rerun = "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                     Service(s) with completedTasks: RERUN covering them were relaunched\n";
+        let at = pos(&stdout, rerun);
+        assert!(
+            stdout[at..].contains("\t--------- Starting Service: Solo"),
+            "Solo starts again after the RERUN:\n{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        let lines = read_trace(&trace);
+        let solo_ports: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("solo launch "))
+            .collect();
+        assert_eq!(solo_ports.len(), 2, "{lines:?}");
+        assert_ne!(
+            solo_ports[0], solo_ports[1],
+            "a new Service Session gets new ports: {lines:?}"
+        );
+        let shape: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                if l.starts_with("solo launch ") {
+                    "solo launch".to_string()
+                } else if l.starts_with("task A ") {
+                    "task A".to_string()
+                } else {
+                    l.clone()
+                }
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                "solo launch",
+                "task A",
+                "solo exit",
+                "task B start",
+                "flaky crash",
+                "solo launch",
+                "task A",
+                "solo exit",
+                "task B start",
+                "task B done",
+            ]
+        );
+        // Each run of A saw its own Solo Session's port.
+        let task_a_ports: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("task A "))
+            .map(|rest| rest.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(task_a_ports, solo_ports, "{lines:?}");
+    }
+}

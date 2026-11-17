@@ -941,24 +941,39 @@ describe("createJob", () => {
   });
 
   it("rejects the Environment field names before the ENV_PARAMS renames", () => {
+    // Decode errors are reported at the field's path (the SERVICE
+    // prototype's typed-decode error form).
     for (const [field, value] of [
-      ["runScope", "ALL"],
       ["parameterDefinitions", [{ name: "N", type: "INT", default: 1 }]],
     ]) {
       const doc = structuredClone(ENV_PARAMS_JOB);
       doc.jobEnvironments[0][field] = value;
       expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
-        `Validation error: 'jobtemplate-2023-09' failed checks: unknown field \`${field}\`, ` +
+        "Model validation error: 1 validation error for JobTemplate\n" +
+          `jobEnvironments[0] -> ${field}:\n\tunknown field \`${field}\`, ` +
           "expected one of `name`, `description`, `envParameterDefinitions`, `activation`, " +
-          "`hostRequirements`, `enableIf`, `exclusiveGroup`, `script`, `variables`",
+          "`hostRequirements`, `enableIf`, `exclusiveGroup`, `dependencies`, `script`, `variables`",
       );
     }
+    // `runScope`, a field of earlier drafts of RFC 0009, is unknown.
+    const runScope = structuredClone(ENV_PARAMS_JOB);
+    runScope.jobEnvironments[0].runScope = ["TASK"];
+    expect(() => mod.decodeJobTemplate(JSON.stringify(runScope))).toThrow(
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "jobEnvironments[0] -> runScope:\n\tunknown field `runScope`, expected one of `name`, " +
+        "`description`, `envParameterDefinitions`, `activation`, `hostRequirements`, `enableIf`, " +
+        "`exclusiveGroup`, `dependencies`, `script`, `variables`. 'runScope' is not a property; an Environment's " +
+        "'activation' (ALWAYS, BY_DEFAULT, or ON_REQUEST) and 'enableIf' (ENV_PARAMS), and the " +
+        "'environment:' entries of the Steps and Services that request it, decide which Sessions " +
+        "enter it (RFC 0009).",
+    );
     // The renamed value is case-sensitive, and the old values are unknown.
     for (const value of ["ALL", "ONLY_REQUESTED", "always", "by_default"]) {
       const doc = structuredClone(ENV_PARAMS_JOB);
       doc.jobEnvironments[0].activation = value;
       expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
-        `Validation error: 'jobtemplate-2023-09' failed checks: unknown variant \`${value}\`, ` +
+"Model validation error: 1 validation error for JobTemplate\n" +
+          `jobEnvironments[0] -> activation:\n\tunknown variant \`${value}\`, ` +
           "expected one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`",
       );
     }
@@ -1704,13 +1719,14 @@ describe("SymbolTable dotted-key surface (F6)", () => {
 describe("getSupportedExtensions (F8)", () => {
   it("returns the full default allowlist", () => {
     const exts = mod.getSupportedExtensions();
-    expect(exts.length).toBe(6);
+    expect(exts.length).toBe(7);
     expect(exts).toContain("TASK_CHUNKING");
     expect(exts).toContain("REDACTED_ENV_VARS");
     expect(exts).toContain("FEATURE_BUNDLE_1");
     expect(exts).toContain("EXPR");
     expect(exts).toContain("WRAP_ACTIONS");
     expect(exts).toContain("ENV_PARAMS");
+    expect(exts).toContain("SERVICE");
   });
 });
 

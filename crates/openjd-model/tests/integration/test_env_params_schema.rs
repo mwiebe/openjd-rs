@@ -262,25 +262,31 @@ environment: {name: E, variables: {V: x}}
 
 /// The decode error for an unknown key `field` on an `<Environment>` of a
 /// `doc` document.
-fn unknown_env_field(doc: &str, field: &str) -> String {
+/// The decode error for an unknown `field` on an Environment at `at`
+/// (`jobEnvironments[0]` in a Job Template, `environment` in an
+/// Environment Template), reported at the field's path (the SERVICE
+/// prototype's typed-decode error form, which also lists its own
+/// `dependencies`).
+fn unknown_env_field(model: &str, at: &str, field: &str) -> String {
     format!(
-        "Validation error: '{doc}' failed checks: unknown field `{field}`, expected one of \
-         `name`, `description`, `envParameterDefinitions`, `activation`, `hostRequirements`, \
-         `enableIf`, `exclusiveGroup`, `script`, `variables`"
+        "Model validation error: 1 validation error for {model}\n{at} -> {field}:\n\t\
+         unknown field `{field}`, expected one of `name`, `description`, \
+         `envParameterDefinitions`, `activation`, `hostRequirements`, `enableIf`, \
+         `exclusiveGroup`, `dependencies`, `script`, `variables`"
     )
 }
 
 #[test]
 fn the_names_before_the_rename_are_unknown_fields_on_an_environment() {
     // §4 items 3 and 4 name the fields `envParameterDefinitions` and
-    // `activation`; no alias keeps `parameterDefinitions` or `runScope`.
-    for (field, value) in [
-        (
+    // `activation`; no alias keeps `parameterDefinitions`. (`runScope`, a
+    // field of earlier drafts of RFC 0009, is unknown too; see
+    // `run_scope_is_an_unknown_field`.)
+    {
+        let (field, value) = (
             "parameterDefinitions",
             "[{name: A, type: STRING, default: a}]",
-        ),
-        ("runScope", "ALL"),
-    ] {
+        );
         let job = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
              jobEnvironments:\n- {{name: E, {field}: {value}, variables: {{V: x}}}}\n\
@@ -293,7 +299,10 @@ fn the_names_before_the_rename_are_unknown_fields_on_an_environment() {
         )
         .unwrap_err()
         .to_string();
-        assert_eq!(err, unknown_env_field("jobtemplate-2023-09", field));
+        assert_eq!(
+            err,
+            unknown_env_field("JobTemplate", "jobEnvironments[0]", field)
+        );
         let env = format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
              environment: {{name: E, {field}: {value}, variables: {{V: x}}}}\n"
@@ -305,7 +314,10 @@ fn the_names_before_the_rename_are_unknown_fields_on_an_environment() {
         )
         .unwrap_err()
         .to_string();
-        assert_eq!(err, unknown_env_field("environment-2023-09", field));
+        assert_eq!(
+            err,
+            unknown_env_field("EnvironmentTemplate", "environment", field)
+        );
     }
     // The Environment Template's own top-level `parameterDefinitions`
     // (§1.2) keeps its name, beside its Environment's renamed field.
@@ -322,9 +334,45 @@ environment:
     );
     assert_eq!(et.parameter_definitions.as_ref().unwrap()[0].name(), "J");
     assert_eq!(
-        et.environment().env_parameter_definitions.as_ref().unwrap()[0].name(),
+        et.environment()
+            .unwrap()
+            .env_parameter_definitions
+            .as_ref()
+            .unwrap()[0]
+            .name(),
         "A"
     );
+}
+
+/// `runScope`, a field of earlier drafts of RFC 0009 that RFC 0010's
+/// `activation` and `enableIf` replace, is an unknown property, with or
+/// without SERVICE, with a hint naming what replaced it.
+#[test]
+fn run_scope_is_an_unknown_field() {
+    for exts in ["ENV_PARAMS, EXPR", "SERVICE, ENV_PARAMS, EXPR"] {
+        let job = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [{exts}]\nname: J\n\
+             jobEnvironments:\n- {{name: E, runScope: [TASK], variables: {{V: x}}}}\n\
+             steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        );
+        let err = openjd_model::decode_job_template(
+            yaml(&job),
+            Some(&["ENV_PARAMS", "EXPR", "SERVICE"]),
+            &openjd_model::CallerLimits::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "{}. 'runScope' is not a property; an Environment's 'activation' (ALWAYS, \
+                 BY_DEFAULT, or ON_REQUEST) and 'enableIf' (ENV_PARAMS), and the 'environment:' \
+                 entries of the Steps and Services that request it, decide which Sessions enter \
+                 it (RFC 0009).",
+                unknown_env_field("JobTemplate", "jobEnvironments[0]", "runScope")
+            )
+        );
+    }
 }
 
 #[test]
@@ -797,7 +845,8 @@ steps:
     .to_string();
     assert_eq!(
         err,
-        "Validation error: 'jobtemplate-2023-09' failed checks: Failed to parse interpolation \
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobEnvironments[0] -> envParameterDefinitions[0]:\n\tFailed to parse interpolation \
          expression at [1, 4]. Reason: Braces mismatch.\n  a{{b\n   ^~"
     );
 }
@@ -819,8 +868,9 @@ environment: {name: E, envParameterDefinitions: [5], variables: {V: x}}
     .to_string();
     assert_eq!(
         err,
-        "Validation error: 'environment-2023-09' failed checks: an Environment parameter \
-         definition must be an object"
+        "Model validation error: 1 validation error for EnvironmentTemplate\n\
+         environment -> envParameterDefinitions[0]:\n\tan Environment parameter definition must \
+         be an object"
     );
 }
 
@@ -1176,7 +1226,7 @@ steps:
     assert!(job.steps[0].dependencies.is_none());
     let deps = job.steps[1].dependencies.as_ref().unwrap();
     assert_eq!(deps.len(), 1);
-    assert_eq!(deps[0].depends_on, "First");
+    assert_eq!(deps[0].depends_on.as_deref(), Some("First"));
     let graph = StepDependencyGraph::new(&job).unwrap();
     assert_eq!(graph.step_node("Second").unwrap().in_edges.len(), 1);
 }
@@ -1790,7 +1840,7 @@ fn a_step_entry_names_a_step_as_depends_on_does() {
     let job = create_job(&jt, &JobParameterValues::new(), &ctx).unwrap();
     let deps = job.steps[1].dependencies.as_ref().unwrap();
     assert_eq!(deps.len(), 1);
-    assert_eq!(deps[0].depends_on, "A");
+    assert_eq!(deps[0].depends_on.as_deref(), Some("A"));
     let graph = StepDependencyGraph::new(&job).unwrap();
     assert_eq!(graph.step_node("B").unwrap().in_edges.len(), 1);
     assert_eq!(

@@ -39,24 +39,36 @@ has a case for an ENV_PARAMS document without `EXPR` (prototype plan 6). A docum
 lists only `EXPR` is unaffected, and one that uses an ENV_PARAMS field without listing
 `ENV_PARAMS` is rejected by pass 11's gates as before.
 
+Next, both check the `SERVICE` prerequisites (RFC 0009 "Backward compatibility"; §1.2 item 3
+for an Environment Template): a document that lists `SERVICE` must also list `EXPR` and
+`ENV_PARAMS`. `service::check_prerequisites` reports one that does not at `extensions`,
+naming the missing ones — "SERVICE requires EXPR and ENV_PARAMS; ENV_PARAMS must also be
+listed in the template's `extensions` (RFC 0009)." (`EXPR and ENV_PARAMS must also be
+listed …` when both are missing) — and the function returns with that error alone, plus
+pass 10's `WRAP_ACTIONS` prerequisite error when it applies. (A document that also breaks
+the `ENV_PARAMS` prerequisite gets both messages.) Every SERVICE rule in the passes below and
+at job creation therefore takes `EXPR` and `ENV_PARAMS` as listed wherever `SERVICE` is.
+
 ## Pass Architecture
 
 The validation pipeline is passes 5–11 of the overall decode pipeline (passes 1–4 are in
 the `parse` module — see [parsing.md](parsing.md)). Passes run sequentially. Each pass
 receives the template and the computed limits/rules, and appends errors to a shared
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
-short-circuiting), so users see all problems at once. The one exception is the
-`ENV_PARAMS` prerequisite (see [Entry Points](#entry-points)), checked before pass 5.
+short-circuiting), so users see all problems at once. The exceptions are the
+`ENV_PARAMS` and `SERVICE` prerequisites (see [Entry Points](#entry-points)), checked before pass 5.
 
 | Pass | File | Purpose |
 |------|------|---------|
+| — | `service.rs` (`gate_services_*`) | **SERVICE gating, first** (RFC 0009): in a template that does not declare `SERVICE`, report `services`, `externalServices`, the `service` key of every Step's `dependencies` entries, and every Environment's `dependencies` (`<field> requires the SERVICE extension.`) without examining their contents. Runs ahead of every other pass so these errors lead the list; an `Undefined variable: 'Service.X.*'` (pass 8) that follows from the missing extension is then a consequence and is left unreported (see pass 8) |
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
-| 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
+| 6 | `structure.rs` | Structural validation (uniqueness, required fields, Step dependencies: each entry exactly one of `dependsOn` / `service`, no self or duplicate entries, `dependsOn` names a Step — with SERVICE, `service` entries and cycles are left to pass 12, and a `dependsOn` that names no Step but a Service of that name gets a `did you mean 'service: <name>'?` hint) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
+| 8 | `format_strings.rs`, then `service_diagnostics.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009). `service_diagnostics.rs` then rewrites the generic undefined-variable message of each out-of-scope `Service.*` / `Task.*` / `Step.*` reference whose Service the document declares or requires into the scope rule it breaks, and, without `SERVICE`, drops references to a Service the (gated) `services` / `externalServices` lists name |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
-| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
-| 11 | `env_params.rs` | Gate ENV_PARAMS features (Environment `envParameterDefinitions`, `activation`, `hostRequirements`, and `enableIf`, the `step:` and `environment:` forms of `<StepDependency>`, the latter with its `enableIf`) and check their structural rules (Environment Parameters RFC) |
+| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing rule (without SERVICE) or RFC 0009 wrap hook rule 1 (with SERVICE), and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
+| 11 | `env_params.rs` | Gate ENV_PARAMS features (Environment `envParameterDefinitions`, `activation`, `hostRequirements`, and `enableIf`, the `step:` and `environment:` forms of `<StepDependency>`, the latter with its `enableIf`) and check their structural rules (Environment Parameters RFC); with SERVICE, also the `environment:` entries of a Job Template Service's `dependencies` (RFC 0009 `<StepDependency>` item 3) |
+| 12 | `service.rs` | With SERVICE declared: validate every `<Service>` and `<ServiceRequirement>` structurally (including that a literal `maxRestarts` greater than 0 comes with `completedTasks`), resolve every `service` dependency and each Service's and each Environment's `dependencies` (with the wrong-key hints), and check the combined Step/Service/Job-Environment dependency graph for cycles and every Service's computed scope (`template::service_scope`) (RFC 0009, Template Schemas §4 item 3, §9). The prerequisites are checked before pass 5 (see [Entry Points](#entry-points)); the gated fields of a template without SERVICE are the gating step's, above |
 
 ### Environment template pipeline
 
@@ -64,8 +76,12 @@ short-circuiting), so users see all problems at once. The one exception is the
 omitted (there are no steps, so passes 9's ChunkInt checks and pass 6's step/dependency
 checks have nothing to walk):
 
+- **Root shape (§1.2)** — `EnvironmentTemplate: must define at least one of 'environment' or
+  'services'.` when both are absent (RFC 0009 made `environment` optional). `$schema` is
+  accepted and ignored.
 - **Limits + structure** — parameter-definition count/uniqueness (its own cap,
-  `max_env_template_param_count`), then `validate_single_environment` for the env body.
+  `max_env_template_param_count`), then `validate_single_environment` for the env body when
+  there is one.
 - **Pass 7** — `validate_feature_bundle_1_environment_template`: `endOfLine` on the
   environment's embedded files requires FEATURE_BUNDLE_1.
 - **Pass 8** — `validate_format_strings_environment_template`: the environment body
@@ -82,13 +98,34 @@ checks have nothing to walk):
   variables, action commands/args, and embedded-file data. Embedded-file
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
+  With SERVICE (RFC 0009 §1.2.2), the document's `services` are walked first — each in Job
+  scope, seeing the Services of the document it lists with the `service` key in its
+  `dependencies` — and the environment sees the `port` / `connectAddress` of the Services of
+  the document it lists in its own `dependencies` (see "Service scopes" under pass 8). A
+  services-only document has no environment body, so only the Services are walked.
 - With ENV_PARAMS, the environment's `hostRequirements` get pass 6's structural checks
-  (`validate_host_requirements_in_profile`) and pass 8 checks them against their own table
+  (`validate_host_requirements_in_context`) and pass 8 checks them against their own table
   (see [Environment hostRequirements](#environment-hostrequirements-env_params)).
-- **Pass 10** — WRAP_ACTIONS gating (see below).
+- **Pass 10** — WRAP_ACTIONS gating (see below), on the environment when there is one.
 - **Pass 11** — ENV_PARAMS gating and the Environment's `envParameterDefinitions` (see
   below). Pass 8 also checks each format-string `default` against the template's own
   `envParameterDefinitions` (see [Environment parameter scopes](#environment-parameter-scopes-env_params)).
+- **Pass 12** — SERVICE: the `services` list, gated
+  (`services requires the SERVICE extension.`) and otherwise validated by the same
+  `validate_service_list` as a Job Template's, with paths rooted at `services[i]`, plus
+  `validate_environment_template_dependencies` (each Service's `dependencies` may name only
+  another Service of this document, with the `service` key, since the document has no Steps;
+  an `environment:` entry is accepted only when its `enableIf` is the literal `false` and it has
+  no `parameters`, so that it can only decline an Environment (§1.2 *services* constraint 5; see
+  "Dependencies, environment template" below)); the environment's `dependencies` (each entry `service: <name>`
+  naming a Service of this document's `services`, see "Pass 12" below); and, last,
+  `environment_template_service_cycle` (§1.2 *services* constraint 4): the graph of the
+  Services' own `service` entries plus an edge from each Service whose Sessions enter the
+  document's environment (it is `ALWAYS`, or `BY_DEFAULT` with its `enableIf` known to be `true` (§7.6 rule 5)
+  and not declined by the Service, and it has no `exclusiveGroup`) to each Service the
+  environment lists must be acyclic, reported at `services`. There is no exception for an
+  environment that lists the Service.
+  `externalServices` is not a property of this document and is rejected at decode.
 
 ## Pass 5: Limits Enforcement
 
@@ -134,23 +171,46 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - No duplicate step names
 - Step name non-empty, no control characters
 - Must have `script` or exactly one simple action field (mutually exclusive)
-- Dependencies: §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and `environment`;
-  `required`, `enableIf`, and `parameters` only with `environment`). With ENV_PARAMS the
-  messages name all three forms: "must have exactly one of 'dependsOn', 'step', or
-  'environment'." for an entry with none, with ", not both 'X' and 'Y'." or ", not all
-  three." appended for one with more. Without ENV_PARAMS an entry with none of the keys is
+- Dependencies: §3.2 constraint 1 (exactly one of `dependsOn`, `step`, `service`, and
+  `environment`; `required`, `enableIf`, and `parameters` only with `environment`). With
+  ENV_PARAMS the messages name every form the document's extensions make available: "must
+  have exactly one of 'dependsOn', 'step', or 'environment'." (with SERVICE as well, "…
+  'dependsOn', 'step', 'service', or 'environment'.") for an entry with none, with ", not
+  both 'X' and 'Y'.", ", not all three.", or ", not all four." appended for one with more.
+  Without ENV_PARAMS (so without SERVICE, which requires it), for an entry that gives a
+  `service` key — which the SERVICE gate also reports — an entry
+  with `dependsOn` and `service` reports `a dependency names a Step with dependsOn or a
+  Service with service, not both: {dependsOn: A, service: X} (Template Schemas §3.2).`, one
+  with neither `a dependency must name a Step with dependsOn or a Service with service; this
+  entry gives neither (Template Schemas §3.2).`, and such an entry is no dependency (not
+  checked further, not an edge, not a listing — so the scope and listing checks of pass 12
+  see the Step as not listing the Service: a `Service.*` reference in it is also reported as
+  `does not list service: X`, and a Service only that entry names as `unused`; fixing the
+  entry clears all three). Without either extension an entry with none of the keys is
   reported as missing `dependsOn`, an entry with two names only those two ("must have
-  exactly one of 'X' or 'Y', not both."), an entry with all three gets the all-forms
-  message with ", not all three.", and the message for a misplaced `required`,
-  `enableIf`, or `parameters` says that `environment` requires the extension. These
-  located messages replace the serde "unknown field" / "missing field" errors that the
-  old single-field struct produced, so for a malformed `dependsOn` entry they intentionally
-  differ from the Python reference, which has no ENV_PARAMS support and reports Pydantic's
-  field errors. For `dependsOn` entries and their ENV_PARAMS synonym `step` (§3.2 item 2),
-  read through `StepDependency::step()` so the two are one form: no self-dependency, target
-  must exist, no duplicates (a `step` and a `dependsOn` entry naming one Step are
-  duplicates). The `environment:` form, and the `step` form's gate, are checked in pass 11,
-  and cycle detection sees the `dependsOn` and `step` entries as one graph.
+  exactly one of 'X' or 'Y', not both."), an entry with more gets the all-forms message, and
+  the message for a misplaced `required`, `enableIf`, or `parameters` says that
+  `environment` requires the extension. These located messages replace the serde "unknown
+  field" / "missing field" errors that the old single-field struct produced, so for a
+  malformed `dependsOn` entry they intentionally differ from the Python reference, which has
+  no ENV_PARAMS or SERVICE support and reports Pydantic's field errors. For `dependsOn`
+  entries and their ENV_PARAMS synonym `step` (§3.2 item 2), read through
+  `StepDependency::step()` so the two are one form: no self-dependency (`cannot depend on
+  itself.`), target must exist (`dependency '<step>' not found.`), no duplicates (a `step`
+  and a `dependsOn` entry naming one Step are duplicates: `duplicate dependency 'A'.`; a
+  repeated `service` entry is `duplicate dependency 'service: X'.` —
+  `service::duplicate_dependency`, with the set keyed on `DependencyTarget`). The
+  `environment:` form, and the `step` form's gate, are checked in pass 11; a `service` entry
+  names a Service and is resolved by pass 12 (gated without SERVICE, see above); cycle
+  detection sees the `dependsOn` and `step` entries as one graph.
+  - **The wrong-key hint** (`helpers::dependency_kind_hint`, RFC 0009 §3.2): when a `dependsOn`
+    (or `step`) names no Step but a declared or required Service of that name exists, the
+    message is `dependency 'Svc' names no Step; did you mean 'service: Svc'?`
+    (`service::unknown_step_dependency`); the mirror, from pass 12, when a `service` entry
+    names no Service but a Step of that name exists: `dependency 'Prep' names no Service; did
+    you mean 'dependsOn: Prep'?`. The same two hints apply to a Service's `dependencies`, and
+    the `service` form to an Environment's or an Environment Template Service's `dependsOn`
+    entry. No match, no hint (`dependency 'Y' not found.`). An `environment:` entry gets none.
 - Caller limit `CallerLimits::max_step_environment_entries` (opt-in; Template Schemas §3
   item 4 sets no maximum on `dependencies` but lets an implementation constrain it): the
   number of entries with a non-null `environment` in one Step's `dependencies`, counted as
@@ -162,13 +222,19 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   a caller sets it in the limits passed to decoding. Entries are
   counted with or without ENV_PARAMS (without it, pass 11 also rejects each one). The error
   is at `steps[i] -> dependencies`: "exceeds caller limit of N 'environment' entries (M
-  entries)."
+  entries)." With `SERVICE`, pass 12 applies the same limit, with the same message, to each
+  Service's `dependencies`, of a Job Template and of an Environment Template, at
+  `services[k] -> dependencies` (RFC 0009 `<StepDependency>` item 3: a Service's entries
+  work exactly as a Step's); `service` entries do not count.
 - Host requirements: a Step's, and with ENV_PARAMS a `jobEnvironments` entry's or an
   Environment Template's `environment`'s (§4 item 5; each checked on its own, §3.3.3,
-  through `validate_host_requirements_in_profile`): amounts/attributes validation,
-  capability name patterns,
+  through `validate_host_requirements_in_context`, shared with `<Service>`):
+  amounts/attributes validation, capability name patterns,
   reserved scope checks (reserved scopes: `worker`, `job`, `step`, `task`),
-  standard capability value validation. Expression-free amount `min`/`max` values must
+  standard capability value validation — a literal value of a standard attribute must be
+  in that attribute's allowed set from `capabilities::standard_attribute_capabilities`
+  (`attr.worker.os.family`, `attr.worker.cpu.arch`, and RFC 0009's
+  `attr.worker.preemptible` with values `true`/`false`). Expression-free amount `min`/`max` values must
   parse as finite numbers; validation of values containing expressions is deferred until
   job creation.
 
@@ -209,7 +275,7 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   **Empty and discarded requirements (ENV_PARAMS, Template Schemas §3.3).** In a document
   that lists ENV_PARAMS (`EffectiveRules::env_params_enabled`), constraint 1 does not
   apply: `hostRequirements: {}`, or empty `amounts` and `attributes` lists, are valid on a
-  Step, a Job Environment, and an Environment Template alike. Literal empties stay errors:
+  Step, a Service (RFC 0009), a Job Environment, and an Environment Template alike. Literal empties stay errors:
   an amount with neither `min` nor `max` ("must have at least one of min or max."), and a
   literal `anyOf: []` or `allOf: []` ("must not be empty."). A requirement that may resolve
   to nothing may be discarded at job creation, and constraints 3 and 4 apply to the
@@ -250,9 +316,11 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   [Reporting on desugared forms](#reporting-on-desugared-forms) for how
   the paths are reported.
 
-**Cycle detection:**
+**Cycle detection** (without SERVICE only):
 - Iterative DFS with tri-state marking (Unvisited/Started/Completed) on the step
-  dependency graph
+  dependency graph; a cycle reports `step dependencies contain a cycle.` at the root. With
+  SERVICE the Steps', Services' and Job Environments' `dependencies` form one graph, which pass
+  11 checks and whose error names the cycle, so this check is skipped.
 
 **Combination expression validation:**
 - Character allowlist, balanced parentheses, tokenization
@@ -481,6 +549,10 @@ document lists ENV_PARAMS; pass 11 reports the field otherwise, and on a
 `stepEnvironments` entry. A Step's own `hostRequirements` keep their table, which has no
 `Env.*`.
 
+With `SERVICE` (RFC 0009), the session and task scopes additionally carry the
+`Service.<name>.<port>.*` endpoints in scope where the field is defined, and a
+`<Service>` has two scopes of its own; see "Service scopes" below.
+
 ### Step Scripts and SimpleActions
 
 One helper (`validate_step_script_format_strings`) validates a `StepScript`
@@ -545,6 +617,165 @@ for an authored `script`).
 `@fmtstring[host]`), so malformed `{{ ... }}` syntax fails at parse time
 like every other format-string field; it no longer survives to job
 creation.
+
+### Service scopes (RFC 0009; Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.8, §9 job-creation exclusion, §3.6.2, §4 item 3.2, §4.3.1)
+
+Everything a Service endpoint resolves to is `@fmtstring[host]` — unknown until the scheduler
+places the Service — so pass 8 seeds the `Service.*` keys as `Unresolved` placeholders
+(`port` as `unresolved[int]`, `bindAddress` and `connectAddress` as `unresolved[string]`,
+`Service.File.<name>` as `unresolved[path]`) through the `pub(crate)` seeders in
+`job::service_symbols`, which spell the keys exactly as the runtime-facing
+`build_service_symbol_table` does. Scope — *which* Services and which values a given field
+may see — is decided per call site, and a reference outside its scope is detected as the
+crate's ordinary undefined-variable error, exactly as an out-of-scope `WrappedStep.Name` is
+under RFC 0008. The same mechanism rejects a reference to a Service or port name that is
+neither declared nor required (§9 visibility rule). Nothing about `Service.*` is examined unless the
+template declares `SERVICE`; without it pass 12 rejects the lists and pass 8 never walks them.
+
+Visibility follows the declared dependencies (§9 scope list, §9.8 item 2), one rule with no
+exceptions: a Step's `script` and its `stepEnvironments` see a Service's `port` /
+`connectAddress` — inline or required — only when the Step lists `service: <name>` in its
+`dependencies`; a Service sees another only when it lists it the same way; a Job Environment
+sees only the inline and required Services it lists in its own `dependencies` (§4 item 3); and
+an Environment Template's `environment` sees only the Services of its document it lists. The
+seeders take the `template::service_scope::listed_services(dependencies, services)` and
+`listed_requirements(dependencies, requirements)` iterators at every site, over the Step's list
+for a Step's sites and over the Environment's own list for a Job Environment. Listing a required
+Service makes its values visible and puts the lister in the matched Service's scope; an entry
+that nothing lists is rejected in pass 12 like an unused inline Service. Pass 8 does not decide a Service's *scope*
+(the Steps whose Tasks depend on it, §9.1): `template::service_scope::compute_service_scopes`
+computes it from the `dependencies` lists — the Steps', the Services' (rule 2, transitive,
+including the Services a Service depends on through a Job Environment its Sessions enter), and
+the Job Environments' (rule 3: an Environment listing `X` puts in `X`'s scope every Step whose
+Sessions enter it) — for pass 12 (cycles, unused Services, a job-wide Service listing a
+Step) and job creation; see [template-types.md](template-types.md), "Service scope".
+
+#### Scope-rule diagnostics (`service_diagnostics.rs`)
+
+The symbol-table mechanism finds every violation but explains none of them: the author sees
+`Undefined variable: 'Service.Counter.api.connectAddress'.` — and, when another Service's name
+is one edit away, a `Did you mean: Service.Cache.main.port` pointing at the wrong Service
+(exploratory report stumbles S2–S4, S7, `w05`). After pass 8 has walked a document,
+`service_diagnostics::refine_job_template` / `refine_environment_template` revisit the errors
+it added (those from the index `errors.errors` had before the pass) whose message contains
+`Undefined variable: '<name>'.` and, when `<name>` is `Service.<svc>.…` with `<svc>` **declared
+in the document's `services` or required by its `externalServices`** (or `Task.*` / `Step.*`
+inside a Service — its body or its job-creation fields, `let` and `hostRequirements`), replace
+that sentence — and the
+`Did you mean` suggestion on the same line — with the rule the reference breaks. The path, the
+`Failed to parse interpolation expression at [s, e]. ` / `Invalid expression in let binding
+'x': ` prefix, and the expression-source and caret lines that follow are untouched, and the
+structured `ErrorDetail` summary and span summaries are updated in step. The reference site is
+classified from the error path (`Site`: a Step's `script`, a Service body, a Job Environment,
+a Step Environment, an Environment Template's
+`environment`, or a job-creation field — `hostRequirements`, a `let` outside a `script` (a
+`<StepTemplate>`'s or `<Service>`'s; a `<StepScript>`, `<ServiceScript>` or
+`<EnvironmentScript>` `let` is a session-scope site), a `parameterSpace` range, `timeout` /
+`notifyPeriodInSeconds`, a Service's `port` / `maxRestarts` / the four `<ServiceHealthCheck>`
+numeric fields — the path segment after `variables` or `let` is a name the author chose
+and never a field, so a variable named `timeout` is a variable); the declarations are the
+document's `services`, and a
+Job Template's `externalServices` count as known with their declared ports. Rules, in the
+order tried:
+
+| Condition | Message |
+|---|---|
+| `Task.*` / `Step.*` anywhere under `services[k]` | `Task.* is not available within a Service.` / `Step.* is not available within a Service.` (neither is in the §9 list of scopes available within a `<Service>`) |
+| job-creation field (§9 job-creation exclusion: every field resolved at job creation, before any Service is placed) | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding` — a `<StepTemplate>`'s or `<Service>`'s, not a script's —, `a parameterSpace range`, `timeout`, `a cancelation method's mode or notifyPeriodInSeconds` (both reported on the `cancelation` path), `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxRestarts`). Pass 8 never seeds `Service.*` into these fields' symbol tables (`build_template_scope_symtab`, `validate_action_timing_fs`, the numeric `@fmtstring` checks), so the reference is undefined there whatever the scope; this rule only names the field |
+| a declared or required Service referenced from a Step's `script`, one of its `stepEnvironments`, another Service, a Job Environment, or an Environment Template's `environment`, whose `dependencies` (the Step's, for a Step Environment) do not list `service: <svc>` (§9 scope rules 2–5, §9.8 item 2) | `Step 'Render' references Service.Cache.main.port but does not list service: Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service: Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service: Back in dependencies.` — from a Job Environment or an Environment Template's `environment`, `Environment 'CacheClient' references Service.Cache.main.port but does not list service: Cache in dependencies.` |
+| the port is not declared | `Service 'Store' has no port 'mian'; declared ports: main.` — or, for a required Service, `required Service 'Cache' has no port 'admin'; declared ports: main.`; when the list is empty (itself reported, `must not be empty.`), `…has no port 'main'; it declares no ports.` |
+| `bindAddress` of a required Service | `bindAddress of required Service 'Cache' is not available; use connectAddress to reach it.` |
+| `bindAddress` outside the declaring Service | `Service.Proxy.main.bindAddress is available only within the Service 'Proxy' itself; use connectAddress to reach it from elsewhere.` |
+
+When the document does **not** declare `SERVICE`, `refine` instead drops every `Undefined
+variable: 'Service.<svc>…'` whose `<svc>` the document's (gated, unexamined) `services` or
+`externalServices` names: the gating step's `services requires the SERVICE extension.` is the
+finding, and the reference is its consequence (exploratory report S10). A `Service.*` name the
+lists do not declare keeps the generic message — nothing else explains it.
+
+Everything else keeps the generic message with its suggestion: a Service name declared nowhere
+(a typo is then the likeliest cause — `Undefined variable: 'Service.Cash.main.connectAddress'.
+Did you mean: Service.Cache.main.connectAddress`), an unknown value name after a declared port,
+`Service.File.*`, or a reference with too few components. The dependency is the author's
+statement that the entity needs the Service; a reference alone is not taken as one, whether the
+Service is inline or required and whether the entity is a Step, a Service, or an Environment.
+The conformance `.invalid` fixtures check only pass/fail and are unaffected;
+`tests/integration/test_service_scope.rs`, `test_service_scope_rules.rs` and
+`test_service_requirements.rs` pin the exact messages.
+
+Who sees which Services (the `in_scope` iterator at each site):
+
+| Field | Services whose `port` / `connectAddress` are in scope | `bindAddress` |
+|---|---|---|
+| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | the `services` entries and the `externalServices` entries the Step lists with the `service` key in `dependencies` (`listed_services`, `listed_requirements`; a requirement's declared ports) | never |
+| `jobEnvironments[i]` (variables, actions, embedded files, `<EnvironmentScript>.let`) — `build_session_scope_symtab` | the `services` entries and the `externalServices` entries the Environment itself lists with the `service` key in its `dependencies` (`listed_services`, `listed_requirements` over `env.dependencies`; listing an inline Service puts every Step whose Sessions enter the Environment in its scope, §9.1 rule 3), whatever kind of Session enters it: every Step and Service whose Sessions enter it depends on each Service it lists, so the endpoint is known before it is entered (§4 *dependencies*) | never |
+| `steps[i].stepEnvironments[j]` | the `services` and `externalServices` entries its Step lists in `dependencies` (a Step Environment has no list of its own) — a Step Environment is entered only by the Task Sessions of its Step | never |
+| `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | the other `services` entries and the `externalServices` entries it lists with the `service` key in `dependencies` (any order; pass 12 rejects a cycle), plus itself | its own only |
+| environment template `services[k]` body | the other `services` entries it lists in `dependencies`, plus itself | its own only |
+| environment template `environment` | the `services` entries it lists in its own `dependencies` (`listed_services`) | never |
+| any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, every `<Action>`'s `timeout`, a cancelation method's `mode` / `notifyPeriodInSeconds`, the numeric `@fmtstring` fields of `<ServicePort>`, `<ServiceHealthCheck>` and `<ServiceRestartPolicy>` | **none** — job-creation stage; `service_diagnostics` names the field | never |
+
+Consequences the tests pin: list order carries no meaning (a Service may list and reference a
+later Service), a reference to an inline or required Service without the matching `service`
+dependency is an error naming the fix (from a Step, a Service, or an Environment alike), an
+`externalServices` entry nothing lists is a pass 12 error, a dependency cycle is a pass 12 error — including a
+Service whose Sessions enter a Job Environment that lists it (`X → X`) — a required Service's `bindAddress` and undeclared ports are errors, and
+`Task.*` / `Step.*` are never seeded for a Service (the §9 list of format string scopes available
+within a `<Service>` does not include them). There is no Environment that sees a Service's `bindAddress`: a
+`<Service>` has no `serviceEnvironments` property (the RFC's Rejected Ideas), so the only
+Environments a Service Session enters are the Job's: every `activation: ALWAYS` one and every
+`BY_DEFAULT` one it does not decline with a disabled `environment:` entry, plus the `ON_REQUEST`
+ones it requests with an `environment:` entry in its own `dependencies`, less any whose `enableIf`
+is false for it, exactly as for a Step (RFC 0009 "Services run inside Environments";
+`template::Entrances`).
+
+`Service.File.<name>` is seeded for the declaring Service only, from its script's
+`embeddedFiles`, into the service-execution scope (and so into `<ServiceScript>.let`, like
+`Task.File.*` for `<StepScript>.let`).
+
+**Within a `<Service>`** (`validate_service_format_strings`), two scopes follow the
+`@fmtstring` stage annotations:
+
+- *Job-creation scope* — the document's template-scope table (`Param.*` without PATH,
+  `RawParam.*`, `Job.Name`, and with ENV_PARAMS `Job.EnvNames`) plus the `<Service>.let`
+  bindings, validated with
+  `validate_let_bindings` against the template library (no host functions). Used for
+  `<Service>.let` itself, `hostRequirements` (through the shared
+  `validate_host_requirements_fs`, so the Step and Service checks are one code path with the
+  owner's path prefixed), the numeric `@fmtstring` fields, and every action's `timeout` /
+  cancelation `mode` / `notifyPeriodInSeconds` (`validate_action_timing_fs`), and — for a Job
+  Template's Service — the `parameters` values and `enableIf` of its `environment:`
+  dependencies (`validate_env_entry_values`, `validate_enable_if`: the same checks as a Step's,
+  against the Service's table, which has no `Step.Name`; RFC 0009 `<Service>` item 4). Never
+  `Session.*`, `Service.*`, PATH `Param.*`, `Step.*`, or `Task.*` (§9 item 3 for `let`; the §9 scope list has no `Task.*` or `Step.*`).
+- *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
+  job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
+  `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
+  other Service of the document it lists with the `service` key in its `dependencies` — inline,
+  or a required Service's declared ports — and the
+  `<ServiceScript>.let` bindings (host library; the service-level names are the enclosing
+  scope). Used for `variables` (with the §4.4.2
+  `max_env_var_value_len` constraint, as for an Environment), every action's `command` /
+  `args`, and embedded-file `data`. Without EXPR, complex expressions in any of these are
+  rejected with `complex expressions require the EXPR extension.`; `let` in either position
+  is rejected with `'let' requires the EXPR extension.`; comprehension loop variables may not
+  shadow any `let` name in scope.
+
+**The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the
+four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_scope`):
+`WrappedService.Name` (`string`), `WrappedService.PortNames` (`list[string]`),
+`WrappedService.Ports` (`list[int]`), `WrappedService.BindAddresses` (`list[string]`),
+`WrappedService.Protocols` (`list[string]`, each `TCP` or `UDP`). It is
+not available in `onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit`, and `WrappedEnv.Name` /
+`WrappedStep.Name` are not available in the Service hooks.
+
+**Numeric `@fmtstring` fields** (§9.5.1; `SERVICE_PORT_CONSTRAINT`,
+`SERVICE_SECONDS_CONSTRAINT`, `SERVICE_MAX_RESTARTS_CONSTRAINT`) join the resolved-value
+constraint table below with target type `int?`: `port` 1–65535 (`must be between 1 and
+65535.`), the four `<ServiceHealthCheck>` numeric fields > 0 (`must be > 0.`), `maxRestarts` ≥
+0 (`must be >= 0.`), non-integers `must be an integer.`, a whole-field `null` accepted as "not
+provided" (for a `STDOUT` check's `healthIntervalSeconds`: no heartbeat). The messages match pass 12's checks on the literal forms and job creation's on the
+resolved values.
 
 ### Let Binding Validation
 
@@ -632,6 +863,9 @@ deferring it to job submission or the worker. Two stages of checking:
 | action `timeout` (FB1 `<posintstring>`, Template Schemas §5) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = unset |
 | `notifyPeriodInSeconds` (Template Schemas §5.3.2, FB1) | `int?` | soft cap: 100 chars | coerced integer > 0, ≤ 600; `null` = unset |
 | cancelation `mode` (FB1 deferred, Template Schemas §5.3) | `string?` | ≤ 21 chars (longest valid value) | `TERMINATE` / `NOTIFY_THEN_TERMINATE`; `null` = cancelation unset |
+| Service `port` (SERVICE, Template Schemas §9.3) | `int?` | soft cap: 100 chars | coerced integer in 1–65535; `null` = runtime allocates |
+| Service `readinessIntervalSeconds` / `readinessTimeoutSeconds` / `healthIntervalSeconds` / `failureThreshold` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default (STDOUT `healthIntervalSeconds`: no heartbeat) |
+| Service `maxRestarts` (SERVICE, §9.4) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = 0 |
 | chunks `defaultTaskCount` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int` | soft cap: 100 chars | coerced integer ≥ 1 |
 | chunks `targetRuntimeSeconds` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = unset |
 | amount `min` / `max` (FB1 float strings, Template Schemas §3.3.1) | `float?` | soft cap: 100 chars | finite float, ≥ 0 / > 0; `null` = unset |
@@ -775,15 +1009,49 @@ Validates or rejects features gated behind `TASK_CHUNKING`:
 
 ## Pass 10: WRAP_ACTIONS Gating
 
-Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
+Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008), including the RFC 0009
+Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
 
 - **Wrap hooks** (`onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`): Rejected on any
-  environment when the extension is not declared.
+  environment when the extension is not declared: `<hook> requires the WRAP_ACTIONS
+  extension.` on the hook's path.
+- **Service hooks** (`onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceHealthCheck`,
+  `onWrapServiceExit`; RFC 0009): require both `WRAP_ACTIONS` and `SERVICE`. The message on
+  the hook's path names what is missing: `<hook> requires the WRAP_ACTIONS extension.`,
+  `<hook> requires the SERVICE extension.`, or `<hook> requires the WRAP_ACTIONS and SERVICE
+  extensions.`
 - **EXPR prerequisite**: `WRAP_ACTIONS` requires `EXPR` to also be declared (the wrap
   mechanism forwards inner-action bytes through the EXPR function library). Declaring
   `WRAP_ACTIONS` without `EXPR` is an error.
-- **All-or-nothing rule**: an environment that defines any one wrap hook must define all
-  three. Defining a partial set is an error.
+- **All-or-nothing rule** (constraint 1; `WRAP_ACTIONS` without `SERVICE`): an environment that
+  defines any one of the three RFC 0008 wrap hooks must define all three. Defining a partial
+  set is an error at the `actions` path: `an environment that defines any of onWrapEnvEnter,
+  onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).` The Service hooks do not
+  take part in this count (each has already been rejected for lacking `SERVICE`).
+- **Wrap hook rule 1** (RFC 0009; `WRAP_ACTIONS` with `SERVICE`, replacing the
+  all-or-nothing rule): a *wrapping* environment — one that defines any wrap hook
+  (`has_any_wrap_hook`) — must define the hook for every kind of action a kind of Session
+  entering it runs inside it: `onWrapEnvEnter`, `onWrapTaskRun`, and `onWrapEnvExit` if any Task
+  Session enters it, and `onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks if
+  any Service Session enters it (`wrap_actions::missing_wrap_hooks`). A hook for a kind of action
+  that never runs inside it is permitted, so a `stepEnvironments` wrapper — entered only by its
+  Step's Task Sessions — needs the three Task hooks and may also define the Service hooks. The
+  rule is checked per kind of Session, here only for a kind known to enter the wrapper: for a
+  Job Environment, the first Step and the first Service that `template::Entrances::of` reports
+  as certainly entering it (`Entrance::Enters`: `ALWAYS`, `BY_DEFAULT` with `enableIf` known to be `true` (§7.6 rule 5)
+  and no entry of the entity or an enabled one (a disabled entry declines it), or
+  `ON_REQUEST` requested by an entry whose `enableIf` is known to be `true`, in each case with no
+  `exclusiveGroup`; the same rule for Steps and Services, so a Service entering one that lists
+  it is also the cycle `X → X` pass 12 reports); for a Step Environment, its Step when the
+  Environment's `enableIf` is known to be `true`. Each kind with missing hooks is one error at
+  the `actions` path: `the Sessions of Step 'Render' enter this wrapping environment, which
+  therefore must define onWrapEnvEnter, onWrapTaskRun, and onWrapEnvExit; missing:
+  onWrapTaskRun (RFC 0009 wrap hook rule 1).` (`the Sessions of Service 'Cache' …` with the six
+  Service-Session hooks). A wrapper no Session is yet known to enter — including an Environment
+  Template's `environment`, which is never rejected here for lacking Service hooks — is checked
+  at job creation over the Sessions that enter it in the combined Job (see "Submission-time
+  checks" below).
+
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
   wrap hooks. A session's environment stack is its step's Environment set: the
   `jobEnvironments` entries with `activation: ALWAYS`, those with `BY_DEFAULT` the step does
@@ -822,15 +1090,27 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   entered wrapping Environments and a third whose `enableIf` is not known, the template is
   rejected here, since no Job could be created from it (Template Schemas §7.6 rule 5 and the
   paragraph after §4 item 10; spec `5535230`). Two
-  `ON_REQUEST` wrap envs requested by different steps are valid.
+  `ON_REQUEST` wrap envs requested by different steps are valid. A Service Session's stack is
+  the Job Environments it enters (RFC 0009 "Services run inside Environments"), so the rule
+  is checked per Service too, over the Environments `Entrances` reports it certainly
+  enters, and reported at `services[k]` with the same message; job creation checks each
+  Service's final set (`job::Service::environments`).
 
 The single-layer rule runs only in the job-template path. An environment template defines
-one environment, so the rule is trivially satisfied for an isolated env template;
+at most one environment, so the rule is trivially satisfied for an isolated env template;
 `check_environment_templates` checks it for each step whose sessions enter a wrapping
 attached environment, over the environments the step certainly enters; job creation
 checks it again over each step's set with the attached environment templates; and
 the session runtime rejects a second wrap environment at enter time for environments
 composed any other way.
+
+Likewise the §1.2.2 item 4
+rule — a wrapping Environment that a Service with a non-empty scope enters defines the
+`onWrapService*` hooks — relates documents only the scheduler sees
+together and is not a template-validation check: it is one of the submission-time checks
+the submission stage of `create_job_with_environment_templates` runs on the combined Job (see
+"Submission-time checks" below
+and [job-creation.md](job-creation.md)).
 
 ## Pass 11: ENV_PARAMS Gating
 
@@ -1046,6 +1326,306 @@ For an entry that names a `jobEnvironments` entry, for every literal Job Environ
 `default`, and for every non-literal one a Step takes, `create_job` makes those checks (see
 [job-creation.md](job-creation.md#environment-parameter-values-env_params)).
 
+With `SERVICE` (RFC 0009 `<StepDependency>` item 3, `<Service>` item 4), each `<Service>` of a
+Job Template's `services` requests Environments as a Step does: its `environment:` entries get
+every check above (`check_requester_entries`, at `services[k] -> dependencies[j]`), except
+constraint 2, since a Service has no `stepEnvironments`; their values and `enableIf` are checked
+in pass 8 against the Service's job-creation scope (no `Step.Name`). Constraint 7 holds for
+every Environment a Service's Sessions enter: every `ALWAYS` `jobEnvironments` entry and every
+`BY_DEFAULT` one the Service does not decline, and every `ON_REQUEST` one it requests; the
+missing parameters are reported once per Service, at `services[k]`, with the reason "every
+jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Service
+does not decline, and each one with activation ON_REQUEST that the Service requests; Template
+Schemas §3.2 constraint 7, RFC 0009 <Service> item 4" and the
+disabled-entry note naming "the Service's 'environment:' dependency". A Service whose Sessions
+enter an Environment that lists it is the cycle `X -> X` (pass 12). No `<Environment>.dependencies`
+list may hold an `environment:` entry, and an Environment Template's Services may hold only a
+literal `enableIf: false` one without `parameters`; pass 12 rejects any other.
+
+## Pass 12: SERVICE Gating and Structure
+
+Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas §1.1 items
+8–9, §1.2, §4 item 3, §9–§9.8). Error paths are `services[i] -> …`, `externalServices[i] ->
+…`, and, in an environment template, `services[i] -> …`.
+
+**Gating (extension not declared)** — `gate_services_job_template` /
+`gate_services_environment_template`, run **before pass 5** so these errors lead the list
+(exploratory report S10):
+- `services` → `services requires the SERVICE extension.` (job and environment templates);
+  `externalServices` → `externalServices requires the SERVICE extension.` The list's contents
+  are not examined.
+- `dependencies` on any `<Environment>` (`jobEnvironments[i]`, `steps[i] -> stepEnvironments[j]`,
+  or the environment template's `environment`) → `dependencies requires
+  the SERVICE extension.` on the `dependencies` path. The list's contents are not examined,
+  and neither is the Step Environment prohibition below (one error, not two).
+- The `service` key of a Step's `dependencies` entry (§3.2 item 2) → `service requires the
+  SERVICE extension.` on `steps[i] -> dependencies[j] -> service`. The name is not resolved
+  (conformance `3.2--service-key-without-service-extension.invalid`). A plain template keeps
+  `dependsOn` only.
+
+What follows from the missing extension is a consequence, not a finding, and is left
+unreported: `service_diagnostics` drops every `Undefined variable: 'Service.<svc>…'` whose
+`<svc>` one of the gated lists names. A template with `services:` and a Step listing `service:
+Cache` and referencing `Service.Cache.*`, but no `extensions:`, therefore reports exactly the
+`services` and `service` gating errors (plus anything unrelated, such as an undefined `Param.*`).
+
+The pre-RFC-0009 keys `jobServices` (job template root) and `stepServices` (`<StepTemplate>`)
+are not properties and are rejected at decode as unknown fields — with their model path and a
+rename hint, see [parsing.md](parsing.md) "Pass 3" — as is `externalServices` on an environment
+template (§9.1 rule 4). So is `runScope` on any `<Environment>`, with or without `SERVICE`:
+RFC 0009 removed it, and the decode error carries the hint `'runScope' is not a property; …`
+(see [parsing.md](parsing.md)).
+
+**Prerequisites:** `SERVICE` requires `EXPR` and `ENV_PARAMS`, checked before pass 5 (see
+[Entry Points](#entry-points)); a document that breaks the rule gets no other error.
+
+**With the extension declared:**
+- **Lists** (§1.1 items 8–9, §1.2): each `services` / `externalServices` list `must not be
+  empty.` and `must not contain more than 10 elements.`
+- **An Environment's `dependencies`** (§4 item 3 constraint 2;
+  `validate_environment_dependencies`), on every `<Environment>` of either template kind:
+  - On a `stepEnvironments` entry the list is rejected whole, whatever it names, at
+    `steps[i] -> stepEnvironments[j] -> dependencies`: `a Step Environment follows its Step's
+    dependencies and must not give a dependencies list of its own (Template Schemas §4 item 3
+    constraint 4).` Nothing inside is examined.
+  - On a `jobEnvironments` entry or an Environment Template's `environment`: `dependencies`
+    `must not be empty.`; on `dependencies[j]`, a malformed entry (both keys or neither) is
+    reported as in pass 6, a `dependsOn` entry reports `dependency 'dependsOn: Prepare' names a
+    Step, but an Environment is entered by Sessions, not scheduled; an Environment may depend
+    only on a Service, as 'service: <name>'.` (with `; did you mean 'service: Prepare'?` in
+    place of the period when a Service of that name exists), an unknown `service` name reports
+    `dependency 'service: Nope' not found: no Service of that name in services or
+    externalServices.` (Job Template) or `… in this document's services.` (Environment
+    Template, whose `environment` may list only a Service of the same document — so a document
+    with no `services` can list nothing), and a repeat reports `duplicate dependency 'service:
+    X'.` (an unknown duplicate gets both). An `environment:` entry reports `dependency
+    'environment: <name>' names an Environment; an Environment does not request another
+    Environment (RFC 0009 <StepDependency> item 3).`, and its `required` / `enableIf` /
+    `parameters` keys are part of the same error.
+  - A Job Environment's entries join the dependency graph as an edge from each Step and each
+    Service whose Sessions enter it to each Service listed (§3.2 constraint 3, §9.1 rule 3);
+    see "Dependencies" below.
+- **Name uniqueness** : `duplicate service name: '<name>'` on the offending
+  `services` element for a repeat within the list; `duplicate service requirement name:
+  '<name>'` on the offending `externalServices` element; and, on `externalServices[i] ->
+  name`, `'<name>' is also declared in services; a Service is either declared or required, not
+  both.`
+- **`<ServiceName>`, requirement names, and port names** (§9.2, §9.3 item 1, §9.8): on the `name` field, `'<name>' is not a valid identifier.`, `exceeds
+  <max_identifier_len> characters.` (64, or 512 with FEATURE_BUNDLE_1), and `must not be
+  'File'; it is reserved for Service.File.* references.`
+- **Dependencies** (§3.2 constraints 1–3, §9 item 4, §9.1, §3.2 constraint 3;
+  `validate_job_template_dependencies`), job template:
+  - A Step's `service` entries (the one-of rule, its `dependsOn` entries, self-dependency and
+    duplicates are pass 6's): on `steps[i] -> dependencies[j]`, an unknown name reports
+    `dependency 'service: Nope' not found: no Service of that name in services or
+    externalServices.` — or, when a Step of that name exists, `dependency 'Prep' names no
+    Service; did you mean 'dependsOn: Prep'?`
+  - A Service's `dependencies`, checked wholly here: `services[k] -> dependencies` `must not be
+    empty.`; on `services[k] -> dependencies[j]`, a malformed entry as in pass 6, `dependency
+    '<step>' not found.` for an unknown Step (`dependency 'Back' names no Step; did you mean
+    'service: Back'?` when a Service of that name exists), `cannot depend on itself.` for
+    `service: <own name>`, the unknown-Service message above for an unknown `service` name, and
+    `duplicate dependency '…'.` Its `environment:` entries are permitted (RFC 0009
+    `<StepDependency>` item 3) and are pass 11's, which also reports a repeated one.
+  - The combined graph (Step→Step, Step→Service, Service→Step, Service→Service edges, plus an
+    edge from each Step and each Service whose Sessions enter a Job Environment to each Service
+    that Environment lists; `compute_service_scopes`) must be acyclic. The first cycle is
+    reported at the root path, each node spelled `Step X` or `Service X`: `dependencies contain
+    a cycle: Step Use -> Service Indexer -> Step Use.`; when entering a Job Environment closed
+    it, the message names the entrance: `dependencies contain a cycle: Step Prep -> Service X ->
+    Step Prep (the Sessions of Step Prep enter Job Environment 'Client', which lists Service 'X',
+    so Step Prep depends on it; Template Schemas §3.2 constraint 3).` A Service whose
+    Sessions enter an Environment that lists it, by its `activation` or through its own
+    `environment:` entry, is the cycle `X → X`; there is no exception for it: `dependencies
+    contain a cycle: Service X -> Service X (the Sessions of Service X enter Job Environment 'E',
+    which lists Service 'X', so it would wait for itself to be READY. There is no exception for
+    an Environment that lists the Service: keep the Service's Sessions out of it: drop any
+    'environment:' dependency of the Service that requests it, and decline a BY_DEFAULT one
+    with a disabled 'environment:' dependency of the Service, or make it ON_REQUEST and
+    request it only from the Steps that need it; Template Schemas §3.2 constraint
+    3).` A cycle is reported here only when every edge on it is known — every `enableIf` it
+    depends on is known (§7.6 rule 5: absent, a boolean scalar, or an expression whose value
+    is known) and no Environment on it has an `exclusiveGroup` (`template::Entrance::Enters`);
+    one that an `enableIf` not known or a group may close is
+    checked at job creation over the resolved sets
+    (`job::create_job::composition`), as is a cycle through an attached Environment Template.
+    A `service` entry naming a required Service is not an edge. When there is a cycle the
+    scopes are undefined and the check below is skipped. List order carries no meaning.
+  - An unused Service — empty computed scope (§9.1 rule 4: "a Service in whose scope no Step
+    falls"; a Service listed only by Services that are themselves unused is unused) — reports
+    on `services[k]` (`unused_service_message`): when nothing lists it, `Service 'Cache' is
+    unused: no Step, Service, or Job Environment lists it.`; when only other — unused —
+    Services list it, they are named: `Service 'Backend' is unused: no Step is in its scope
+    (Service 'Proxy' lists it, but no Step is in Proxy's scope either).` / `… (Services 'Side'
+    and 'Car' list it, but no Step is in their scope either).` (exploratory report S4: the
+    earlier wording claimed nothing listed it). A Service listed only by Job Environments no
+    Step's Sessions enter (an `ON_REQUEST` one no Step requests, or one every Step's `enableIf`
+    excludes) reports `Service 'X' is unused: no Step is in its scope (Job Environment 'E' lists
+    it, but no Step's Sessions enter it).` (`…, and no Step is in the scope of Service 'P'` when
+    unused Services list it too). Where the scope depends on an `enableIf` not known (§7.6 rule 5), only a
+    Service no Step can be in the scope of is rejected here
+    (`ComputedServiceScope::possibly_used`); job creation decides the rest. A Job Environment
+    that *references* the Service without listing it does not keep it used (and is itself a
+    pass 8 error).
+- **Dependencies, environment template** (§1.2 item 6, §3.2 constraint 4, §9 item 4;
+  `validate_environment_template_dependencies`): `services[k] -> dependencies` `must not be
+  empty.`; on `services[k] -> dependencies[j]`, a malformed entry as in pass 6, a `dependsOn`
+  entry reports `dependency 'dependsOn: Prepare' names a Step, but an Environment Template has
+  no Steps; a Service here may depend only on a Service of the same document, as 'service:
+  <name>'.` (with the `did you mean 'service: Prepare'?` hint when a Service of that name
+  exists), an unknown name `dependency 'service: Nope' not found: no Service of that name in
+  this document's services.`, plus `cannot depend on itself.` and `duplicate dependency
+  '…'.` (also for two `environment:` entries naming one Environment: `duplicate environment
+  dependency '<name>'.`). An `environment:` entry may only decline (§1.2 *services* constraint
+  5): one whose `enableIf` is not the literal `false` reports `dependency 'environment: <name>'
+  must be disabled: a Service in an Environment Template may have only 'environment:' entries
+  whose enableIf is the literal false and that have no parameters, which decline the
+  Environment. The document's author writes its environment too, and can give it the values
+  directly (Template Schemas §1.2 services constraint 5).`; `parameters` on a disabled one
+  reports at `-> parameters` `is not permitted on an 'environment:' entry of a Service in an
+  Environment Template, which may only decline the Environment (Template Schemas §1.2 services
+  constraint 5).`; and one that names the document's own `ALWAYS` environment reports at
+  `-> enableIf` the same "no Service can leave out an ALWAYS Environment" error as a Job
+  Template's Service. Its name is checked as every Environment name is. Any other name is
+  resolved at job creation and by `check`: among the Environments of the Environment Templates
+  attached before this one, where a name that two or more define refers to each of them (as
+  for a Step, Template Schemas §3.2.1 item 3), a match whose `activation` is `ALWAYS` is an
+  error (except one from a document without `ENV_PARAMS`, on which the entry has no effect),
+  and no match has no effect. A cycle among the `service` entries and the edges
+  the document's `environment` adds (`environment_template_service_cycle`, see the
+  environment-template pipeline above) reports `dependencies contain a cycle: Service A ->
+  Service B -> Service A.` at `services`. Scope is
+  not checked here: an attached Service's scope is computed over the combined Job at
+  submission, and one nothing lists is never started rather than rejected.
+- **Requirement ports** (§9.8 item 2): `externalServices[i] -> ports` `must not be empty.` /
+  `must not contain more than 10 elements.`; `duplicate port name '<name>'.` on the element;
+  the identifier rules above on `ports[j] -> name`. `protocol` is the same serde enum as a
+  `<ServicePort>`'s.
+- **Ports** (§9 item 6): `ports` `must not be empty.` / `must not contain more than 10
+  elements.`; `duplicate port name '<name>'.` on the element.
+- **Port numbers per protocol** (§9 item 6.4): on `ports[i] -> port` of the later
+  port, `<TCP|UDP> port <n> is also used by port '<earlier>'; two ports with the same protocol
+  must not have the same port number.` Only literal numbers are compared here (one that
+  carries an expression is compared at job creation, once resolved — see
+  [job-creation.md](job-creation.md)). The same number on a TCP port and a UDP port is
+  allowed. `protocol` itself (`TCP` | `UDP`, default `TCP`) is a serde enum, so `udp`, `SCTP`,
+  or a format string is `unknown variant`.
+- **Numeric `@fmtstring` fields**, checked on the field path when the value carries no
+  expression (a format string is type-checked and, when static, range-checked by pass 8, and
+  resolved and range-checked at job creation, like `<Action>.timeout`):
+  `port` `must be between 1 and 65535.`; each of `healthCheck.readinessIntervalSeconds`,
+  `healthCheck.readinessTimeoutSeconds`, `healthCheck.healthIntervalSeconds`, and
+  `healthCheck.failureThreshold` `must be > 0.`; `restartPolicy.maxRestarts` `must be >= 0.`;
+  any of them `must be an integer.` when the text does not parse.
+- **`completedTasks` required** (§9.5 item 2): a literal `maxRestarts` greater
+  than 0 without `completedTasks` reports, on `restartPolicy`, `completedTasks must be provided
+  when maxRestarts is greater than 0 (maxRestarts is 2): a template that allows relaunch must
+  say what a relaunch means for completed Tasks, KEEP or RERUN (Template Schemas §9.5 item 2).`
+  (`service::completed_tasks_required_message`). `maxRestarts` 0, explicit or defaulted, needs
+  none; a format-string `maxRestarts` is checked with the same message when it is resolved at
+  job creation (see [job-creation.md](job-creation.md)).
+- **Health-check consistency** (§9.4 items 3 and 6, §9.7 item 3):
+  `script -> actions`: `onHealthCheck must be defined when healthCheck.type is COMMAND.`;
+  `script -> actions -> onHealthCheck`: `onHealthCheck must not be defined when
+  healthCheck.type is <TCP_CONNECT|STDOUT>.` (the default type is `TCP_CONNECT`). A
+  `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry that is not a
+  declared port reports `references undeclared port '<name>'; declared ports: main, metrics.`
+  on `healthCheck -> ports[k]`.
+  A `STDOUT` check that gives `failureThreshold` without `healthIntervalSeconds` reports, on
+  `healthCheck -> failureThreshold`, `a STDOUT health check gives failureThreshold only
+  together with healthIntervalSeconds; without a heartbeat interval there is no probe for it to
+  count.` (a format-string `failureThreshold` counts as given). A `STDOUT` check that gives
+  `readinessIntervalSeconds` is rejected at decode as an unknown field, since the `STDOUT` form
+  has no such property (as `ports` is on the other two forms).
+- **Health check and port protocols** (§9 item 7, §9.4 item 2): a `TCP_CONNECT`
+  `ports` entry naming a UDP port reports, on `healthCheck -> ports[k]`, `port '<name>' has
+  protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be
+  named.` A Service none of whose ports is TCP whose effective check is `TCP_CONNECT` reports,
+  on `healthCheck`, `the default TCP_CONNECT health check has no TCP port to probe: none of
+  the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is
+  required.` when `healthCheck` is omitted, or `a TCP_CONNECT health check has no TCP port to
+  probe: …` (same tail) when one of type `TCP_CONNECT` is given. (Not reported when `ports` is
+  empty, which is already an error.) A Service with at least one TCP port may omit the check
+  whatever else it declares: the default probes its TCP ports only.
+- **Reused validators:** `description` (`validate_description`), `variables`
+  (`validate_variables`, shared with `<Environment>`), `hostRequirements`
+  (`validate_host_requirements_in_context`, shared with `<StepTemplate>`), every defined
+  action (`validate_action`), and `script.embeddedFiles` (`must not be empty.` plus
+  `validate_embedded_files` and the identifier/filename length limits).
+
+The discriminator of `healthCheck` and the `completedTasks` enum are enforced by serde
+(`unknown variant`), as is the presence of `ports`, `script`, and `onRun`. The pre-revision
+spellings — `readinessCheck`, `onReadinessCheck`, `timeoutSeconds`, `intervalSeconds` — are
+unknown fields (conformance fixtures `9.4--health-old-readiness-check-key.invalid` and
+`9.4--health-old-timeout-seconds-key.invalid`).
+
+Not in this pass: `Service.*` scope rules (§9 job-creation exclusion; pass 8, "Service scopes"), the
+wrap hooks the Sessions entering an Environment call for (wrap hook rule 1; pass 10), the
+`environment:` entries of a Service's `dependencies` (pass 11), `let` bindings and format
+strings inside a Service (pass 8), job creation of Services (see
+[job-creation.md](job-creation.md)), and the submission-time checks (next section).
+
+## Submission-time checks (RFC 0009, Template Schemas §1.2.2 items 2–4, §9.9 last two rows)
+
+Some of the SERVICE extension's rules relate documents that only the scheduler sees together
+— a Job Template and the Environment Templates attached to a submission — and so cannot run
+when a template is validated on its own (the cycles through an attached Environment or
+Service, or an `enableIf` not known (§7.6 rule 5) or an `exclusiveGroup`, are among them; see
+[job-creation.md](job-creation.md)). They run first in the submission stage of
+`create_job_with_environment_templates` (`job/create_job/external.rs`), against the combined
+Job, after job creation proper and before any external Service is instantiated (`create_job`,
+for the Job Template alone, skips them); every violation is collected into one `ModelValidation`
+error whose model name is `Submission` and whose paths are rooted at the document
+(`JobTemplate`, `EnvironmentTemplate[i]` by attachment index, or the label the caller gave
+the attachment):
+
+- **Requirement matching (§1.2.2 item 2).** Each entry of the Job Template's
+  `externalServices` must match exactly one attached Service with the same `name`, which must
+  declare every listed port with the same `protocol`. Reported at `JobTemplate ->
+  externalServices[i]` as `required Service '<r>' is not provided: no Environment Template is
+  attached …` / `… none of the attached Environment Templates (<docs>) defines a Service named
+  '<r>' …`, `required Service '<r>' is ambiguous: <n> attached Environment Templates define a
+  Service with that name (<docs>); a requirement must match exactly one …`, `required Service
+  '<r>' is provided by <doc>, which is missing port '<p>'; its ports: <names> …`, or
+  `required Service '<r>' is provided by <doc>, whose port '<p>' has protocol <P> but the
+  requirement declares <Q> …`, each ending `(Template Schemas §1.2.2 item 2).` Matching uses
+  the requirement alone; a match is recorded as a `RequirementBinding`.
+- **Service names are per document (§1.2.2 item 3) — not a check.** An external
+  Service's `name` may equal that of another external Service or of a Service in the Job
+  Template's `services`; the submission is not rejected for it unless a requirement names the
+  duplicated external name (the ambiguity above). The Job Template's `Service.*` references
+  resolve to its own Services first (pass 8 seeds the document's own Services and its
+  requirements), and the merge keeps same-named Services distinct by stamping each with its
+  `job::Document` (see "Services from Environment Templates" in [job-creation.md](job-creation.md)).
+  Within one document the §9.2 / §1.1 item 9.4 uniqueness check (pass 12) applies as before.
+- **Wrap hook rule 1 over the combined Job (§1.2.2 item 4; `check_wrap_hooks`).** Once every
+  entity's Environments are known, a wrapping Environment of the combined `jobEnvironments`
+  (inline or attached) that the Sessions of a Service with a non-empty scope enter
+  (`job::Service::enters_environment`) must define `onWrapEnvEnter`, `onWrapEnvExit`, and the
+  four `onWrapService*` hooks; and one from a document that declares `SERVICE` that a Task
+  Session enters — or a `stepEnvironments` wrapper whose `enableIf` was not a literal `true` —
+  must define `onWrapEnvEnter`, `onWrapTaskRun`, and `onWrapEnvExit` (without `SERVICE`, RFC
+  0008's all-three rule was checked at template validation). Reported at `<doc> -> environment
+  -> script -> actions` or `JobTemplate -> jobEnvironments[i] -> script -> actions`: `the
+  Sessions of Service 'Cache' enter wrapping Environment 'Wrap', defined by <doc>, which
+  therefore must define onWrapEnvEnter, onWrapEnvExit, onWrapServiceEnter, onWrapServiceRun,
+  onWrapServiceHealthCheck, and onWrapServiceExit; missing: <hooks> (RFC 0009 wrap hook rule 1,
+  Template Schemas §1.2.2 item 4).` (an attached Service is named `Service 'Cache' (<doc>)`;
+  the Task form names `Step 'S'` and ends `(RFC 0009 wrap hook rule 1).`). When the defining
+  document does not declare `SERVICE`, so cannot define the hooks, the message adds: `Its
+  document, <doc>, does not declare the SERVICE extension, so it cannot define the
+  onWrapService* hooks: declare SERVICE and define them, or declare ENV_PARAMS and make the
+  Environment ON_REQUEST, so that only the Steps that request it enter it.` (`<doc>` is `the Job
+  Template` or the attachment's name, as written.) An Environment Template on its own is never
+  rejected for lacking Service hooks; it is rejected here only when a Service with a non-empty
+  scope enters it. The Service Sessions' single-layer rule is checked here too, over each
+  Service's final Environment set, reported at the Service (`JobTemplate -> services[i]` or
+  `<doc> -> services[i]`) as `Service 'X': its Sessions would enter …` (`Service 'X' (<doc>)`
+  for an attached one).
+
+The 10-element cap on `services` (pass 12) is per document; the combined list is not capped.
+Everything else in §9.9 is checked per document by the passes above.
+
 ## Error Infrastructure
 
 See [error-handling.md](error-handling.md) for details on `ValidationErrors`, `PathElement`,
@@ -1066,7 +1646,7 @@ and error formatting.
 | Constant | Values |
 |----------|--------|
 | `STANDARD_AMOUNT_CAPABILITIES` | `amount.worker.vcpu`, `amount.worker.memory`, `amount.worker.gpu`, `amount.worker.gpu.memory`, `amount.worker.disk.scratch` |
-| `STANDARD_ATTRIBUTE_CAPABILITIES` | `attr.worker.os.family`, `attr.worker.cpu.arch` |
+| `STANDARD_ATTRIBUTE_CAPABILITIES` | `attr.worker.os.family`, `attr.worker.cpu.arch`, `attr.worker.preemptible` (RFC 0009) |
 | `RESERVED_SCOPES` | `worker`, `job`, `step`, `task` |
 
 Note: Standard capability names include their `amount.` or `attr.` prefix.

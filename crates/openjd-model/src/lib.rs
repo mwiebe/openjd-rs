@@ -30,12 +30,12 @@ pub use error::{DiagnosticSpan, ErrorDetail};
 pub use error::{PathElement, ValidationError, ValidationErrors};
 pub use job::create_job::{
     build_symbol_table, check_environment_templates, convert_environment,
-    convert_environment_with_symtab, create_job, create_job_with_environment_templates,
-    evaluate_let_bindings, merge_job_parameter_definitions, preprocess_job_parameters,
-    AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement, EnvironmentScope,
-    EnvironmentStatus, HostRequirementKind, MergedParameterDefinition, OptionalEntryNotFound,
-    PathParameterOptions, StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses,
-    SubmissionWarning, SupersedingEnvironment,
+    convert_environment_with_symtab, create_job, create_job_details,
+    create_job_with_environment_templates, evaluate_let_bindings, merge_job_parameter_definitions,
+    preprocess_job_parameters, AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement,
+    EnvironmentScope, EnvironmentStatus, HostRequirementKind, MergedParameterDefinition,
+    OptionalEntryNotFound, PathParameterOptions, RequirementBinding, StepDisabledEnvironments,
+    StepEnvironmentStatus, StepEnvironmentStatuses, SubmissionWarning, SupersedingEnvironment,
 };
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;

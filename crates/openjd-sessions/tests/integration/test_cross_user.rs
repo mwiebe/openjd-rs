@@ -65,6 +65,7 @@ fn make_session(user: Arc<PosixSessionUser>) -> Session {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     Session::with_config(config).unwrap()
@@ -472,6 +473,7 @@ async fn test_cross_user_failed_helper_subprocess_makes_session_ending_only() {
     let env = Environment {
         name: "Env".into(),
         description: None,
+        dependencies: None,
         script: None,
         variables: None,
         resolved_symtab: None,

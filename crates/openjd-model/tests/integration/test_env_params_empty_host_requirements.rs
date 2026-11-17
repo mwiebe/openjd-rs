@@ -988,9 +988,10 @@ fn an_any_of_that_is_neither_a_list_nor_a_string_is_a_decode_error() {
         assert_eq!(
             err.to_string(),
             format!(
-                "Validation error: 'jobtemplate-2023-09' failed checks: invalid type: {kind}, \
-                 expected a list of values, or (with ENV_PARAMS) a string holding one {{{{ }}}} \
-                 expression"
+                "Model validation error: 1 validation error for JobTemplate\n\
+                 steps[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tinvalid type: \
+                 {kind}, expected a list of values, or (with ENV_PARAMS) a string holding one \
+                 {{{{ }}}} expression"
             )
         );
     }

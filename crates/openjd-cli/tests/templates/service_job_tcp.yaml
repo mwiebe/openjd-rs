@@ -1,0 +1,82 @@
+# RFC 0009 example 1 adapted: a Service (a python TCP listener standing in
+# for valkey-server) with a TCP_CONNECT health check, consumed by the Tasks of two
+# Steps through Service.Store.main.connectAddress / .port.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "JobServiceTcp"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+    default: ""
+services:
+  - name: Store
+    description: "A TCP echo store shared by every Task."
+    ports:
+      - name: main
+    healthCheck:
+      type: TCP_CONNECT
+      readinessTimeoutSeconds: 60
+    restartPolicy:
+      maxRestarts: 1
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Store.main.bindAddress }}", "{{ Service.Store.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("STORE_LISTENING", host, port, flush=True)
+            while True:
+                c, _ = s.accept()
+                data = c.recv(1024)
+                c.sendall(b"ECHO:" + data)
+                c.close()
+steps:
+  - name: First
+    dependencies:
+      - service: "Store"
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-2"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.Store.main.connectAddress }}", "{{ Service.Store.main.port }}", "First-{{ Task.Param.N }}", "{{ Param.TraceFile }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, tag, trace = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+            c = socket.create_connection((host, port), timeout=10)
+            c.sendall(tag.encode())
+            reply = c.recv(1024).decode()
+            c.close()
+            print("TASK_REPLY", reply, flush=True)
+            if trace:
+                with open(trace, "a") as f:
+                    f.write(f"task {tag} {reply}\n")
+            assert reply == "ECHO:" + tag
+  - name: Second
+    dependencies:
+      - dependsOn: First
+      - service: "Store"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import socket,sys; c=socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=10); c.sendall(b'Second'); print('TASK_REPLY', c.recv(1024).decode(), flush=True)", "{{ Service.Store.main.connectAddress }}", "{{ Service.Store.main.port }}"]

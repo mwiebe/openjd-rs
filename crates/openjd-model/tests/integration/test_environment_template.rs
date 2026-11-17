@@ -229,12 +229,18 @@ fn test_incorrect_spec_ver() {
 
 #[test]
 fn test_environment_is_none() {
+    // `environment` is optional since RFC 0009 (a template may define
+    // `services` instead), so an explicit null is "not provided" and the
+    // document is rejected for defining neither.
     check_env_err(
         r#"{
         "specificationVersion": "environment-2023-09",
         "environment": null
     }"#,
-        &["invalid type: null, expected struct Environment"],
+        &[
+            "1 validation error for EnvironmentTemplate\n",
+            "must define at least one of 'environment' or 'services'.",
+        ],
     );
 }
 

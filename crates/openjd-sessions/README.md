@@ -16,6 +16,10 @@ the [`openjd-rs`] workspace.
 
 - **Session lifecycle** (`Session`, `SessionConfig`) — enter environments,
   run task actions, tear down in the correct order.
+- **Service Sessions** (`ServiceSession`, RFC 0009 `SERVICE` extension) —
+  run a Service's `onEnter` / `onRun` / `onHealthCheck` / `onExit` inside
+  the Job's Environments, with `TCP_CONNECT`, `COMMAND`, and `STDOUT`
+  readiness and health probes and per-action log attribution.
 - **Subprocess management** — async (tokio) process spawning, streaming
   I/O, signal handling (SIGTERM/SIGKILL), and whole-process-tree teardown.
 - **Action-message filter** — real-time parsing, redaction, and

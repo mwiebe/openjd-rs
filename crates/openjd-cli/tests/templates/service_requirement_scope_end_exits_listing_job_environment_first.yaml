@@ -1,0 +1,26 @@
+# RFC 0009 constraint 6 through a bound externalServices requirement: R,
+# provided by the attached service_requirement_scope_end_provider.yaml, is
+# scoped to Step A through the ON_REQUEST RClient, which lists the
+# requirement. When A completes, RClient is exited (its onExit reads R's
+# port) before R is stopped.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: P2
+externalServices:
+  - name: R
+    ports: [{ name: main }]
+jobEnvironments:
+  - name: RClient
+    activation: ON_REQUEST
+    dependencies: [{ service: R }]
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "print('RCLIENT_ENTER {{ Service.R.main.port }}')"] }
+        onExit: { command: python, args: ["-c", "print('RCLIENT_EXIT {{ Service.R.main.port }}')"] }
+steps:
+  - name: A
+    dependencies: [{ environment: RClient }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_A_RAN')"] } } }
+  - name: B
+    dependencies: [{ dependsOn: A }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_B_RAN')"] } } }

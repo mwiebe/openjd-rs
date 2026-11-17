@@ -4,23 +4,28 @@
 
 //! Template validation pipeline.
 //!
-//! Validates templates through multiple passes (passes 5–11 of the decode pipeline):
+//! Validates templates through multiple passes (passes 5–12 of the decode pipeline):
+//! - ENV_PARAMS EXPR prerequisite (Template Schemas §1.1 item 3), checked first and alone
+//! - SERVICE gating (RFC 0009): the gated fields of a template that does not declare `SERVICE`, reported next
 //! - Pass 5: Enforce limits (EffectiveLimits)
 //! - Pass 6: Structural validation (EffectiveRules)
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
-//! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
+//! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008; RFC 0009 Service hooks)
 //! - Pass 11: ENV_PARAMS (validate or reject, Environment Parameters RFC)
+//! - Pass 12: SERVICE (validate or reject, RFC 0009)
 
 pub(crate) mod env_params;
 mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
+pub(crate) mod service;
+mod service_diagnostics;
 mod structure;
 mod task_chunking;
-mod wrap_actions;
+pub(crate) mod wrap_actions;
 
 use crate::error::{ModelError, ValidationErrors};
 use crate::template::*;
@@ -200,8 +205,20 @@ pub(crate) fn validate_job_template(
     // error, which is about the same list), before any pass runs.
     if !env_params::check_expr_prerequisite(ctx, "§1.1 item 3", &mut errors) {
         wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        service::check_prerequisites(ctx, &mut errors);
         return errors.into_result("JobTemplate");
     }
+    // SERVICE requires EXPR and ENV_PARAMS (RFC 0009 "Backward
+    // compatibility"); every SERVICE rule assumes both, so a document that
+    // breaks it is rejected with this error alone.
+    if !service::check_prerequisites(ctx, &mut errors) {
+        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        return errors.into_result("JobTemplate");
+    }
+    // SERVICE gating (RFC 0009), first: without the extension the gated
+    // fields are the finding, and what follows from them in passes 6 and 8
+    // is left unreported as a consequence.
+    service::gate_services_job_template(jt, ctx, &mut errors);
 
     // Pass 5: Enforce limits
     limits::enforce_limits(jt, &limits, &mut errors);
@@ -216,8 +233,12 @@ pub(crate) fn validate_job_template(
     // check below that depends on one reads.
     let known = format_strings::known_enable_ifs(jt, ctx);
 
-    // Pass 8: Format strings (base or EXPR profile)
+    // Pass 8: Format strings (base or EXPR profile), then the RFC 0009
+    // scope-rule diagnostics for the out-of-scope Service.* references it
+    // found.
+    let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings(jt, ctx, &known, &mut errors);
+    service_diagnostics::refine_job_template(jt, ctx, &mut errors, before_pass_8);
 
     // Pass 9: TASK_CHUNKING (validate or reject)
     task_chunking::validate_task_chunking(jt, ctx, &mut errors);
@@ -227,6 +248,9 @@ pub(crate) fn validate_job_template(
 
     // Pass 11: ENV_PARAMS (validate or reject)
     env_params::validate_env_params_job_template(jt, ctx, &known, &mut errors);
+
+    // Pass 12: SERVICE (validate or reject, RFC 0009)
+    service::validate_services_job_template(jt, &limits, &rules, ctx, &known, &mut errors);
 
     errors.into_result("JobTemplate")
 }
@@ -245,8 +269,15 @@ pub fn validate_environment_template(
     // EXPR here too; checked first, as for a Job Template.
     if !env_params::check_expr_prerequisite(ctx, "§1.2 item 3", &mut errors) {
         wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        service::check_prerequisites(ctx, &mut errors);
         return errors.into_result("EnvironmentTemplate");
     }
+    if !service::check_prerequisites(ctx, &mut errors) {
+        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        return errors.into_result("EnvironmentTemplate");
+    }
+    // SERVICE gating (RFC 0009), first; see `validate_job_template`.
+    service::gate_services_environment_template(et, ctx, &mut errors);
 
     // Parameter definitions — environment templates have their own cap,
     // held in `limits.max_env_template_param_count` so the rule is
@@ -275,38 +306,62 @@ pub fn validate_environment_template(
         }
     }
 
-    // Validate the environment
-    let env = &et.environment;
-    let env_path = vec![crate::error::PathElement::Field("environment".into())];
-    if env.script.is_none() && env.variables.is_none() {
+    // §1.2: at least one of `environment` or `services` must be provided.
+    if et.environment.is_none() && et.services.is_none() {
         errors.add(
-            &env_path,
-            "must have at least one of 'script' or 'variables'.".to_string(),
+            &[],
+            "must define at least one of 'environment' or 'services'.",
         );
     }
-    structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
-    // ENV_PARAMS §4 item 5: checked on their own (§3.3.3). The
-    // ENV_PARAMS pass below rejects them without the extension.
-    if let Some(hr) = env
-        .host_requirements
-        .as_ref()
-        .filter(|_| ctx.profile.has_extension(ModelExtension::EnvParams))
-    {
-        let hr_path = crate::error::path_field(&env_path, "hostRequirements");
-        structure::validate_host_requirements_in_profile(hr, &hr_path, &rules, ctx, &mut errors);
+
+    // Validate the environment
+    if let Some(env) = &et.environment {
+        let env_path = vec![crate::error::PathElement::Field("environment".into())];
+        if env.script.is_none() && env.variables.is_none() {
+            errors.add(
+                &env_path,
+                "must have at least one of 'script' or 'variables'.".to_string(),
+            );
+        }
+        structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
+        // ENV_PARAMS §4 item 5: checked on their own (§3.3.3). The
+        // ENV_PARAMS pass below rejects them without the extension.
+        if let Some(hr) = env
+            .host_requirements
+            .as_ref()
+            .filter(|_| ctx.profile.has_extension(ModelExtension::EnvParams))
+        {
+            let hr_path = crate::error::path_field(&env_path, "hostRequirements");
+            structure::validate_host_requirements_in_context(
+                hr,
+                &hr_path,
+                &rules,
+                ctx,
+                &mut errors,
+            );
+        }
     }
 
     // Pass 7: FEATURE_BUNDLE_1 (validate or reject)
     feature_bundle_1::validate_feature_bundle_1_environment_template(et, ctx, &mut errors);
 
-    // Pass 8: Format strings (base or EXPR profile)
+    // Pass 8: Format strings (base or EXPR profile), then the RFC 0009
+    // scope-rule diagnostics for the out-of-scope Service.* references it
+    // found.
+    let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings_environment_template(et, ctx, &mut errors);
+    service_diagnostics::refine_environment_template(et, ctx, &mut errors, before_pass_8);
 
-    // WRAP_ACTIONS gating (RFC 0008)
+    // WRAP_ACTIONS gating (RFC 0008), including the RFC 0009 Service hooks
+    // and wrap hook rule 1 for what is known of the document alone.
     wrap_actions::validate_wrap_actions_environment_template(et, ctx, &mut errors);
 
     // ENV_PARAMS gating and Environment parameter definitions
     env_params::validate_env_params_environment_template(et, ctx, &mut errors);
+
+    // SERVICE (validate or reject, RFC 0009): the `services` list, the
+    // Environment's `dependencies`, and the Services' dependency graph.
+    service::validate_services_environment_template(et, &limits, &rules, ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

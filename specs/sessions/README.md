@@ -18,6 +18,7 @@ replaces all of that with async/await, channels, and cancellation tokens.
 | [public-api.md](public-api.md) | Reference for every public type, function, and re-export |
 | [public-api.txt](public-api.txt), [public-api.windows.txt](public-api.windows.txt) | Generated listings of every public item and signature on Unix and on Windows, checked by CI (`scripts/check_public_api.sh`) |
 | [session.md](session.md) | Session struct, state machine, lifecycle, environment tracking, symbol table construction |
+| [service-session.md](service-session.md) | ServiceSession (RFC 0009): Service lifecycle, `Service.*` scope, the two-phase health check (`TCP_CONNECT`, `STDOUT` with its optional heartbeat, `COMMAND` with the concurrent `onHealthCheck`; readiness, then health until UNHEALTHY), background `onRun`, the two action slots, log attribution, `onWrapService*` hooks, relaunch, constraint-7 teardown |
 | [subprocess.md](subprocess.md) | Async subprocess execution, stdout streaming, signal delivery, process group isolation |
 | [action-filter.md](action-filter.md) | Parsing `openjd_*` directives from stdout, redaction, malformed command detection |
 | [action-messages.md](action-messages.md) | Real-time ActionMessage streaming via tokio mpsc channels |
@@ -67,3 +68,8 @@ Currently implements `2023-09` with extensions:
 - `ENV_PARAMS` (Environment Parameters; prototype):
   `Session::enter_environment_with_parameters` binds `Env.Param.*` / `Env.RawParam.*`
   (see [session.md](session.md#enter-with-environment-parameter-values-env_params))
+- `SERVICE` (RFC 0009) — single-Service Session runtime: `TCP_CONNECT`, `STDOUT`, and
+  `COMMAND` probes (with the "Concurrency with `onRun`" rules), and the
+  `onWrapService*` hooks of a `SERVICE`-scoped wrapping Environment. A Service Session
+  enters its Environments with the caller's `ServiceSessionConfig::environment_parameters`
+  (`ENV_PARAMS`)

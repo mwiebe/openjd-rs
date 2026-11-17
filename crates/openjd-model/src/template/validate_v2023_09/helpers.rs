@@ -182,3 +182,28 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
         }
     }
 }
+
+/// RFC 0009 (§3.2): the hint for a `<StepDependency>` whose key does not
+/// match what its name is. For a `dependsOn: X` that names no Step, when a
+/// Service (declared or required) named `X` exists among `other_kind`:
+/// `; did you mean 'service: X'?`. For a `service: X` that names no
+/// Service, when a Step named `X` exists among `other_kind`: `; did you
+/// mean 'dependsOn: X'?`. Otherwise `.`, closing the `dependency '…' not
+/// found` sentence the hint is appended to. A `step: X` is treated as a
+/// `dependsOn: X`; an `environment: X` gets no hint.
+pub fn dependency_kind_hint<'a>(
+    target: crate::template::DependencyTarget<'_>,
+    other_kind: impl IntoIterator<Item = &'a str>,
+) -> String {
+    use crate::template::{DependencyTarget, StepKey};
+    let (name, suggested) = match target {
+        DependencyTarget::Step(name, _) => (name, DependencyTarget::Service(name)),
+        DependencyTarget::Service(name) => (name, DependencyTarget::Step(name, StepKey::DependsOn)),
+        DependencyTarget::Environment(_) => return ".".to_string(),
+    };
+    if other_kind.into_iter().any(|n| n == name) {
+        format!("; did you mean '{suggested}'?")
+    } else {
+        ".".to_string()
+    }
+}

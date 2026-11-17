@@ -1,0 +1,21 @@
+# Template Schemas §3.2 item 2 (RFC 0009): the `service` key of a
+# <StepDependency> is available only with the SERVICE extension; in a
+# template that does not declare it, the key is gated like every other
+# SERVICE property.
+specificationVersion: "jobtemplate-2023-09"
+name: "ServiceKeyWithoutService"
+steps:
+  - name: Prepare
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]
+  - name: Use
+    dependencies:
+      - service: Prepare
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]

@@ -159,10 +159,9 @@ fn disabled_environment_lines(
     // linear in the attachments.
     let mut attached_count: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::new();
-    for t in env_templates {
-        *attached_count
-            .entry(t.environment().name.as_str())
-            .or_default() += 1;
+    // A services-only attachment (RFC 0009) defines no Environment.
+    for env in env_templates.iter().filter_map(|t| t.environment()) {
+        *attached_count.entry(env.name.as_str()).or_default() += 1;
     }
     // An `ON_REQUEST` attachment an entry can reach: exactly one attachment
     // has the name and no Job Environment shadows it (§3.2.1).
@@ -197,7 +196,9 @@ fn disabled_environment_lines(
         };
         let mut names: Vec<String> = Vec::new();
         for (t, label) in env_templates.iter().zip(labels) {
-            let env = t.environment();
+            let Some(env) = t.environment() else {
+                continue;
+            };
             let entered = (env.activation() == EnvironmentActivation::ByDefault
                 && !(declinable(&env.name) && not_certain.contains(env.name.as_str())))
                 || (reachable(&env.name) && requested.contains(env.name.as_str()));

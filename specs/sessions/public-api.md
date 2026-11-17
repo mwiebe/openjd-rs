@@ -39,6 +39,17 @@ Real-time progress, status, and env-var updates surface through the
 directive emitted to stdout by a running action and on every action state
 transition.
 
+A **Service Session** (RFC 0009, `SERVICE` extension) runs one `<Service>`
+instead of Tasks. Its entry point is [`ServiceSession`] (below), which
+composes a `Session`:
+
+1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
+2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
+3. `svc.launch().await?` — launch `onRun` in the background and start the health check (for `COMMAND`, the concurrent `onHealthCheck` invocations); it keeps probing after READY and cancels `onRun` on UNHEALTHY.
+4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, `ExitedBeforeReady`, `Unhealthy` (READY and UNHEALTHY before observed), or `Failed` (onRun reported `openjd_fail`).
+5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
+6. `svc.end().await` — cancel a running `onRun`, run `onExit`, exit the Environments, delete the working directory.
+
 [spec-how-run]: https://github.com/OpenJobDescription/openjd-specifications/wiki/How-Jobs-Are-Run
 
 ## Module Structure
@@ -50,12 +61,14 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── embedded_files              — EmbeddedFiles, EndOfLine re-export
 ├── error                       — SessionError
 ├── let_bindings                — re-exports openjd_model::evaluate_let_bindings
-├── logging                     — LogContent, session_log!, banner helpers
+├── logging                     — LogContent, LogTag, session_log!, session_action_log!, session_tagged_log!, banner helpers
 ├── limits                      — SessionLimits (caps + evaluation budgets)
 ├── path_mapping                — re-exported from openjd_expr
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
 │   ├── env_script              — EnvironmentScriptRunner
 │   └── step_script             — StepScriptRunner
+├── service_session             — ServiceSession, ServiceSessionConfig, ServiceSessionState,
+│                                 ServiceHealth, ServiceUnhealthy, ServiceRunExit (RFC 0009)
 ├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier
 ├── session_user                — SessionUser trait, PosixSessionUser, WindowsSessionUser
 ├── tempdir                     — TempDir, StickyBitPolicy, openjd_temp_dir
@@ -85,6 +98,14 @@ calling subprocess primitives directly.
 /// the action itself does not specify a `notifyPeriodInSeconds`.
 /// Matches the OpenJD spec default.
 pub const session::DEFAULT_CANCEL_NOTIFY_PERIOD_SECS: u64 = 5;
+
+/// Default `timeout` of a Service's `onExit` (Template Schemas §5 defaults
+/// table: 300 seconds). RFC 0009.
+pub const service_session::SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default `timeout` of one `onHealthCheck` invocation (RFC 0009
+/// `<ServiceActions>` defaults table: 30 seconds).
+pub const service_session::SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
 ## Entry Points
@@ -198,6 +219,43 @@ impl Session {
         parameters: Option<&EnvironmentParameterValues>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<(String, String), SessionError>;
+
+    /// Same as `enter_environment_with_output`, for an environment that
+    /// comes from a document with its own extension profile — an
+    /// Environment Template a scheduler attached (Template Schemas §1.2
+    /// item 3: an extension applies to the document that lists it; RFC
+    /// 0009 "Environment Template"). With `profile: Some(p)`, every
+    /// format string of this environment (`variables`, `onEnter`,
+    /// `onExit`, the hook wrapping them, its `let` bindings and embedded
+    /// files, and its own `onWrap*` hooks when it is the wrapper) is
+    /// evaluated with a function library derived from `p` under the
+    /// session's path-mapping rules, and `openjd_redacted_env` from its
+    /// actions is honored per `p`'s `REDACTED_ENV_VARS`. The profile is
+    /// kept until the environment is exited. `None` is exactly
+    /// `enter_environment_with_output`.
+    pub async fn enter_environment_with_profile(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&SerializedSymbolTable>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+        profile: Option<&openjd_model::ModelProfile>,
+    ) -> Result<(String, String), SessionError>;
+
+    /// Both of the above: `parameters` as for
+    /// `enter_environment_with_parameters` and `profile` as for
+    /// `enter_environment_with_profile`. The other entry points are this
+    /// with one or both `None`; a Service Session enters its Environments
+    /// through it.
+    pub async fn enter_environment_with_parameters_and_profile(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&SerializedSymbolTable>,
+        parameters: Option<&EnvironmentParameterValues>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+        profile: Option<&openjd_model::ModelProfile>,
     ) -> Result<(String, String), SessionError>;
 
     /// Exit an environment. Must be called in LIFO order — the
@@ -323,6 +381,9 @@ impl Session {
     /// Replace the session's profile (revision + extensions).
     /// Rebuilds the derived `FunctionLibrary`.
     pub fn with_profile(self, profile: openjd_model::ModelProfile) -> Self;
+
+    /// The session-wide log tag (`SessionConfig::log_tag`).
+    pub fn log_tag(&self) -> Option<&str>;
 
     /// The profile's enabled extensions as their spec-string names.
     pub fn get_enabled_extensions(&self) -> Vec<String>;
@@ -470,6 +531,18 @@ pub struct SessionConfig {
     /// directive lines from operator-facing output.
     pub echo_openjd_directives: bool,
 
+    /// A label prefixed to the log records of this session's actions (its
+    /// runners' output, action-filter records and section banners; not
+    /// the Session's own operational records such as cleanup failures):
+    /// `[<tag>] ` on the message, an `openjd_session_tag` structured field, for a
+    /// runner that merges several Sessions' logs into one stream, as
+    /// `openjd run` does for a Job's Service Sessions (`Service <name>`).
+    /// A concurrently running action's tag follows it (`[Service Files]
+    /// [onHealthCheck] …`), and each section banner of the session
+    /// becomes one tagged line instead of four. Default `None`: records
+    /// are exactly as before. See logging.md "LogTag".
+    pub log_tag: Option<String>,
+
     /// Caller-policy caps and evaluation budgets enforced during
     /// action resolution. Task execution is the enforcement boundary
     /// for resolved-value limits — a worker can run a job that never
@@ -595,6 +668,10 @@ pub enum ActionMessage {
     /// `openjd_redacted_env: <var>=<value>` — value added to the
     /// redaction set, env var set. REDACTED_ENV_VARS extension.
     RedactedEnv { name: String, value: String },
+    /// `openjd_service_ready: <message>` — RFC 0009 (`SERVICE`). Honored
+    /// only from a Service's `onRun` under a `STDOUT` health check;
+    /// `Session` ignores it from every other action.
+    ServiceReady(String),
     /// Internal signal (emitted from ActionFilter when a malformed
     /// env-directive is detected): cancel this action and mark it
     /// failed.
@@ -625,6 +702,196 @@ pub struct ActionStatus {
 
 All of `ActionState`, `ActionMessage`, and `ActionStatus` implement
 `Display` / `Debug`. `ActionStatus` also implements `Default`.
+
+## Service Session (RFC 0009)
+
+Everything here lives in `service_session` and is re-exported at the crate
+root. Design and lifecycle: [service-session.md](service-session.md).
+
+```rust
+pub struct ServiceSessionConfig {
+    /// As for a Task Session: session id, job parameter values, path mapping
+    /// rules, user, callback, os_env_vars, limits, …
+    pub session: SessionConfig,
+    /// The Service whose actions this Session runs.
+    pub service: openjd_model::job::Service,
+    /// The Job Environments this Service's Sessions enter, in the order of
+    /// the Job's `jobEnvironments` (never a Step's `stepEnvironments`: a
+    /// Service belongs to no Step). The caller selects them (RFC 0009
+    /// "Services run inside Environments"; for a Job from `create_job`,
+    /// `job::Service::environments` / `enters_environment`). Every entry is
+    /// entered.
+    pub environments: Vec<openjd_model::job::Environment>,
+    /// The document profile of each entry of `environments`, index for index,
+    /// for one from a document other than the Service's own: `Some(p)` enters
+    /// it through `Session::enter_environment_with_profile`; `None`, or an
+    /// index past the end, uses the Session's profile (`session.profile` — the
+    /// Service's own document's, which also governs its actions, `variables`,
+    /// `let` and embedded files). Empty when every scope Environment shares
+    /// the Service's document.
+    pub environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
+    /// ENV_PARAMS: the Environment parameter values of each entry of
+    /// `environments`, index for index, passed to
+    /// `Session::enter_environment_with_parameters_and_profile`; `None`, or
+    /// an index past the end, enters it with no `Env.Param.*`. These are the
+    /// Service's own effective values (Template Schemas §3.2.2 applied to a
+    /// Service, RFC 0009 `<Service>` item 4), which a Job from `create_job`
+    /// carries in `job::Service::environment_parameters`.
+    pub environment_parameters: Vec<Option<openjd_model::job::EnvironmentParameterValues>>,
+    /// The caller's assignment for every declared port (`port`, `bindAddress`,
+    /// `connectAddress`). Port allocation is the caller's policy.
+    pub endpoints: openjd_model::job::service_symbols::ServiceEndpoints,
+    /// Endpoints of the Services this Service may reference (earlier in the
+    /// start order); seeded without `bindAddress`.
+    pub in_scope_endpoints: Vec<openjd_model::job::service_symbols::ServiceEndpoints>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSessionState {
+    Created,      // constructed; `enter()` next
+    Entered,      // Environments entered, onEnter succeeded; `launch()` allowed
+    Running,      // an onRun instance is running
+    Exited,       // the most recent onRun has exited; `launch()` (relaunch) or `end()`
+    StartFailed,  // an Environment onEnter or the Service onEnter failed; only `end()`
+    Ended,        // `end()` completed
+}
+impl Display for ServiceSessionState;  // CREATED, ENTERED, RUNNING, EXITED, START_FAILED, ENDED
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceHealth {
+    /// Phase 1: no probe has passed yet.
+    Pending,
+    /// READY (phase 2). `message` is the `openjd_service_ready` text for a
+    /// STDOUT check; `failed_probes` the consecutive failures since the last
+    /// success (below `failureThreshold`). Re-sent on the watch when the
+    /// count changes.
+    Ready { message: Option<String>, failed_probes: u64 },
+    /// `readinessTimeoutSeconds` elapsed since launch; onRun may still be running.
+    TimedOut,
+    /// onRun exited before a probe passed.
+    ExitedBeforeReady,
+    /// `failureThreshold` consecutive probes failed after READY; the runtime
+    /// has canceled onRun with its cancelation method ("Failure and restart" step 2).
+    Unhealthy(ServiceUnhealthy),
+    /// onRun reported `openjd_fail` (RFC 0009 `<ServiceActions>`): an instance
+    /// failure in itself, before or after READY. Published at once; the
+    /// runtime has canceled onRun with its cancelation method.
+    Failed { message: String },
+}
+impl ServiceHealth {
+    pub fn is_terminal(&self) -> bool;   // !Pending — what wait_ready() returns on
+    pub fn is_ready(&self) -> bool;      // Ready only
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUnhealthy {
+    pub failed_probes: u64,        // == failure_threshold
+    pub failure_threshold: u64,
+    pub last_failure: String,      // what the last failed probe reported
+}
+impl Display for ServiceUnhealthy; // "N consecutive health probes failed (failureThreshold: T); last probe: <last_failure>"
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRunExit {
+    pub state: ActionState,            // Success | Failed | Canceled | Timeout
+    pub exit_code: Option<i32>,
+    /// Requested through `cancel_run` / `end` / the cancel handle — not an
+    /// instance failure. `false` for an exit the health check forced.
+    pub canceled: bool,
+    /// `Some` when the health check canceled onRun on UNHEALTHY — an
+    /// instance failure (also set when the caller's cancel raced it).
+    pub unhealthy: Option<ServiceUnhealthy>,
+    /// `Some(message)` when onRun's own `openjd_fail` line made the runtime
+    /// cancel it (RFC 0009 `<ServiceActions>`) — an instance failure, the
+    /// message its reason (also set when the caller's cancel raced it).
+    pub reported_failure: Option<String>,
+    /// `openjd_fail` text, or why the action could not run.
+    pub fail_message: Option<String>,
+    /// Captured onRun output when `SessionConfig.debug_collect_stdout`.
+    pub stdout: String,
+}
+
+pub struct ServiceSession { /* private */ }
+
+impl ServiceSession {
+    /// Validate the endpoint assignment (every declared/probed port assigned,
+    /// `endpoints.name == service.name`, a COMMAND check has an
+    /// onHealthCheck), order the assignment's ports in declaration order,
+    /// and create the underlying Session (working directory, cross-user helper).
+    pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError>;
+
+    // Accessors
+    pub fn session(&self) -> &Session;
+    pub fn service(&self) -> &openjd_model::job::Service;
+    pub fn endpoints(&self) -> &ServiceEndpoints;
+    pub fn state(&self) -> ServiceSessionState;
+    /// Status of the Service's own current/most recent action (onEnter,
+    /// onRun, onExit). Environment actions report via `session().action_status()`.
+    pub fn action_status(&self) -> Option<ActionStatus>;
+    pub fn launch_count(&self) -> u32;
+    pub fn health(&self) -> Option<ServiceHealth>;                  // None before first launch
+    pub fn run_exit(&self) -> Option<ServiceRunExit>;               // None until the instance exits
+    pub fn health_watch(&self) -> Option<tokio::sync::watch::Receiver<ServiceHealth>>;
+    pub fn exit_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<ServiceRunExit>>>;
+    /// Cancels whichever action of this Session is running in its main slot
+    /// (onEnter, onRun, onExit, or an Environment action) with its own
+    /// cancelation method. A concurrent onHealthCheck invocation runs in
+    /// its own slot and is canceled only by the runtime.
+    pub fn cancel_handle(&self) -> SessionCancelHandle;
+
+    // Lifecycle
+    /// Created → Entered. Enter `environments` in order, each with its
+    /// `environment_parameters` entry; build the
+    /// Service symbol table (Param.*, Session.*, Service.*, Service.File.*,
+    /// <ServiceScript>.let), path mapping, embedded files, `variables`; run
+    /// onEnter. Any error → StartFailed (a start failure).
+    pub async fn enter(&mut self) -> Result<(), SessionError>;
+    /// Entered | Exited → Running. Launch onRun (or onWrapServiceRun) in the
+    /// background and start the health check: probes on launch and every
+    /// readinessIntervalSeconds until READY, then every healthIntervalSeconds
+    /// until failureThreshold consecutive failures make the instance
+    /// UNHEALTHY and the runtime cancels onRun; for COMMAND, also start the
+    /// onHealthCheck driver (one sequential invocation per probe, each
+    /// bounded by the action's timeout, default 30 s). In Exited
+    /// this is a relaunch in the same Session (onEnter not re-run, its env
+    /// vars retained). Err (state unchanged) when a wrap hook's scope cannot
+    /// be built or the check's cross-user helper cannot be spawned.
+    pub async fn launch(&mut self) -> Result<(), SessionError>;
+    /// enter() → launch() → wait_ready().
+    pub async fn start(&mut self) -> Result<ServiceHealth, SessionError>;
+    /// Await the readiness decision of the current instance (the first
+    /// non-Pending health).
+    pub async fn wait_ready(&self) -> Result<ServiceHealth, SessionError>;
+    /// Await the current instance's exit. Running → Exited.
+    pub async fn wait_exit(&mut self) -> Result<ServiceRunExit, SessionError>;
+    /// Cancel the running onRun with its `cancelation` method (grace capped at
+    /// `time_limit`; `Some(0)` = terminate now). `false` if none is running.
+    pub fn cancel_run(&self, time_limit: Option<Duration>) -> bool;
+    /// Constraint 7: cancel a running onRun and await it (which cancels any
+    /// onHealthCheck invocation in flight first); run onExit (300 s
+    /// default timeout) if defined and any Service action ran; exit the
+    /// Environments in reverse; delete the working directory. Every step
+    /// runs; the first error is returned. → Ended.
+    pub async fn end(&mut self) -> Result<(), SessionError>;
+}
+
+impl Drop for ServiceSession;  // warns when end() was not called; stops the check driver; aborts the onRun driver task
+```
+
+`ServiceHealth::Ready { message: None, failed_probes: 0 }` is the READY value
+of a `TCP_CONNECT` or `COMMAND` check; only `STDOUT` carries a message.
+
+When the entered Environments include a wrapping Environment (`WRAP_ACTIONS`),
+its `onWrapServiceEnter` /
+`onWrapServiceRun` / `onWrapServiceHealthCheck` / `onWrapServiceExit` run
+in place of the Service's actions (each only when the Service defines the
+corresponding action), with `WrappedAction.*` and `WrappedService.*` in
+scope. See [service-session.md](service-session.md) "Wrap hooks".
+
+Log attribution (RFC 0009 "Concurrency with `onRun`" rule 3): every record
+about `onHealthCheck` carries the structured field `openjd_action` and the
+message prefix `[onHealthCheck] ` (or the hook's name when wrapped);
+`onRun`'s records are untagged. See [logging.md](logging.md).
 
 ## Subprocess Results
 
@@ -674,6 +941,9 @@ impl EnvironmentScriptRunner {
         self,
         rx: tokio::sync::watch::Receiver<Option<Duration>>,
     ) -> Self;
+    /// The Session-wide log tag every record of this runner's actions
+    /// carries (see `SessionConfig::log_tag`); `None` for no tag.
+    pub fn with_session_tag(self, tag: Option<String>) -> Self;
 
     /// Run the environment's onEnter action. Returns immediately if
     /// the environment has no `onEnter`.
@@ -724,6 +994,7 @@ impl StepScriptRunner {
         self,
         rx: tokio::sync::watch::Receiver<Option<Duration>>,
     ) -> Self;
+    pub fn with_session_tag(self, tag: Option<String>) -> Self;
 
     /// Evaluate let bindings, materialize embedded files, then run
     /// the `onRun` action.
@@ -851,12 +1122,12 @@ argument.
 ```rust
 pub mod embedded_files {
     /// Scope for embedded file symbol table entries — controls the
-    /// variable prefix (`Task.File.*` vs `Env.File.*`).
+    /// variable prefix (`Task.File.*`, `Env.File.*`, or `Service.File.*`).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum EmbeddedFilesScope { Step, Env }
+    pub enum EmbeddedFilesScope { Step, Env, Service }
 
     impl EmbeddedFilesScope {
-        pub fn prefix(&self) -> &'static str;  // "Task.File" or "Env.File"
+        pub fn prefix(&self) -> &'static str;  // "Task.File", "Env.File", or "Service.File"
     }
 
     /// Re-exported from openjd_model::types::EndOfLine.
@@ -1008,10 +1279,16 @@ impl TempDir {
     /// including `NotFound` when the directory was gone before the first
     /// pass. See tempdir.md "Cleanup retries on Windows".
     pub fn cleanup(&mut self) -> Result<(), SessionError>;
+
+    /// Keep the directory: neither `cleanup()` nor drop removes it.
+    /// `Session::with_config` calls this on both of its directories when
+    /// `retain_working_dir` is set, so a retained working directory
+    /// survives the Session whether or not `cleanup()` is called.
+    pub fn keep(&mut self);
 }
 
 impl AsRef<Path> for TempDir { /* ... */ }
-impl Drop for TempDir { /* best-effort cleanup */ }
+impl Drop for TempDir { /* best-effort cleanup unless kept */ }
 impl std::fmt::Debug for TempDir { /* ... */ }
 ```
 
@@ -1048,6 +1325,29 @@ pub fn logging::timestamp_usec() -> u64;
 /// Log a major section banner (surrounded by `=` lines).
 pub fn logging::log_section_banner(session_id: &str, title: &str);
 
+/// The same, as one tagged `BANNER` line `[<tag>] --------- <title>` when
+/// `session_tag` is `Some` (a Session with a `log_tag`); else
+/// `log_section_banner`.
+pub fn logging::log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
+
+/// A one-line structural note about the Session (no runtime caller today):
+/// a tagged `BANNER` line `[<tag>] <text>` when `session_tag` is `Some`;
+/// else a `PROCESS_CONTROL` line.
+pub fn logging::log_session_note_tagged(session_id: &str, session_tag: Option<&str>, text: &str);
+
+/// The attribution of a log record: the Session's `log_tag` and/or the
+/// concurrently running action's name. `prefix()` is
+/// `"[<session>] [<action>] "` with the absent parts omitted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogTag<'a> {
+    pub session: Option<&'a str>,
+    pub action: Option<&'a str>,
+}
+impl LogTag<'_> {
+    pub fn prefix(&self) -> String;
+    pub fn is_empty(&self) -> bool;
+}
+
 /// Log a minor section banner (surrounded by `-` lines).
 pub fn logging::log_subsection_banner(session_id: &str, title: &str);
 ```
@@ -1061,7 +1361,33 @@ pub fn logging::log_subsection_banner(session_id: &str, title: &str);
 ///   session_log!(info, session_id, LogContent::HOST_INFO, "message {}", arg);
 #[macro_export]
 macro_rules! session_log { /* ... */ }
+
+/// Like `session_log!`, attributing the record to one action of the Session
+/// when `$action: Option<&str>` is `Some`: adds the structured field
+/// `openjd_action = <name>` and prefixes the message with `[<name>] `.
+/// With `None` it is exactly `session_log!`. Used for the Service Session's
+/// `onHealthCheck`, which runs concurrently with `onRun` (RFC 0009 log
+/// attribution). See logging.md.
+///
+/// Usage:
+///   session_action_log!(info, session_id, Some("onHealthCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
+#[macro_export]
+macro_rules! session_action_log { /* ... */ }
+
+/// Like `session_log!`, attributing the record per `$tag: LogTag`: the
+/// message is prefixed with `tag.prefix()` and the record carries
+/// `openjd_session_tag` and/or `openjd_action` for the tags that are set.
+/// `session_action_log!` is this with no session tag.
+///
+/// Usage:
+///   session_tagged_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", line);
+#[macro_export]
+macro_rules! session_tagged_log { /* ... */ }
 ```
+
+Structured fields on every record: `session_id`, `openjd_log_content`,
+`openjd_timestamp_usec`; plus `openjd_action` on action-attributed records and
+`openjd_session_tag` on records of a Session with a `log_tag`.
 
 ## Error Type
 
@@ -1141,6 +1467,18 @@ pub enum SessionError {
     /// bare parameter name in transport form. Raised before any state is
     /// recorded; the session stays Ready.
     InvalidEnvironmentParameters { environment: String, reason: String },
+    /// RFC 0009: a `ServiceSession` operation called in the wrong phase.
+    /// "Service Session must be in ENTERED or EXITED state, current: RUNNING"
+    InvalidServiceState { expected: Vec<ServiceSessionState>, current: ServiceSessionState },
+
+    /// RFC 0009: a Service's onEnter (start failure) or onExit (onExit
+    /// failure) did not succeed. "Service 'svc' onEnter failed: exit code: 2"
+    /// (reason is `exit code: N`, `canceled`, or `timed out`).
+    ServiceScriptFailed { name: String, action: String, reason: String },
+
+    /// RFC 0009: a declared or probed port has no endpoint in the
+    /// `ServiceSessionConfig`. "Service 'svc' port 'metrics' has no endpoint assignment"
+    ServicePortUnassigned { name: String, port: String },
 }
 ```
 
@@ -1195,7 +1533,10 @@ the workspace's clippy, build, and test jobs.
 This crate tracks revision 2023-09 of the OpenJD specification.
 Revision gating lives in `ModelProfile` (from `openjd-model`), which
 is passed in via `SessionConfig.profile` and used to derive the
-expression-language profile for each action.
+expression-language profile for each action of the session's own
+document; an Environment from another document may carry its own
+through `Session::enter_environment_with_profile` /
+`ServiceSessionConfig::environment_profiles`.
 
 Enums that are `#[non_exhaustive]`:
 
@@ -1211,8 +1552,8 @@ finite, well-defined concepts):
 - `LogContent` (a `bitflags` type — new variants added at the
   bit-flag level require a new constant, which is a minor/patch
   bump)
-- `EmbeddedFilesScope` (step vs env — and spec §6 defines no other
-  embedded-file scopes)
+- `EmbeddedFilesScope` (step, env, and under RFC 0009 service — the three
+  entities that carry embedded files)
 
 `ActionMessage` is not `#[non_exhaustive]` today but probably should
 be — `openjd_*` directives are an open-ended spec-extension point.

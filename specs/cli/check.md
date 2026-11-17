@@ -129,7 +129,10 @@ Job Parameter definitions of the Job Template and the Environment Templates are 
 (`openjd_model::merge_job_parameter_definitions`, Template Schemas §1.2.1), so a conflicting
 definition is reported as `openjd run` reports it. Then
 `openjd_model::check_environment_templates` runs every check of job creation's submission
-stage that needs no Job Parameter values:
+stage that needs no Job Parameter values. First, with `SERVICE`, each `externalServices`
+requirement must match exactly one Service of the attached Environment Templates, with its
+ports (RFC 0009, Template Schemas §1.2.2 item 2); a failure is reported alone, as `openjd run`
+reports it. Then:
 
 - each entry whose `enableIf` is known to be `true` (absent, the boolean scalar, or an
   expression whose value template validation knows, such as `"true"`, Template Schemas §7.6
@@ -138,7 +141,7 @@ stage that needs no Job Parameter values:
   disabled supplies nothing; it declines each `BY_DEFAULT` attachment it names, is an error
   for each `ALWAYS` one, and is not an error when several attachments share its name
   (Template Schemas §3.2.1 item 3). One whose `enableIf` is not known is checked only by
-  `openjd run`, as is every attachment it may name, for its Step;
+  `openjd run`, as is every attachment it may name, for its Step or Job Template Service;
 - a `required: false` entry that resolves to an attached Environment that declares no
   parameters, and that supplies some, is a warning: its parameters are ignored (Template
   Schemas §3.2.1 item 1), and it still requests an `ON_REQUEST` Environment;
@@ -169,12 +172,13 @@ stage that needs no Job Parameter values:
   Template lists `ENV_PARAMS` (§3.2.1 item 4). When such an attachment, or one of two or more
   attachments with the same name (item 3), has parameters without a `default` and
   `activation: ALWAYS` or `BY_DEFAULT`, no entry can supply them, so where it applies to a
-  Step that is an error at its `envParameterDefinitions`, whatever its own `enableIf` or
-  `exclusiveGroup` (§3.2 constraint 7). One named like a `jobEnvironments` entry applies to
-  every Step. One of several with the same name and `activation: BY_DEFAULT` does not apply
-  to a Step whose disabled entry declines it (§3.2.1 item 3), and check reports the error
-  only where a Step certainly does not decline it. With `activation: ON_REQUEST` it applies
-  to no Step, so it is not an error;
+  Step or, with `SERVICE`, a Job Template Service, that is an error at its
+  `envParameterDefinitions`, whatever its own `enableIf` or `exclusiveGroup` (§3.2
+  constraint 7). One named like a `jobEnvironments` entry applies to every Step and Job
+  Template Service. One of several with the same name and `activation: BY_DEFAULT` does not
+  apply to a Step or Service whose disabled entry declines it (§3.2.1 item 3), and check
+  reports the error only where a Step or Job Template Service certainly does not decline it.
+  With `activation: ON_REQUEST` it applies to no Step or Service, so it is not an error;
 - every attached literal `default` is checked (§4.5 item 2);
 - the RFC 0008 single-layer rule, for each Step (template validation already checked a Step
   whose only wrapping layers are ungrouped `jobEnvironments` entries and its Step
@@ -192,9 +196,69 @@ stage that needs no Job Parameter values:
   `enableIf` is not known to be `true`, unless it is `ALWAYS`, nor one an
   earlier one of its group may supersede): a conflict (a `min` above a `max`, or
   `attr.worker.os.family` or `attr.worker.cpu.arch` lists with no value in common) is an error, with `openjd run`'s message when only literal
-  requirements of that capability take part. A conflict between the Job Template's own
+  requirements of that capability take part. An attached Environment that declares parameters
+  is left out of an entity's combination (a Step's or a Job Template Service's) when an entry
+  naming it was ambiguous, when an entry whose `enableIf` is an expression may name it and
+  either two or more attachments define the name or the entity's values for it are not
+  certain both with the entry's values and with the `default`s, or when the entity's
+  values for it were rejected (a value failed constraint 6, a parameter lacks a value, or a
+  literal `default` it uses failed), since `openjd run` has no values for it then and skips it.
+  It is also left out when any of the entity's values for it is not a literal (a format-string
+  value, or a non-literal `default` the entity falls back to): only `openjd run` resolves that
+  value, and it skips the Environment if the value fails, so `check` reports no conflict through
+  that Environment and `openjd run` reports any. A conflict between the Job Template's own
   requirements alone is therefore reported with any `--environment`, though `check` without
   it, and template validation, leave it to `openjd run`.
+
+With `SERVICE` (RFC 0009 `<StepDependency>` item 3 and `<Service>` item 5), each Service of
+the Job Template's `services` is checked as a Step is, after the Steps and with `openjd run`'s
+messages for a Service: its entries' resolution, constraints 5 and 6 for its resolved entries,
+constraint 7 over the attached Environments that apply to it, and its combined host
+requirements over the Environments its Sessions certainly enter. A Service's entries work
+exactly as a Step's, and there is no exception for an Environment that lists the Service, so
+its entry known to be disabled declines a `BY_DEFAULT` Environment and is an error for an
+`ALWAYS` one, as below. Each attached Service is checked too, as `openjd run` enters
+Environments for it: it chooses only among the Environments of its own document and of the
+Environment Templates attached before it, and it has only disabled `environment:` entries
+(Environment Template *services* constraint 5). Such an entry resolves to its own document's
+Environment if it has that name and otherwise among the earlier attachments' Environments.
+As for a Step, one whose name two or more of them define refers to each of them, declining
+an `ALWAYS` one is an error, and one that names none has no effect. Its Sessions enter every
+`ALWAYS` one and every `BY_DEFAULT` one it does not decline, each with every parameter at its
+`default`; constraint 7 then requires a `default` for every parameter of each one, and its
+combined host requirements include those it certainly enters. For every Service
+(the Job Template's and the attached ones), `check` also applies:
+
+- RFC 0009 wrap hook rule 1 (Environment Template item 4): a wrapping Environment of the
+  combined Job (attached or the Job Template's own) that a Service's Sessions certainly enter
+  must define `onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks, and one
+  from a document that declares `SERVICE` that a Step's Sessions certainly enter must define
+  the three Task-Session hooks, with `openjd run`'s message naming the first such Step and
+  Service;
+- the RFC 0008 single-layer rule over the wrapping Environments its Sessions certainly enter,
+  reported at the Service (`JobTemplate -> services[i]`, or the attachment's `services[i]`),
+  for an attached Service, and for a Job Template Service one of whose layers is attached.
+
+These Service checks are made only for a Service whose scope is known not to be empty without
+Job Parameter values (§7.6 rule 5): a Job Template Service whose template-validation scope is
+not empty, and an attached Service whose own document's Environment, listing it, is certainly
+entered by a Step or by such a Service, whose bound `externalServices` requirement has a
+non-empty known scope, or that such an attached Service of its document lists. `openjd run`
+decides the others.
+
+With `SERVICE`, `check` also looks for a cycle in the combined Job's dependency graph (RFC 0009
+`<StepDependency>` constraint 3), built as `openjd run` builds it over the Steps and Services of
+every document, from the edges that are certain without Job Parameter values: each `step:` and
+`service:` entry, and the edges from a Step's or a Service's Sessions to each Service listed by
+an Environment they certainly enter (as for the single-layer rule, and for an attached Service
+as above, a grouped Environment counting when no earlier member of its group can supersede
+it). A cycle is reported after the entities' values and the Steps' single-layer rule, with
+`openjd run`'s message, at the attachment's `services` when it lies inside one attachment;
+the attached Services' constraint 7, the wrap hook rule, the Services' single-layer rule, and
+the host requirements are then not checked. A cycle that needs an edge that an `enableIf` not
+known before the Job is created decides, or a group member that may come first, is left to
+`openjd run`; when such an edge makes an earlier cycle, `openjd run` may name that one
+instead.
 
 A Step's entry known to be disabled naming an attached Environment declines it when its
 `activation` is `BY_DEFAULT`, so the checks above leave it out for that Step, and is an
@@ -211,16 +275,17 @@ Step's entry for it is known to be disabled, the message says so.
 
 Format-string values, non-literal `default`s and host requirements, and entries and
 Environments whose `enableIf` is not known before the Job is created need Job Parameter
-values, so `openjd run` checks them. The
+values, so `openjd run` checks them, including any host-requirement conflict through an
+Environment whose values for an entity are not all literals. The
 messages and paths are those `openjd run` reports for the same
-submission, except that a single-layer or host-requirement error names only what `check`
-can know without Job Parameter values (the layers a Session certainly enters, the literal
-requirements), so `openjd run` may count or name more, and that `check` reports every
-violation it is certain of, where `openjd run` reports a Step's value errors only once its
-§7.4.1 step 1–4 errors are fixed (Template Schemas §7.4.1; see
-[job-creation.md](../model/job-creation.md#error-order)): errors are one
-`Submission` validation error whose paths start with the document (`JobTemplate`, or the
-Environment Template's path), and warnings go to stderr.
+submission, except that a single-layer, wrap hook, or host-requirement error names only what
+`check` can know without Job Parameter values (the layers a Session certainly enters, the first
+Step or Service that certainly enters a wrapper, the literal requirements), so `openjd run` may
+count or name more, and that `check` reports every violation it is certain of, where `openjd
+run` reports a Step's or a Service's value errors only once its §7.4.1 step 1–4 errors are
+fixed (Template Schemas §7.4.1; see [job-creation.md](../model/job-creation.md#error-order)):
+errors are one `Submission` validation error whose paths start with the document
+(`JobTemplate`, or the Environment Template's path), and warnings go to stderr.
 Without `--environment`, `check` makes no assumption about which Environments a queue
 attaches and reports none of these.
 
@@ -268,7 +333,19 @@ which prints them to stderr and exits with code 1. Error sources:
 
 Validation errors from the model crate include structured paths (e.g.,
 `steps[0] -> script -> actions -> onRun -> command`) that help users locate the problem
-in their template file.
+in their template file. This includes the typed-deserialization failures — an unknown
+field, a missing field, a wrong type — which the model reports at the path the
+deserializer reached rather than as a bare message, and which carry a rename hint for a
+property an earlier RFC 0009 draft used (`specs/model/parsing.md` "Pass 3"):
+
+```
+ERROR: Model validation error: 1 validation error for JobTemplate
+services[0] -> readinessCheck:
+	unknown field `readinessCheck`, expected one of `name`, `description`, `let`, `dependencies`, `hostRequirements`, `ports`, `healthCheck`, `restartPolicy`, `variables`, `script`. 'readinessCheck' is not a property; the health check is 'healthCheck'.
+```
+
+Only the pre-deserialization failures (malformed YAML/JSON, a missing or unknown
+`specificationVersion`) remain path-less `Validation error: …` messages.
 
 ## Differences from Python CLI
 

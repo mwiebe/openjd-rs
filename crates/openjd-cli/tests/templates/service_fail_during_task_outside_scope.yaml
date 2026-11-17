@@ -1,0 +1,49 @@
+# "Failure and restart" step 4 fails the Tasks in the FAILED Service's
+# scope only. S is scoped to Steps A and C and has no restarts, so it stays
+# up while Step Between, outside its scope, runs between them; S's onRun
+# exits while Between's Task runs. That Task completes; C's Task, in the
+# scope, is never scheduled, and the Job fails.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "FailDuringTaskOutsideScope"
+services:
+  - name: S
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxRestarts: 0
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(1.5); raise SystemExit(1)"]
+          cancelation:
+            mode: TERMINATE
+steps:
+  - name: A
+    dependencies:
+      - service: "S"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_A_DONE')"]
+  - name: Between
+    dependencies:
+      - step: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(3); print('BETWEEN_DONE')"]
+  - name: C
+    dependencies:
+      - step: Between
+      - service: "S"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_C_MUST_NOT_RUN')"]

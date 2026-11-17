@@ -1,0 +1,3699 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright by contributors to this project.
+// SPDX-License-Identifier: (Apache-2.0 OR MIT)
+
+//! End-to-end tests for the RFC 0009 Service Session runtime
+//! (`openjd_sessions::ServiceSession`) with real subprocesses.
+//!
+//! `onRun` output is observed through `ServiceRunExit::stdout`
+//! (`debug_collect_stdout`), ordering through trace files that actions
+//! append to, and runtime decisions through the session log
+//! (`testing_logger`). The `TCP_CONNECT` tests use a tiny `python3` socket
+//! listener.
+
+#![cfg(unix)] // sh/bash/python3 availability
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use openjd_expr::format_string::FormatString;
+use openjd_expr::symbol_table::{SerializedSymbolTable, SymbolTable};
+use openjd_expr::ExprValue;
+use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
+use openjd_model::job::ServicePortProtocol;
+use openjd_model::job::{
+    Action, CancelationMode, CompletedTasksPolicy, EmbeddedFile, Environment, EnvironmentActions,
+    EnvironmentScript, Service, ServiceActions, ServiceHealthCheck, ServicePort,
+    ServiceRestartPolicy, ServiceScript,
+};
+use openjd_model::types::{FileType, JobParameterType, JobParameterValue};
+use openjd_sessions::action::ActionState;
+use openjd_sessions::{
+    ActionStatus, PathFormat, PathMappingRule, ServiceHealth, ServiceSession, ServiceSessionConfig,
+    ServiceSessionState, ServiceUnhealthy, SessionConfig, StickyBitPolicy,
+};
+use tempfile::TempDir;
+
+// ────────────────────────────────────────────────────────────────────
+// Construction helpers
+// ────────────────────────────────────────────────────────────────────
+
+fn fs(s: &str) -> FormatString {
+    FormatString::new(s).unwrap()
+}
+
+fn sh(script: &str) -> Action {
+    Action {
+        command: fs("sh"),
+        args: Some(vec![fs("-c"), fs(script)]),
+        timeout: None,
+        cancelation: None,
+    }
+}
+
+/// `sh -c` with NOTIFY_THEN_TERMINATE cancelation (SIGTERM, then SIGKILL
+/// after `notify_secs`).
+fn sh_ntt(script: &str, notify_secs: u64) -> Action {
+    Action {
+        cancelation: Some(CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(fs(&notify_secs.to_string())),
+        }),
+        ..sh(script)
+    }
+}
+
+/// A `TCP_CONNECT` check with the spec defaults (readiness interval 1 s,
+/// health interval 30 s, threshold 3) and the given ready timeout.
+fn tcp_check(ports: &[&str], readiness_timeout_seconds: u64) -> ServiceHealthCheck {
+    ServiceHealthCheck::TcpConnect {
+        ports: ports.iter().map(|p| p.to_string()).collect(),
+        readiness_interval_seconds: 1,
+        readiness_timeout_seconds,
+        health_interval_seconds: 30,
+        failure_threshold: 3,
+    }
+}
+
+/// A `TCP_CONNECT` check monitored after READY every `health_interval`
+/// seconds with the given threshold.
+fn tcp_health_check(
+    ports: &[&str],
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::TcpConnect {
+        ports: ports.iter().map(|p| p.to_string()).collect(),
+        readiness_interval_seconds: 1,
+        readiness_timeout_seconds: 300,
+        health_interval_seconds,
+        failure_threshold,
+    }
+}
+
+/// A `STDOUT` check without a heartbeat.
+fn stdout_check(readiness_timeout_seconds: u64) -> ServiceHealthCheck {
+    ServiceHealthCheck::Stdout {
+        readiness_timeout_seconds,
+        health_interval_seconds: None,
+        failure_threshold: 3,
+    }
+}
+
+/// A `STDOUT` check expecting an `openjd_service_ready` heartbeat every
+/// `health_interval_seconds` after READY.
+fn stdout_heartbeat_check(
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Stdout {
+        readiness_timeout_seconds: 300,
+        health_interval_seconds: Some(health_interval_seconds),
+        failure_threshold,
+    }
+}
+
+/// A `COMMAND` check with the given readiness interval and ready timeout
+/// and the spec's health defaults (30 s, threshold 3).
+fn command_check(
+    readiness_interval_seconds: u64,
+    readiness_timeout_seconds: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Command {
+        readiness_interval_seconds,
+        readiness_timeout_seconds,
+        health_interval_seconds: 30,
+        failure_threshold: 3,
+    }
+}
+
+/// A `COMMAND` check probing every second before READY and every
+/// `health_interval_seconds` after, with the given threshold.
+fn command_health_check(
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Command {
+        readiness_interval_seconds: 1,
+        readiness_timeout_seconds: 300,
+        health_interval_seconds,
+        failure_threshold,
+    }
+}
+
+/// `sh -c` with an explicit `timeout`.
+fn sh_timeout(script: &str, timeout_secs: u64) -> Action {
+    Action {
+        timeout: Some(fs(&timeout_secs.to_string())),
+        ..sh(script)
+    }
+}
+
+struct ServiceBuilder {
+    service: Service,
+}
+
+impl ServiceBuilder {
+    fn new(name: &str, ports: &[&str], on_run: Action) -> Self {
+        Self {
+            service: Service {
+                name: name.into(),
+                description: None,
+                document: Default::default(),
+                scope: openjd_model::job::ServiceScope::AllSteps,
+                dependencies: None,
+                host_requirements: None,
+                environment_parameters: None,
+                environments: None,
+                ports: ports
+                    .iter()
+                    .map(|p| ServicePort {
+                        name: p.to_string(),
+                        port: None,
+                        protocol: ServicePortProtocol::Tcp,
+                    })
+                    .collect(),
+                health_check: tcp_check(ports, 300),
+                restart_policy: ServiceRestartPolicy {
+                    max_restarts: 0,
+                    completed_tasks: Some(CompletedTasksPolicy::Rerun),
+                },
+                variables: None,
+                script: ServiceScript {
+                    let_bindings: None,
+                    actions: ServiceActions {
+                        on_enter: None,
+                        on_run,
+                        on_health_check: None,
+                        on_exit: None,
+                    },
+                    embedded_files: None,
+                },
+                resolved_symtab: None,
+            },
+        }
+    }
+    fn health(mut self, check: ServiceHealthCheck) -> Self {
+        self.service.health_check = check;
+        self
+    }
+    /// Declare the named port `protocol: UDP`.
+    fn udp_port(mut self, name: &str) -> Self {
+        let port = self
+            .service
+            .ports
+            .iter_mut()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no port {name}"));
+        port.protocol = ServicePortProtocol::Udp;
+        self
+    }
+    fn on_enter(mut self, a: Action) -> Self {
+        self.service.script.actions.on_enter = Some(a);
+        self
+    }
+    fn on_exit(mut self, a: Action) -> Self {
+        self.service.script.actions.on_exit = Some(a);
+        self
+    }
+    fn on_health_check(mut self, a: Action) -> Self {
+        self.service.script.actions.on_health_check = Some(a);
+        self
+    }
+    fn variables(mut self, vars: &[(&str, &str)]) -> Self {
+        self.service.variables = Some(
+            vars.iter()
+                .map(|(k, v)| (k.to_string(), fs(v)))
+                .collect::<HashMap<_, _>>(),
+        );
+        self
+    }
+    fn lets(mut self, bindings: &[&str]) -> Self {
+        self.service.script.let_bindings = Some(bindings.iter().map(|b| b.to_string()).collect());
+        self
+    }
+    fn embedded_file(mut self, name: &str, data: &str, runnable: bool) -> Self {
+        let file = EmbeddedFile {
+            name: name.into(),
+            file_type: FileType::Text,
+            filename: None,
+            data: Some(fs(data)),
+            runnable: Some(runnable),
+            end_of_line: None,
+        };
+        self.service
+            .script
+            .embedded_files
+            .get_or_insert_with(Vec::new)
+            .push(file);
+        self
+    }
+    fn resolved_symtab(mut self, st: &SymbolTable) -> Self {
+        self.service.resolved_symtab = Some(SerializedSymbolTable::from_symtab(st));
+        self
+    }
+    fn build(self) -> Service {
+        self.service
+    }
+}
+
+fn env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> Environment {
+    Environment {
+        name: name.into(),
+        description: None,
+        dependencies: None,
+        script: Some(EnvironmentScript {
+            let_bindings: None,
+            actions: EnvironmentActions {
+                on_enter,
+                on_wrap_env_enter: None,
+                on_wrap_task_run: None,
+                on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
+                on_exit,
+            },
+            embedded_files: None,
+        }),
+        variables: None,
+        resolved_symtab: None,
+    }
+}
+
+fn env_with_vars(name: &str, vars: &[(&str, &str)]) -> Environment {
+    let mut e = env(name, None, None);
+    e.variables = Some(vars.iter().map(|(k, v)| (k.to_string(), fs(v))).collect());
+    e
+}
+
+/// Reserve a free loopback port by binding and releasing it.
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+fn endpoints(name: &str, ports: &[(&str, u16)]) -> ServiceEndpoints {
+    endpoints_with_protocols(
+        name,
+        &ports
+            .iter()
+            .map(|(p, port)| (*p, *port, ServicePortProtocol::Tcp))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn endpoints_with_protocols(
+    name: &str,
+    ports: &[(&str, u16, ServicePortProtocol)],
+) -> ServiceEndpoints {
+    ServiceEndpoints::new(
+        name,
+        ports
+            .iter()
+            .map(|(p, port, protocol)| {
+                (
+                    p.to_string(),
+                    ServiceEndpoint {
+                        port: *port,
+                        protocol: *protocol,
+                        bind_address: "127.0.0.1".into(),
+                        connect_address: "127.0.0.1".into(),
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+fn session_config(root: &TempDir, id: &str) -> SessionConfig {
+    SessionConfig {
+        limits: Default::default(),
+        session_id: id.into(),
+        job_parameter_values: Default::default(),
+        session_root_directory: Some(root.path().to_path_buf()),
+        path_mapping_rules: None,
+        retain_working_dir: true,
+        callback: None,
+        os_env_vars: None,
+        user: None,
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        log_tag: None,
+        sticky_bit_policy: StickyBitPolicy::Strict,
+    }
+}
+
+fn service_session(
+    root: &TempDir,
+    service: Service,
+    environments: Vec<Environment>,
+    endpoints: ServiceEndpoints,
+    in_scope: Vec<ServiceEndpoints>,
+) -> ServiceSession {
+    ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(root, &format!("svc-test:{}", service.name)),
+        service,
+        environments,
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints,
+        in_scope_endpoints: in_scope,
+    })
+    .unwrap()
+}
+
+/// A `python3` TCP listener that binds `Service.<svc>.main.bindAddress` /
+/// `.port`, prints a line per argument, then serves until killed.
+fn python_listener(svc: &str, extra_echo: &str) -> Action {
+    let script = r#"
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((host, port))
+s.listen(5)
+print("listening", host, port, flush=True)
+print("extra", sys.argv[3], flush=True)
+while True:
+    c, _ = s.accept()
+    c.close()
+"#;
+    Action {
+        command: fs("python3"),
+        args: Some(vec![
+            fs("-c"),
+            fs(script),
+            fs(&format!("{{{{Service.{svc}.main.bindAddress}}}}")),
+            fs(&format!("{{{{Service.{svc}.main.port}}}}")),
+            fs(extra_echo),
+        ]),
+        timeout: None,
+        cancelation: None,
+    }
+}
+
+fn read_trace(path: &PathBuf) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn lines(s: &str) -> Vec<&str> {
+    s.lines().collect()
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Readiness
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn tcp_connect_readiness_becomes_ready_then_cancel_and_end() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        python_listener("svc", "{{Service.svc.main.connectAddress}}"),
+    )
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", port)]),
+        vec![],
+    );
+
+    assert_eq!(ss.state(), ServiceSessionState::Created);
+    assert!(ss.health().is_none());
+    ss.enter().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Entered);
+    ss.launch().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert_eq!(ss.launch_count(), 1);
+
+    let ready = ss.wait_ready().await.unwrap();
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    assert!(ss.health().unwrap().is_ready());
+    // READY requires onRun still running.
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+
+    assert!(ss.cancel_run(None));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(exit.canceled);
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![
+            format!("listening 127.0.0.1 {port}").as_str(),
+            "extra 127.0.0.1"
+        ]
+    );
+    // Canceling again is a no-op once exited.
+    assert!(!ss.cancel_run(None));
+
+    let working_dir = ss.session().working_directory().to_path_buf();
+    assert!(working_dir.exists());
+    ss.end().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+    // retain_working_dir is set in the test config, so the directory stays.
+    assert!(working_dir.exists());
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"--------- Starting Service: svc"));
+        assert!(bodies.contains(&"--------- Service onRun: svc (launch 1)"));
+        assert!(bodies.contains(&"Health check: TCP_CONNECT (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
+        assert!(bodies.contains(&"Service 'svc' is READY"));
+        assert!(bodies.contains(&"Canceling Service 'svc' onRun"));
+        assert!(
+            bodies.contains(
+                &"Service 'svc' onRun exited: Canceled (exit code: N/A), canceled by the runtime"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"--------- Ending Service: svc"));
+    });
+}
+
+#[tokio::test]
+async fn stdout_readiness_carries_message_and_dedups() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: warmed up; echo openjd_service_ready: again; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let ready = ss.start().await.unwrap();
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: Some("warmed up".into()),
+            failed_probes: 0
+        }
+    );
+    // Give the second line time to arrive: it must not change the message.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: Some("warmed up".into()),
+            failed_probes: 0
+        })
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|b| **b == "Service 'svc' is READY: warmed up")
+                .count(),
+            1
+        );
+        assert!(bodies.contains(&"openjd_service_ready: warmed up"));
+        assert!(bodies.contains(&"openjd_service_ready: again"));
+    });
+}
+
+#[tokio::test]
+async fn service_ready_message_ignored_under_tcp_connect_and_readiness_times_out() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: nope; sleep 30"),
+    )
+    .health(tcp_check(&["main"], 2))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", port)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    let ready = ss.start().await.unwrap();
+    assert_eq!(ready, ServiceHealth::TimedOut);
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    // The instance failed but onRun is still running: the caller cancels it.
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    assert!(ss.cancel_run(Some(Duration::ZERO)));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(exit.canceled);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Ignoring openjd_service_ready from Service 'svc' onRun: its health check type is TCP_CONNECT"
+        ), "{bodies:?}");
+        assert!(bodies
+            .contains(&"Service 'svc' did not become READY within 2s (TCP_CONNECT health check)"));
+    });
+}
+
+#[tokio::test]
+async fn stdout_readiness_timeout_when_never_emitted() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .health(stdout_check(1))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn tcp_connect_probes_only_listed_ports() {
+    // Two declared ports, but the readiness check names only `main`; the
+    // listener binds `main` only, so READY must still be reached.
+    let root = TempDir::new().unwrap();
+    let main_port = free_port();
+    let other_port = free_port();
+    let service = ServiceBuilder::new("svc", &["main", "other"], python_listener("svc", "x"))
+        .health(tcp_check(&["main"], 300))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", main_port), ("other", other_port)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Instance exit
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn on_run_exit_before_ready_is_detected() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("echo starting; exit 3"))
+        .health(stdout_check(300))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let ready = ss.start().await.unwrap();
+    assert_eq!(ready, ServiceHealth::ExitedBeforeReady);
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Failed);
+    assert_eq!(exit.exit_code, Some(3));
+    assert!(!exit.canceled);
+    assert_eq!(exit.fail_message, None);
+    assert_eq!(lines(&exit.stdout), vec!["starting"]);
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+    assert_eq!(ss.run_exit(), Some(exit));
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Service 'svc' onRun exited before becoming READY"));
+        assert!(bodies.contains(&"Service 'svc' onRun exited: Failed (exit code: 3)"));
+    });
+}
+
+#[tokio::test]
+async fn on_run_exit_after_ready_reports_status_and_fail_message() {
+    let root = TempDir::new().unwrap();
+    // RFC 0009 <ServiceActions>: the openjd_fail line is itself the
+    // instance failure — the runtime cancels onRun (TERMINATE here) before
+    // the process gets to its own exit, so the sleep after the line never
+    // completes and NEVER_PRINTED does not appear.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(
+            "echo openjd_service_ready: up; sleep 1; echo openjd_status: shutting down; \
+            echo openjd_fail: disk full; sleep 30; echo NEVER_PRINTED; exit 0",
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let statuses: Arc<Mutex<Vec<ActionStatus>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = statuses.clone();
+    let mut config = session_config(&root, "svc-test:cb");
+    config.callback = Some(Box::new(move |_, status| {
+        sink.lock().unwrap().push(status.clone());
+    }));
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 0
+        }
+    );
+    // An exit-watch receiver is the asynchronous notification.
+    let mut watch = ss.exit_watch().unwrap();
+    watch.changed().await.unwrap();
+    let from_watch = watch.borrow().clone().unwrap();
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit, from_watch);
+    // The runtime canceled onRun on its openjd_fail line: a runtime cancel,
+    // not the caller's (`canceled` is false — it IS an instance failure), with
+    // the message as the reported failure and the reason.
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert_eq!(exit.exit_code, None);
+    assert!(!exit.canceled);
+    assert_eq!(exit.reported_failure.as_deref(), Some("disk full"));
+    assert_eq!(exit.fail_message.as_deref(), Some("disk full"));
+    assert!(!exit.stdout.contains("NEVER_PRINTED"), "{}", exit.stdout);
+    // The health watch published the failure the moment the line was read,
+    // so a scheduler sees the instance UNREADY before the exit lands.
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Failed {
+            message: "disk full".into()
+        })
+    );
+    let status = ss.action_status().unwrap();
+    assert_eq!(status.state, ActionState::Canceled);
+    assert_eq!(status.status_message.as_deref(), Some("shutting down"));
+    assert_eq!(status.fail_message.as_deref(), Some("disk full"));
+    assert_eq!(status.exit_code, None);
+    ss.end().await.unwrap();
+
+    let statuses = statuses.lock().unwrap();
+    assert_eq!(statuses.first().unwrap().state, ActionState::Running);
+    assert!(statuses
+        .iter()
+        .any(|s| s.status_message.as_deref() == Some("shutting down")));
+    assert_eq!(statuses.last().unwrap().state, ActionState::Canceled);
+}
+
+/// `openjd_fail` before READY is a reported failure too: onRun is canceled
+/// at once, `wait_ready` reports the exit, and the message is carried. The
+/// cancelation uses onRun's own method (NOTIFY_THEN_TERMINATE here: the
+/// trap runs).
+#[tokio::test]
+async fn on_run_openjd_fail_before_ready_cancels_with_its_own_method() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!(
+                "trap 'echo got-term >> {t}; exit 7' TERM; echo openjd_fail: no license; \
+                 while :; do sleep 0.1; done"
+            ),
+            10,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    let health = ss.start().await.unwrap();
+    // `wait_ready` returns the published failure (terminal), not
+    // ExitedBeforeReady: the Service said so itself.
+    assert_eq!(
+        health,
+        ServiceHealth::Failed {
+            message: "no license".into()
+        },
+        "{health:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("no license"));
+    assert!(!exit.canceled);
+    assert_eq!(exit.exit_code, Some(7), "the trap ran: {exit:?}");
+    assert_eq!(read_trace(&trace), vec!["got-term"]);
+    ss.end().await.unwrap();
+}
+
+/// The failure is published on the health watch at once — while `onRun`
+/// is still exiting under a NOTIFY_THEN_TERMINATE grace — so a scheduler
+/// learns the instance is UNREADY without waiting for the exit.
+#[tokio::test]
+async fn reported_failure_is_published_before_on_run_exits() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            "trap '' TERM; echo openjd_service_ready: up; sleep 0.3; echo openjd_fail: store corrupt; \
+             while :; do sleep 0.1; done",
+            3,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    let started = std::time::Instant::now();
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow().clone(),
+        ServiceHealth::Failed {
+            message: "store corrupt".into()
+        }
+    );
+    // Well before the 3 s terminate: the exit has not landed yet.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(ss.run_exit().is_none(), "{:?}", ss.run_exit());
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("store corrupt"));
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    ss.end().await.unwrap();
+}
+
+/// A reported failure cancels a `COMMAND` probe invocation in flight with
+/// the check's own cancelation method, and no further probe starts.
+#[tokio::test]
+async fn reported_failure_cancels_an_in_flight_command_probe() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("sleep 0.6; echo openjd_fail: store corrupt; sleep 30"),
+    )
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
+        &format!(
+            "echo check-start >> {t}; trap 'echo check-term >> {t}; exit 1' TERM; \
+             while :; do sleep 0.1; done"
+        ),
+        10,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let health = ss.start().await.unwrap();
+    assert_eq!(
+        health,
+        ServiceHealth::Failed {
+            message: "store corrupt".into()
+        },
+        "{health:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+}
+
+/// A reported failure's message is redacted like the echoed line: a value
+/// registered with `openjd_redacted_env` does not reach the reason.
+#[tokio::test]
+async fn reported_failure_message_is_redacted() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        // (The variable itself is set only under REDACTED_ENV_VARS; the
+        // value is redacted regardless, which is what this checks.)
+        sh("echo openjd_service_ready: up; echo openjd_fail: bad hunter2xyz; sleep 30"),
+    )
+    .on_enter(sh("echo openjd_redacted_env: SECRET=hunter2xyz"))
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(
+        exit.reported_failure.as_deref(),
+        Some("bad ********"),
+        "{exit:?}"
+    );
+    assert_eq!(exit.fail_message.as_deref(), Some("bad ********"));
+    assert!(!format!("{exit:?}").contains("hunter2xyz"), "{exit:?}");
+    ss.end().await.unwrap();
+}
+
+/// An `openjd_redacted_env` from `onRun` is ignored as an env change but
+/// its value joins the Session's redaction set, so a later action echoing
+/// it is redacted (service-session.md "Messages").
+#[tokio::test]
+async fn on_run_redacted_env_value_is_redacted_in_on_exit() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; echo openjd_redacted_env: K=topsecret1; sleep 30"),
+    )
+    .on_exit(sh(
+        "echo EXIT sees topsecret1; echo openjd_fail: leaked topsecret1; exit 1",
+    ))
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    // onExit fails (exit 1); its reason carries the redacted message.
+    let err = ss.end().await.unwrap_err().to_string();
+    assert!(err.contains("leaked ********"), "{err}");
+    assert!(!err.contains("topsecret1"), "{err}");
+}
+
+/// Only the first `openjd_fail` line acts; later lines (drained after the
+/// cancel) only update the status message, and a second cancel is not
+/// issued. Probing has stopped: a `openjd_service_ready` line after the
+/// failure does not make the instance READY.
+#[tokio::test]
+async fn on_run_openjd_fail_first_line_wins_and_stops_probing() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_fail: first; echo openjd_fail: second; echo openjd_service_ready: up; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let health = ss.start().await.unwrap();
+    assert!(!health.is_ready(), "{health:?}");
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("first"));
+    assert!(!exit.canceled);
+    ss.end().await.unwrap();
+}
+
+/// The caller's own cancel racing a reported failure: the caller cancels
+/// with a NOTIFY_THEN_TERMINATE grace period, and onRun prints `openjd_fail`
+/// from its TERM trap, inside that window. Both are recorded — the message
+/// is carried — but `canceled` is true, so the exit is not an instance
+/// failure (as for an UNHEALTHY exit the caller's cancel raced).
+#[tokio::test]
+async fn caller_cancel_racing_a_reported_failure_is_not_an_instance_failure() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            "trap 'echo openjd_fail: shutting down badly; sleep 0.3; exit 3' TERM; \
+             echo openjd_service_ready: up; while :; do sleep 0.1; done",
+            10,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    assert!(ss.cancel_run(None));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled, "{exit:?}");
+    assert_eq!(exit.exit_code, Some(3), "{exit:?}");
+    // The caller's cancel came first: the line is a message in passing, not
+    // a reported failure (the health watch is not turned to `Failed`), but
+    // the text is still carried as the fail message.
+    assert_eq!(exit.reported_failure, None, "{exit:?}");
+    assert_eq!(exit.fail_message.as_deref(), Some("shutting down badly"));
+    assert!(
+        !matches!(ss.health(), Some(ServiceHealth::Failed { .. })),
+        "{:?}",
+        ss.health()
+    );
+    ss.end().await.unwrap();
+}
+
+/// After `onRun` exits but before the caller settles the state (the exit is
+/// published on `exit_watch` while the state is still RUNNING),
+/// `cancel_run` reports nothing to cancel and `launch` observes the exit and
+/// relaunches — the contract public-api.md states ("relaunch with `launch()`
+/// once exited").
+#[tokio::test]
+async fn launch_after_an_unobserved_exit_relaunches_without_wait_exit() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; exit 3"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:unobserved"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert!(ss.start().await.unwrap().is_ready());
+    // Wait for the exit to be published without calling wait_exit/end.
+    let mut watch = ss.exit_watch().unwrap();
+    watch.changed().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    // Nothing to cancel: the onRun has already exited.
+    assert!(!ss.cancel_run(Some(Duration::ZERO)));
+    // launch() reclaims the exit and starts a second instance, which itself
+    // runs its own onRun (exit 3 again) and whose exit is then observed.
+    ss.launch().await.unwrap();
+    assert_eq!(ss.launch_count(), 2);
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    let exit2 = ss.wait_exit().await.unwrap();
+    assert_eq!(exit2.exit_code, Some(3));
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn on_run_command_not_found_is_a_failed_exit() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        Action {
+            command: fs("/nonexistent/openjd-service-binary"),
+            args: None,
+            timeout: None,
+            cancelation: None,
+        },
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Failed);
+    assert_eq!(exit.exit_code, None);
+    assert!(exit
+        .fail_message
+        .as_deref()
+        .unwrap()
+        .starts_with("Failed to start subprocess '/nonexistent/openjd-service-binary'"));
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn on_run_declared_timeout_is_an_instance_failure() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        Action {
+            timeout: Some(fs("1")),
+            ..sh("echo openjd_service_ready: up; sleep 30")
+        },
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Timeout);
+    assert!(!exit.canceled);
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Environment variables
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn on_enter_env_vars_reach_on_run_and_precedence_holds() {
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    // Environment < Service variables < onEnter: A is set at all three
+    // levels, B at the first two, C only by the Environment; D is unset by
+    // onEnter; E is redacted by onEnter.
+    let environment = env_with_vars(
+        "provision",
+        &[("A", "env"), ("B", "env"), ("C", "env"), ("D", "env")],
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        // The redacted E must not appear in captured output; prove it reached
+        // the process by printing its length instead.
+        sh(r#"echo "A=$A B=$B C=$C D=${D:-unset} E_LEN=${#E} PORT=$PORT WD=$OPENJD_SESSION_WORKING_DIR"; echo openjd_service_ready: ok; sleep 30"#),
+    )
+    .health(stdout_check(300))
+    .variables(&[("A", "svc"), ("B", "svc-{{Service.svc.main.port}}"), ("PORT", "{{Service.svc.main.port}}")])
+    .on_enter(sh(r#"echo "enter sees A=$A B=$B C=$C PORT=$PORT"; echo openjd_env: A=enter; echo openjd_unset_env: D; echo openjd_redacted_env: E=s3cret"#))
+    .build();
+    let mut config = session_config(&root, "svc-test:env");
+    config.profile = Some(
+        openjd_model::ModelProfile::new(openjd_model::SpecificationRevision::V2023_09)
+            .with_extensions(
+                [openjd_model::ModelExtension::RedactedEnvVars]
+                    .into_iter()
+                    .collect(),
+            ),
+    );
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![environment],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", port)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    let wd = ss.session().working_directory().display().to_string();
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![
+            format!("A=enter B=svc-{port} C=env D=unset E_LEN=6 PORT={port} WD={wd}").as_str(),
+            "openjd_service_ready: ok",
+        ]
+    );
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn env_messages_from_on_run_and_on_exit_are_ignored() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_env: FROM_RUN=1; echo openjd_unset_env: PATH; echo openjd_service_ready: ok; exit 0"),
+    )
+    .health(stdout_check(300))
+    .on_exit(sh(&format!(
+        "echo openjd_env: FROM_EXIT=1; echo \"exit FROM_RUN=${{FROM_RUN:-unset}} PATH_SET=${{PATH:+yes}}\" >> {}",
+        trace.display()
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.start().await.unwrap();
+    let exit = ss.wait_exit().await.unwrap();
+    // Not canceled or failed by the ignored (and would-be malformed) lines.
+    assert_eq!(exit.state, ActionState::Success);
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["exit FROM_RUN=unset PATH_SET=yes"]);
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Ignoring openjd_env from Service 'svc' onRun: environment variable messages are honored only from onEnter"
+        ));
+        assert!(bodies.contains(
+            &"Ignoring openjd_unset_env from Service 'svc' onRun: environment variable messages are honored only from onEnter"
+        ));
+        assert!(bodies.contains(
+            &"Ignoring openjd_env from Service 'svc' onExit: environment variable messages are honored only from onEnter"
+        ));
+    });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Cancel, onExit, relaunch
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn end_cancels_running_on_run_with_its_method_then_runs_on_exit_and_exits_envs() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let environment = env(
+        "outer",
+        Some(sh(&format!("echo env-enter >> {t}"))),
+        Some(sh(&format!("echo env-exit >> {t}"))),
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!("trap 'echo run-got-term >> {t}; exit 0' TERM; echo openjd_service_ready: ok; while true; do sleep 0.1; done"),
+            10,
+        ),
+    )
+    .health(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}")))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![environment],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    let started = std::time::Instant::now();
+    ss.end().await.unwrap();
+    // SIGTERM was honored promptly (well under the 10s grace).
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+    let exit = ss.run_exit().unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(exit.canceled);
+    assert_eq!(
+        read_trace(&trace),
+        vec![
+            "env-enter",
+            "svc-enter",
+            "run-got-term",
+            "svc-exit",
+            "env-exit"
+        ]
+    );
+    assert!(ss.session().environments_entered().is_empty());
+}
+
+#[tokio::test]
+async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_enter() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // onRun announces readiness and then waits for a stop file before exiting
+    // with status 1, so that READY is always observed while onRun is still
+    // running (the RFC's "onRun exit wins" rule would otherwise make a fast
+    // exit race the readiness line).
+    let stop = root.path().join("stop");
+    let stop_s = stop.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!(
+            "echo \"run TOKEN=$TOKEN WD=$OPENJD_SESSION_WORKING_DIR\" >> {t}; echo openjd_service_ready: ok; \
+             while [ ! -e {stop_s} ]; do sleep 0.05; done; rm -f {stop_s}; exit 1"
+        )),
+    )
+    .health(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}; echo openjd_env: TOKEN=abc123")))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let wd = ss.session().working_directory().display().to_string();
+
+    assert!(ss.start().await.unwrap().is_ready());
+    std::fs::write(&stop, b"").unwrap();
+    let first = ss.wait_exit().await.unwrap();
+    assert_eq!(first.exit_code, Some(1));
+    assert!(!first.canceled);
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+
+    // Relaunch: same Session, same working directory, onEnter not re-run.
+    ss.launch().await.unwrap();
+    assert_eq!(ss.launch_count(), 2);
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert_eq!(ss.health(), Some(ServiceHealth::Pending));
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    std::fs::write(&stop, b"").unwrap();
+    let second = ss.wait_exit().await.unwrap();
+    assert_eq!(second.exit_code, Some(1));
+    ss.end().await.unwrap();
+
+    assert_eq!(
+        read_trace(&trace),
+        vec![
+            "svc-enter",
+            format!("run TOKEN=abc123 WD={wd}").as_str(),
+            format!("run TOKEN=abc123 WD={wd}").as_str(),
+            "svc-exit",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn launch_is_rejected_while_on_run_is_running() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: ok; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    // Constraint 5: at most one running onRun per Session.
+    let err = ss.launch().await.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Service Session must be in ENTERED or EXITED state, current: RUNNING"
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    assert_eq!(
+        ss.end().await.unwrap_err().to_string(),
+        "Service Session must be in CREATED or ENTERED or RUNNING or EXITED or START_FAILED state, current: ENDED"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Start failures and onExit failures
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn on_enter_failure_is_a_start_failure_and_end_still_runs_on_exit() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let environment = env(
+        "outer",
+        Some(sh(&format!("echo env-enter >> {t}"))),
+        Some(sh(&format!("echo env-exit >> {t}"))),
+    );
+    let service = ServiceBuilder::new("svc", &["main"], sh(&format!("echo run >> {t}; sleep 30")))
+        .on_enter(sh(&format!(
+            "echo svc-enter >> {t}; echo openjd_fail: no license; exit 2"
+        )))
+        .on_exit(sh(&format!("echo svc-exit >> {t}")))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![environment],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let err = ss.enter().await.unwrap_err();
+    // RFC 0009 <ServiceActions>: the openjd_fail message accompanies the
+    // start failure it explains.
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' onEnter failed: exit code: 2; openjd_fail: no license"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    let status = ss.action_status().unwrap();
+    assert_eq!(status.state, ActionState::Failed);
+    assert_eq!(status.fail_message.as_deref(), Some("no license"));
+    assert_eq!(
+        ss.launch().await.unwrap_err().to_string(),
+        "Service Session must be in ENTERED or EXITED state, current: START_FAILED"
+    );
+    assert!(ss.wait_ready().await.is_err());
+    ss.end().await.unwrap();
+    // onExit runs because an action of the Service (onEnter) ran; onRun never did.
+    assert_eq!(
+        read_trace(&trace),
+        vec!["env-enter", "svc-enter", "svc-exit", "env-exit"]
+    );
+}
+
+/// As for every action in this crate, `openjd_fail` makes the action
+/// `Failed` even when it exits 0 (open question Q1 in
+/// `specs/service-extension-status.md`); the reason then leads with the
+/// cause rather than reading "failed: exit code: 0".
+#[tokio::test]
+async fn openjd_fail_with_exit_zero_fails_on_enter_and_on_exit_naming_the_message_first() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_enter(sh("echo 'openjd_fail: just a note'; exit 0"))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.enter().await.unwrap_err().to_string(),
+        "Service 'svc' onEnter failed: openjd_fail: just a note (exit code: 0)"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    ss.end().await.unwrap();
+
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_exit(sh("echo 'openjd_fail: cleanup note'; exit 0"))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    assert_eq!(
+        ss.end().await.unwrap_err().to_string(),
+        "Service 'svc' onExit failed: openjd_fail: cleanup note (exit code: 0)"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+}
+
+#[tokio::test]
+async fn cancel_handle_cancels_a_running_on_enter() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_enter(sh_ntt(
+            &format!(
+                "trap 'echo enter-got-term >> {t}; exit 0' TERM; while true; do sleep 0.1; done"
+            ),
+            10,
+        ))
+        .on_exit(sh(&format!("echo svc-exit >> {t}")))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let handle = ss.cancel_handle();
+    let canceler = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.cancel(None, false)
+    });
+    let err = ss.enter().await.unwrap_err();
+    assert_eq!(err.to_string(), "Service 'svc' onEnter failed: canceled");
+    assert!(canceler.await.unwrap(), "an action was running to cancel");
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    assert_eq!(ss.action_status().unwrap().state, ActionState::Canceled);
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["enter-got-term", "svc-exit"]);
+}
+
+#[tokio::test]
+async fn environment_on_enter_failure_is_a_start_failure_without_on_exit() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let good = env(
+        "good",
+        Some(sh(&format!("echo good-enter >> {t}"))),
+        Some(sh(&format!("echo good-exit >> {t}"))),
+    );
+    let bad = env(
+        "bad",
+        Some(sh(&format!("echo bad-enter >> {t}; exit 7"))),
+        Some(sh(&format!("echo bad-exit >> {t}"))),
+    );
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_enter(sh(&format!("echo svc-enter >> {t}")))
+        .on_exit(sh(&format!("echo svc-exit >> {t}")))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![good, bad],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let err = ss.enter().await.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Environment 'bad' onEnter failed: exit code: 7"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    ss.end().await.unwrap();
+    // No action of the Service ran, so onExit does not; both Environments
+    // are exited (a failed onEnter still counts as entered).
+    assert_eq!(
+        read_trace(&trace),
+        vec!["good-enter", "bad-enter", "bad-exit", "good-exit"]
+    );
+}
+
+#[tokio::test]
+async fn on_exit_failure_is_reported_after_full_teardown() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let environment = env("outer", None, Some(sh(&format!("echo env-exit >> {t}"))));
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: ok; exit 0"),
+    )
+    .health(stdout_check(300))
+    .on_exit(sh("echo openjd_fail: cleanup incomplete; exit 5"))
+    .build();
+    let mut config = session_config(&root, "svc-test:onexit");
+    config.retain_working_dir = false;
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![environment],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    ss.start().await.unwrap();
+    ss.wait_exit().await.unwrap();
+    let wd = ss.session().working_directory().to_path_buf();
+    let err = ss.end().await.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' onExit failed: exit code: 5; openjd_fail: cleanup incomplete"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+    assert_eq!(read_trace(&trace), vec!["env-exit"]);
+    assert!(
+        !wd.exists(),
+        "working directory is deleted even after an onExit failure"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Environments
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn every_given_environment_is_entered_in_order() {
+    // The caller selects the Job Environments the Service's Sessions enter
+    // (RFC 0009 "Services run inside Environments"); the Session enters
+    // each one it is given, in order.
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let first = env("first", Some(sh(&format!("echo first >> {t}"))), None);
+    let second = env("second", Some(sh(&format!("echo second >> {t}"))), None);
+    let third = env("third", Some(sh(&format!("echo third >> {t}"))), None);
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: ok; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![first, second, third],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    assert_eq!(ss.session().environments_entered().len(), 3);
+    assert_eq!(read_trace(&trace), vec!["first", "second", "third"]);
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Symbol scopes
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn service_symbols_resolve_in_on_run_args() {
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let db_port = free_port();
+    let mut base = SymbolTable::new();
+    base.set("Job.Name", ExprValue::String("render".into()))
+        .unwrap();
+    base.set("Step.Name", ExprValue::String("comp".into()))
+        .unwrap();
+    base.set("Param.Foo", ExprValue::String("bar".into()))
+        .unwrap();
+    base.set("Scale", ExprValue::Int(3)).unwrap(); // a <Service>.let value
+    let on_run = Action {
+        command: fs("sh"),
+        args: Some(vec![
+            fs("-c"),
+            fs(r#"printf '%s\n' "$@"; echo openjd_service_ready: ok; sleep 30"#),
+            fs("argv0"),
+            fs("{{Service.svc.main.port}}"),
+            fs("{{Service.svc.main.bindAddress}}"),
+            fs("{{Service.svc.main.connectAddress}}"),
+            fs("{{Service.db.p.port}}"),
+            fs("{{Service.db.p.connectAddress}}"),
+            fs("{{Session.WorkingDirectory}}"),
+            fs("{{Param.Foo}}"),
+            fs("{{Job.Name}}/{{Step.Name}}"),
+            fs("{{Scaled}}"),
+            fs("{{ join_host_port(Service.db.p.connectAddress, Service.db.p.port) }}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    };
+    let service = ServiceBuilder::new("svc", &["main"], on_run)
+        .health(stdout_check(300))
+        .lets(&["Scaled = Scale * Service.svc.main.port"])
+        .resolved_symtab(&base)
+        .build();
+    let db = ServiceEndpoints::new(
+        "db",
+        vec![(
+            "p".to_string(),
+            ServiceEndpoint {
+                port: db_port,
+                protocol: ServicePortProtocol::Tcp,
+                bind_address: "0.0.0.0".into(),
+                connect_address: "db.internal".into(),
+            },
+        )],
+    );
+    let mut config = session_config(&root, "svc-test:symbols");
+    config.profile = Some(
+        openjd_model::ModelProfile::new(openjd_model::SpecificationRevision::V2023_09)
+            .with_extensions(
+                [
+                    openjd_model::ModelExtension::Expr,
+                    openjd_model::ModelExtension::Service,
+                ]
+                .into_iter()
+                .collect(),
+            ),
+    );
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", port)]),
+        in_scope_endpoints: vec![db],
+    })
+    .unwrap();
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    let wd = ss.session().working_directory().display().to_string();
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![
+            port.to_string().as_str(),
+            "127.0.0.1",
+            "127.0.0.1",
+            db_port.to_string().as_str(),
+            "db.internal",
+            wd.as_str(),
+            "bar",
+            "render/comp",
+            (3 * i64::from(port)).to_string().as_str(),
+            format!("db.internal:{db_port}").as_str(),
+            "openjd_service_ready: ok",
+        ]
+    );
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn earlier_service_bind_address_is_not_in_scope() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo {{Service.db.p.bindAddress}}; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let db = ServiceEndpoints::new(
+        "db",
+        vec![(
+            "p".to_string(),
+            ServiceEndpoint {
+                port: 9,
+                protocol: ServicePortProtocol::Tcp,
+                bind_address: "0.0.0.0".into(),
+                connect_address: "db".into(),
+            },
+        )],
+    );
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![db],
+    );
+    // Resolution fails when the action is launched; that surfaces as a
+    // failed onRun exit (an instance failure), not as a launch error.
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Failed);
+    assert_eq!(exit.exit_code, None);
+    let msg = exit.fail_message.unwrap();
+    assert!(
+        msg.starts_with("Failed to resolve argument:") && msg.contains("Service.db.p.bindAddress"),
+        "{msg}"
+    );
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn service_file_resolves_for_embedded_file() {
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        Action {
+            command: fs("{{Service.File.serve}}"),
+            args: Some(vec![fs("{{Service.File.config}}")]),
+            timeout: None,
+            cancelation: None,
+        },
+    )
+    .health(stdout_check(300))
+    .embedded_file(
+        "serve",
+        "#!/bin/sh\necho \"config=$(cat \"$1\")\"\necho openjd_service_ready: ok\nsleep 30\n",
+        true,
+    )
+    .embedded_file("config", "port={{Service.svc.main.port}}", false)
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", port)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![
+            format!("config=port={port}").as_str(),
+            "openjd_service_ready: ok"
+        ]
+    );
+    // Files live in the Session's embedded-files directory.
+    let files_dir = ss.session().files_directory();
+    assert_eq!(std::fs::read_dir(files_dir).unwrap().count(), 2);
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn path_mapping_rules_are_materialized_and_applied() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo {{Session.HasPathMappingRules}}; echo {{Session.PathMappingRulesFile}}; echo {{Param.Scene}}; echo openjd_service_ready: ok; exit 0"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut config = session_config(&root, "svc-test:pathmap");
+    config.path_mapping_rules = Some(vec![PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "/mnt/artist".into(),
+        destination_path: "/mnt/worker".into(),
+    }]);
+    config.job_parameter_values.insert(
+        "Scene".into(),
+        JobParameterValue {
+            param_type: JobParameterType::Path,
+            value: ExprValue::String("/mnt/artist/shot.blend".into()),
+        },
+    );
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    ss.start().await.unwrap();
+    let exit = ss.wait_exit().await.unwrap();
+    let out = lines(&exit.stdout);
+    assert_eq!(out[0], "true");
+    let rules_file = PathBuf::from(out[1]);
+    assert!(rules_file.starts_with(ss.session().working_directory()));
+    let rules: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&rules_file).unwrap()).unwrap();
+    assert_eq!(rules["version"], "pathmapping-1.0");
+    assert_eq!(rules["path_mapping_rules"][0]["source_path"], "/mnt/artist");
+    assert_eq!(
+        rules["path_mapping_rules"][0]["destination_path"],
+        "/mnt/worker"
+    );
+    assert_eq!(out[2], "/mnt/worker/shot.blend");
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Construction checks
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn with_config_rejects_incomplete_endpoint_assignment() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main", "metrics"], sh("sleep 1")).build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:ports"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' port 'metrics' has no endpoint assignment"
+    );
+}
+
+#[tokio::test]
+async fn with_config_rejects_mismatched_service_name_and_command_without_check() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 1")).build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:name"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("other", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' was given the endpoint assignment of Service 'other'"
+    );
+
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 1"))
+        .health(command_check(5, 300))
+        .build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:command"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc': health check type is COMMAND but onHealthCheck is not defined"
+    );
+}
+
+#[tokio::test]
+async fn with_config_checks_each_endpoint_protocol_against_the_declared_port() {
+    let root = TempDir::new().unwrap();
+    // The scheduler allocated `ingest` as TCP, but the port is UDP.
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .health(tcp_check(&["api"], 300))
+        .build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:protocol"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("ingest", 5), ("api", 6)]),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' port 'ingest' is declared UDP but its endpoint assignment is TCP"
+    );
+
+    // A TCP_CONNECT check that names the UDP port (model validation
+    // forbids this; the runtime refuses rather than probing it).
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .health(tcp_check(&["api", "ingest"], 300))
+        .build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:probe-udp"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", 5, ServicePortProtocol::Udp),
+                ("api", 6, ServicePortProtocol::Tcp),
+            ],
+        ),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc': TCP_CONNECT health check names port 'ingest', whose protocol is UDP; \
+         only TCP ports can be probed"
+    );
+
+    // Matching protocols construct fine.
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .health(tcp_check(&["api"], 300))
+        .build();
+    ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:protocol-ok"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", 5, ServicePortProtocol::Udp),
+                ("api", 6, ServicePortProtocol::Tcp),
+            ],
+        ),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+}
+
+/// A mixed TCP+UDP Service whose `TCP_CONNECT` check (the model's default
+/// set: every TCP port) probes the TCP port only: the UDP port is never
+/// connected to, and the Service is READY once the TCP listener is up.
+#[tokio::test]
+async fn tcp_connect_readiness_probes_only_the_listed_tcp_port_of_a_mixed_service() {
+    let root = TempDir::new().unwrap();
+    let tcp_port = free_port();
+    let udp_port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    // Bind the UDP port and the TCP port; report both.
+    let on_run = Action {
+        command: fs("python3"),
+        args: Some(vec![
+            fs("-c"),
+            fs(r#"
+import socket, sys
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u.bind((sys.argv[1], int(sys.argv[2])))
+t = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+t.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+t.bind((sys.argv[3], int(sys.argv[4])))
+t.listen(5)
+print("bound", sys.argv[2], sys.argv[4], flush=True)
+while True:
+    c, _ = t.accept()
+    c.close()
+"#),
+            fs("{{Service.svc.ingest.bindAddress}}"),
+            fs("{{Service.svc.ingest.port}}"),
+            fs("{{Service.svc.api.bindAddress}}"),
+            fs("{{Service.svc.api.port}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    };
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], on_run)
+        .udp_port("ingest")
+        .health(tcp_check(&["api"], 30))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", udp_port, ServicePortProtocol::Udp),
+                ("api", tcp_port, ServicePortProtocol::Tcp),
+            ],
+        ),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![format!("bound {udp_port} {tcp_port}")]
+    );
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// COMMAND probes (onHealthCheck) and their concurrency rules
+// ────────────────────────────────────────────────────────────────────
+
+/// A check script that counts its invocations in `counter` and exits 0 on
+/// the `ready_on`th. Each invocation prints `attempt N`.
+fn counting_check(counter: &str, ready_on: u32) -> String {
+    format!(
+        "n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; \
+         echo \"attempt $n\"; [ $n -ge {ready_on} ]"
+    )
+}
+
+fn read_counter(path: &PathBuf) -> u32 {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
+        .health(command_check(1, 300))
+        .on_health_check(sh(&counting_check(&c, 3)))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    let ready = ss.start().await.unwrap();
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    // Two 1 s intervals separate the three invocations.
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(read_counter(&counter), 3);
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+
+    // Rule 4: once READY the action runs every healthIntervalSeconds (30 s
+    // here), not every readinessIntervalSeconds.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(read_counter(&counter), 3);
+
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Health check: COMMAND (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
+        // Rule 3: the check's output is tagged, onRun's is not.
+        assert!(bodies.contains(&"[onHealthCheck] attempt 1"), "{bodies:?}");
+        assert!(bodies.contains(&"[onHealthCheck] attempt 2"));
+        assert!(bodies.contains(&"[onHealthCheck] attempt 3"));
+        assert!(bodies.contains(&"service line"));
+        assert!(!bodies.iter().any(|b| b.contains("] service line")));
+        // Process-control lines of the check are tagged too.
+        assert!(bodies.contains(&"[onHealthCheck] Service 'svc' health check invocation 1"));
+        assert!(bodies.contains(
+            &"[onHealthCheck] Health check invocation 1: failed (onHealthCheck exit code: 1)"
+        ));
+        assert!(
+            bodies.contains(&"[onHealthCheck] Health check invocation 3: succeeded (exit code: 0)")
+        );
+        assert!(bodies.contains(&"Service 'svc' is READY"));
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|b| b.starts_with("[onHealthCheck] Service 'svc' health check invocation"))
+                .count(),
+            3
+        );
+    });
+}
+
+/// `SessionConfig::log_tag`: every record of the Service Session — the
+/// scope Environment's output, `onEnter`'s, `onRun`'s, the check's — is
+/// prefixed with the session tag, the concurrent check's lines with its
+/// action tag after it, and each section banner becomes one tagged line.
+#[tokio::test]
+async fn session_log_tag_prefixes_every_record_and_collapses_banners() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
+        .health(command_check(1, 300))
+        .on_health_check(sh(&counting_check(&c, 1)))
+        .on_enter(sh("echo enter line"))
+        .build();
+    let environment = env("Scope", Some(sh("echo env line")), None);
+    let mut config = session_config(&root, "svc-test:tag");
+    config.log_tag = Some("Service svc".into());
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![environment],
+        environment_profiles: vec![],
+        environment_parameters: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let _ = ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        for expected in [
+            "[Service svc] --------- Starting Service: svc",
+            "[Service svc] --------- Entering Environment: Scope",
+            "[Service svc] env line",
+            "[Service svc] --------- Service onEnter: svc",
+            "[Service svc] enter line",
+            "[Service svc] --------- Service onRun: svc (launch 1)",
+            "[Service svc] service line",
+            "[Service svc] [onHealthCheck] attempt 1",
+            "[Service svc] [onHealthCheck] Service 'svc' health check invocation 1",
+            "[Service svc] --------- Ending Service: svc",
+            "[Service svc] --------- Exiting Environment: Scope",
+        ] {
+            assert!(
+                bodies.contains(&expected),
+                "missing {expected:?} in {bodies:?}"
+            );
+        }
+        // No four-line banner separators from this Session.
+        assert!(
+            !bodies.contains(&"=============================================="),
+            "{bodies:?}"
+        );
+        // Every COMMAND_OUTPUT line carries the tag.
+        for log in logs {
+            if log.body.ends_with(" line") || log.body.ends_with("attempt 1") {
+                assert!(log.body.starts_with("[Service svc] "), "{}", log.body);
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn command_readiness_waits_interval_between_invocations() {
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let times = root.path().join("times.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_check(2, 300))
+        .on_health_check(sh(&format!(
+            "date +%s%N >> {}; {}",
+            times.display(),
+            counting_check(&c, 2)
+        )))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let stamps: Vec<u128> = read_trace(&times)
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(stamps.len(), 2);
+    // The second invocation starts intervalSeconds (2 s) after the first ends.
+    let gap = Duration::from_nanos((stamps[1] - stamps[0]) as u64);
+    assert!(gap >= Duration::from_secs(2), "gap {gap:?}");
+    assert!(gap < Duration::from_secs(5), "gap {gap:?}");
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+/// The readiness deadline cancels a `COMMAND` invocation in flight, with
+/// the check's own cancelation method, and starts no further one
+/// ("Health": `TimedOut; stop the check`): the check traps the TERM of its
+/// NOTIFY_THEN_TERMINATE cancelation and records it — at the deadline,
+/// before the caller cancels `onRun`.
+#[tokio::test]
+async fn readiness_deadline_cancels_an_in_flight_command_check() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_check(1, 1))
+        .on_health_check(sh_ntt(
+            &format!(
+                "echo check-start >> {t}; trap 'echo check-term >> {t}; exit 1' TERM; \
+                 while :; do sleep 0.1; done"
+            ),
+            10,
+        ))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
+    // Give the canceled check a moment to run its trap, then look before
+    // onRun is canceled.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before_cancel = read_trace(&trace);
+    assert_eq!(
+        before_cancel,
+        vec!["check-start", "check-term"],
+        "{before_cancel:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    // No further invocation started.
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+}
+
+#[tokio::test]
+async fn command_readiness_invocation_timeout_counts_as_not_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    // The first invocation hangs past its 1 s timeout; the second exits 0.
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_check(1, 300))
+        .on_health_check(sh_timeout(
+            &format!(
+                "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+                 if [ $n -eq 1 ]; then sleep 30; fi; exit 0"
+            ),
+            1,
+        ))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert!(ss.start().await.unwrap().is_ready());
+    // 1 s timeout + 1 s interval, well under the 30 s the first check slept.
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(read_counter(&counter), 2);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(
+                &"[onHealthCheck] Health check invocation 1: failed (onHealthCheck exceeded its timeout)"
+            ),
+            "{bodies:?}"
+        );
+        assert!(
+            bodies.contains(&"[onHealthCheck] Health check invocation 2: succeeded (exit code: 0)")
+        );
+    });
+}
+
+#[tokio::test]
+async fn command_readiness_timeout_is_not_a_service_failure_and_stops_the_check() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_check(1, 2))
+        .on_health_check(sh(&counting_check(&c, 1000)))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
+    // onRun is still running: the restart decision is the caller's.
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    let n = read_counter(&counter);
+    assert!((1..=3).contains(&n), "{n}");
+    // The check does not run again after the decision.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(read_counter(&counter), n);
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(&"Service 'svc' did not become READY within 2s (COMMAND health check)")
+        );
+    });
+}
+
+#[tokio::test]
+async fn on_run_exit_during_check_invocation_cancels_it_with_its_method() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // The check hangs; its TERM trap records the cancel. onRun exits after
+    // 1 s, while the first invocation is in flight.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!("sleep 1; echo run-exit >> {t}; exit 0")),
+    )
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
+        &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
+        5,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Success);
+    assert!(!exit.canceled);
+    // The in-flight check was SIGTERMed (NOTIFY_THEN_TERMINATE), not left
+    // to its 30 s default timeout.
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        read_trace(&trace),
+        vec!["check-start", "run-exit", "check-term"]
+    );
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(
+                &"[onHealthCheck] Canceling health check invocation 1: its result will be discarded"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"Service 'svc' onRun exited before becoming READY"));
+        // The discarded invocation reports no probe outcome.
+        assert!(!bodies
+            .iter()
+            .any(|b| b.starts_with("[onHealthCheck] Health check invocation 1:")));
+    });
+}
+
+#[tokio::test]
+async fn messages_on_check_stdout_are_logged_and_ignored() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    // Invocation 1 emits every message kind and exits 1: none is honored,
+    // including openjd_service_ready. Invocation 2 emits openjd_fail and
+    // exits 0: the exit status wins — READY.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_status: from onRun; sleep 60"),
+    )
+    .health(command_check(1, 300))
+    .on_health_check(sh(&format!(
+        "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+         if [ $n -eq 1 ]; then \
+           echo openjd_service_ready: not really; \
+           echo openjd_status: from check; \
+           echo openjd_progress: 50; \
+           echo openjd_env: FROM_CHECK=1; \
+           echo openjd_unset_env: HOME; \
+           echo openjd_redacted_env: SECRET=hunter2; \
+           echo openjd_fail: not yet; \
+           exit 1; \
+         fi; \
+         echo openjd_fail: ignored on exit 0; exit 0"
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    let ready = ss.wait_ready().await.unwrap();
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    assert_eq!(read_counter(&counter), 2);
+    // The Service's status comes from onRun only.
+    let status = ss.action_status().unwrap();
+    assert_eq!(status.state, ActionState::Running);
+    assert_eq!(status.status_message.as_deref(), Some("from onRun"));
+    assert_eq!(status.progress, None);
+    assert_eq!(status.fail_message, None);
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.fail_message, None);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        for what in [
+            "openjd_service_ready",
+            "openjd_status",
+            "openjd_progress",
+            "openjd_env",
+            "openjd_unset_env",
+            "openjd_redacted_env",
+            "openjd_fail",
+        ] {
+            let expected = format!(
+                "[onHealthCheck] Ignoring {what} from Service 'svc' onHealthCheck: \
+                 messages on the health check's stdout are not honored"
+            );
+            assert!(
+                bodies.contains(&expected.as_str()),
+                "missing {expected:?}: {bodies:?}"
+            );
+        }
+        // The redacted value never reaches the log.
+        assert!(!bodies.iter().any(|b| b.contains("hunter2")));
+        assert!(bodies.contains(&"[onHealthCheck] openjd_redacted_env: SECRET=********"));
+    });
+}
+
+#[tokio::test]
+async fn end_during_check_invocation_cancels_check_before_on_exit() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!("trap 'echo run-term >> {t}; exit 0' TERM; while true; do sleep 0.1; done"),
+            5,
+        ),
+    )
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
+        &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
+        5,
+    ))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    // Let the first invocation start.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(ss.health(), Some(ServiceHealth::Pending));
+    let started = std::time::Instant::now();
+    ss.end().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+    let got = read_trace(&trace);
+    assert_eq!(got[0], "check-start");
+    assert_eq!(got.last().unwrap(), "svc-exit");
+    assert!(got.contains(&"run-term".to_string()));
+    assert!(got.contains(&"check-term".to_string()));
+    assert_eq!(got.len(), 4);
+    assert_eq!(ss.health(), Some(ServiceHealth::ExitedBeforeReady));
+}
+
+#[tokio::test]
+async fn service_file_usable_from_check_and_never_rewritten() {
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        Action {
+            command: fs("{{Service.File.serve}}"),
+            args: None,
+            timeout: None,
+            cancelation: None,
+        },
+    )
+    .health(command_check(1, 300))
+    .on_health_check(Action {
+        command: fs("{{Service.File.probe}}"),
+        args: Some(vec![fs("{{Service.File.config}}")]),
+        timeout: None,
+        cancelation: None,
+    })
+    .embedded_file("serve", "#!/bin/sh\nsleep 60\n", true)
+    .embedded_file(
+        "probe",
+        &format!(
+            "#!/bin/sh\necho \"config=$(cat \\\"$1\\\")\"\n{}\n",
+            counting_check(&c, 2)
+        ),
+        true,
+    )
+    .embedded_file("config", "port={{Service.svc.main.port}}", false)
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 4242)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    // Rule 1: embedded files are written once, at enter(); no later action
+    // (check invocations, relaunch) rewrites a file onRun was given.
+    let files_dir = ss.session().files_directory().to_path_buf();
+    let snapshot = || -> Vec<(PathBuf, std::time::SystemTime, Vec<u8>)> {
+        let mut v: Vec<_> = std::fs::read_dir(&files_dir)
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let m = std::fs::metadata(&p).unwrap().modified().unwrap();
+                let d = std::fs::read(&p).unwrap();
+                (p, m, d)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = snapshot();
+    assert_eq!(before.len(), 3);
+    ss.launch().await.unwrap();
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    assert_eq!(read_counter(&counter), 2);
+    assert_eq!(snapshot(), before);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    // Relaunch: a fresh readiness check against unchanged files.
+    std::fs::remove_file(&counter).unwrap();
+    ss.launch().await.unwrap();
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    assert_eq!(snapshot(), before);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Health after READY (phase 2): failureThreshold, blips, UNHEALTHY
+// ────────────────────────────────────────────────────────────────────
+
+/// Collect the current health value and every later one a health watch
+/// publishes, until it reports `Unhealthy` or the sender is dropped. (A
+/// receiver from `health_watch()` has not necessarily observed the current
+/// value, so `borrow_and_update` first.)
+async fn collect_health(mut rx: tokio::sync::watch::Receiver<ServiceHealth>) -> Vec<ServiceHealth> {
+    let mut seen = vec![rx.borrow_and_update().clone()];
+    while !matches!(seen.last(), Some(ServiceHealth::Unhealthy(_))) {
+        if rx.changed().await.is_err() {
+            break;
+        }
+        seen.push(rx.borrow_and_update().clone());
+    }
+    seen
+}
+
+fn unhealthy(failed_probes: u64, failure_threshold: u64, last_failure: &str) -> ServiceHealth {
+    ServiceHealth::Unhealthy(ServiceUnhealthy {
+        failed_probes,
+        failure_threshold,
+        last_failure: last_failure.into(),
+    })
+}
+
+/// COMMAND, phase 2: the check passes once (READY) then fails every time.
+/// With healthIntervalSeconds 1 and failureThreshold 2, the second
+/// consecutive failure makes the instance UNHEALTHY, the runtime cancels
+/// onRun with its cancelation method (NOTIFY_THEN_TERMINATE here: SIGTERM,
+/// which the trap records), and the exit carries the reason.
+#[tokio::test]
+async fn command_health_failures_reach_threshold_and_cancel_on_run() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!("trap 'echo run-term >> {t}; exit 143' TERM; while true; do sleep 0.1; done"),
+            5,
+        ),
+    )
+    .health(command_health_check(1, 2))
+    // Invocation 1 exits 0; every later one exits 1.
+    .on_health_check(sh(&format!(
+        "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo \"probe $n\"; [ $n -le 1 ]"
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert!(ss.start().await.unwrap().is_ready());
+    let health = tokio::spawn(collect_health(ss.health_watch().unwrap()));
+
+    // The onRun exit arrives on its own: the runtime canceled it.
+    let exit = ss.wait_exit().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled, "UNHEALTHY is an instance failure: {exit:?}");
+    assert_eq!(
+        exit.unhealthy,
+        Some(ServiceUnhealthy {
+            failed_probes: 2,
+            failure_threshold: 2,
+            last_failure: "onHealthCheck exit code: 1".into(),
+        })
+    );
+    // Two 1 s health intervals, plus probe time; well under the 30 s
+    // default timeout of a check invocation.
+    assert!(elapsed >= Duration::from_secs(2), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+    assert_eq!(read_counter(&counter), 3);
+    assert_eq!(read_trace(&trace), vec!["run-term"]);
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+
+    // The watch published READY, the first failure, then UNHEALTHY.
+    assert_eq!(
+        health.await.unwrap(),
+        vec![
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 0
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 1
+            },
+            unhealthy(2, 2, "onHealthCheck exit code: 1"),
+        ]
+    );
+    assert_eq!(
+        ss.health(),
+        Some(unhealthy(2, 2, "onHealthCheck exit code: 1"))
+    );
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Health check: COMMAND (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Service 'svc' is READY"));
+        assert!(
+            bodies.contains(
+                &"Service 'svc' health probe failed (1 of 2): onHealthCheck exit code: 1"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(
+            &"Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: onHealthCheck exit code: 1"
+        ));
+        assert!(bodies.contains(&"Canceling Service 'svc' onRun: the instance is UNHEALTHY"));
+        // (The exit code is 143 when the trap ran before the process was
+        // reaped, N/A otherwise.)
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.starts_with("Service 'svc' onRun exited: Canceled (")
+                    && b.ends_with("), canceled by the runtime: UNHEALTHY")),
+            "{bodies:?}"
+        );
+        // No probe runs after UNHEALTHY.
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|b| b.starts_with("[onHealthCheck] Service 'svc' health check invocation"))
+                .count(),
+            3
+        );
+    });
+}
+
+/// COMMAND, phase 2: two failures below a threshold of 3, then a success,
+/// reset the count ("a single successful probe resets the count"); the
+/// instance stays READY and onRun is never canceled by the runtime.
+#[tokio::test]
+async fn command_health_blips_below_threshold_keep_the_instance_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_health_check(1, 3))
+        // Invocation 1 (READY) ok; 2 and 3 fail (the blips); 4+ ok.
+        .on_health_check(sh(&format!(
+            "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; [ $n -eq 1 ] || [ $n -ge 4 ]"
+        )))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    // Wait for the two blips and the recovery probe (invocation 4).
+    let mut seen = Vec::new();
+    while read_counter(&counter) < 5 {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            r = health.changed() => {
+                r.unwrap();
+                seen.push(health.borrow_and_update().clone());
+            }
+        }
+    }
+    while health.has_changed().unwrap() {
+        seen.push(health.borrow_and_update().clone());
+    }
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    assert_eq!(
+        seen,
+        vec![
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 1
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 2
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 0
+            },
+        ]
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies
+            .contains(&"Service 'svc' health probe failed (1 of 3): onHealthCheck exit code: 1"));
+        assert!(bodies
+            .contains(&"Service 'svc' health probe failed (2 of 3): onHealthCheck exit code: 1"));
+        assert!(bodies.contains(&"Service 'svc' health probe ok; failure count reset from 2"));
+        assert!(!bodies.iter().any(|b| b.contains("UNHEALTHY")));
+    });
+}
+
+/// TCP_CONNECT, phase 2: the listener closes its socket after READY while
+/// the process keeps running (a hang). Two refused connections make the
+/// instance UNHEALTHY and the runtime cancels onRun.
+#[tokio::test]
+async fn tcp_connect_port_closed_after_ready_is_unhealthy() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let script = r#"
+import socket, sys, time
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((host, port))
+s.listen(5)
+print("listening", flush=True)
+# Serve the readiness probe, then hang with the port closed.
+c, _ = s.accept()
+c.close()
+s.close()
+print("closed", flush=True)
+time.sleep(600)
+"#;
+    let on_run = Action {
+        command: fs("python3"),
+        args: Some(vec![
+            fs("-c"),
+            fs(script),
+            fs("{{Service.svc.main.bindAddress}}"),
+            fs("{{Service.svc.main.port}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    };
+    let service = ServiceBuilder::new("svc", &["main"], on_run)
+        .health(tcp_health_check(&["main"], 1, 2))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", port)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let started = std::time::Instant::now();
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled);
+    let u = exit.unhealthy.expect("UNHEALTHY exit");
+    assert_eq!((u.failed_probes, u.failure_threshold), (2, 2));
+    assert!(
+        u.last_failure.starts_with(&format!(
+            "TCP connect to port 'main' (127.0.0.1:{port}) failed: "
+        )),
+        "{}",
+        u.last_failure
+    );
+    assert_eq!(lines(&exit.stdout), vec!["listening", "closed"]);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.iter().any(|b| b.starts_with(
+            "Service 'svc' health probe failed (1 of 2): TCP connect to port 'main'"
+        )));
+        assert!(bodies.iter().any(|b| b.starts_with(
+            "Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: TCP connect to port 'main'"
+        )));
+    });
+}
+
+/// STDOUT with healthIntervalSeconds: `openjd_service_ready` is a
+/// heartbeat after READY. The service beats every 0.2 s for a while, then
+/// stops; with interval 1 and threshold 2, two silent intervals make the
+/// instance UNHEALTHY.
+#[tokio::test]
+async fn stdout_heartbeat_missed_is_unhealthy() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("for i in 1 2 3 4 5 6 7 8; do echo openjd_service_ready: beat $i; sleep 0.2; done; echo silent; sleep 60"),
+    )
+    .health(stdout_heartbeat_check(1, 2))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: Some("beat 1".into()),
+            failed_probes: 0
+        }
+    );
+    let health = tokio::spawn(collect_health(ss.health_watch().unwrap()));
+    let exit = ss.wait_exit().await.unwrap();
+    let elapsed = started.elapsed();
+    // ~1.4 s to the last heartbeat, then two 1 s intervals.
+    assert!(elapsed >= Duration::from_millis(3000), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled);
+    assert_eq!(
+        exit.unhealthy,
+        Some(ServiceUnhealthy {
+            failed_probes: 2,
+            failure_threshold: 2,
+            last_failure: "no openjd_service_ready line within 1s".into(),
+        })
+    );
+    assert!(lines(&exit.stdout).contains(&"silent"));
+    assert_eq!(
+        health.await.unwrap(),
+        vec![
+            ServiceHealth::Ready {
+                message: Some("beat 1".into()),
+                failed_probes: 0
+            },
+            ServiceHealth::Ready {
+                message: Some("beat 1".into()),
+                failed_probes: 1
+            },
+            unhealthy(2, 2, "no openjd_service_ready line within 1s"),
+        ]
+    );
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Health check: STDOUT (readinessTimeoutSeconds 300, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Service 'svc' is READY: beat 1"));
+        assert!(bodies.contains(
+            &"Service 'svc' health probe failed (1 of 2): no openjd_service_ready line within 1s"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: no openjd_service_ready line within 1s"
+        ));
+    });
+}
+
+/// STDOUT with healthIntervalSeconds: a heartbeat that resumes after one
+/// missed interval resets the count; the instance stays READY.
+#[tokio::test]
+async fn stdout_heartbeat_resuming_resets_the_count() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; sleep 1.5; while true; do echo openjd_service_ready: beat; sleep 0.2; done"),
+    )
+    .health(stdout_heartbeat_check(1, 2))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    // One missed interval…
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow_and_update().clone(),
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 1
+        }
+    );
+    // …then the heartbeat resumes and resets the count.
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow_and_update().clone(),
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 0
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+}
+
+/// STDOUT without healthIntervalSeconds: no heartbeat is expected. The
+/// service prints the ready line once and is silent; it stays READY for as
+/// long as onRun runs, and later lines have no effect.
+#[tokio::test]
+async fn stdout_without_interval_ignores_silence_after_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: once; sleep 2.5; echo openjd_service_ready: again; sleep 60"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: Some("once".into()),
+            failed_probes: 0
+        }
+    );
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!health.has_changed().unwrap());
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: Some("once".into()),
+            failed_probes: 0
+        })
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Health check: STDOUT (readinessTimeoutSeconds 300, no heartbeat after READY)"
+        ));
+        assert!(!bodies.iter().any(|b| b.contains("health probe failed")));
+    });
+}
+
+/// Constraint 11 after READY: a health-check invocation in flight when
+/// onRun exits is canceled with its cancelation method and its result is
+/// discarded; the exit is an ordinary instance failure, not UNHEALTHY.
+#[tokio::test]
+async fn on_run_exit_after_ready_cancels_the_health_probe_in_flight() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // onRun exits 3 s in — during the second (health) invocation, which
+    // hangs from 1 s after READY.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!("sleep 3; echo run-exit >> {t}; exit 7")),
+    )
+    .health(command_health_check(1, 3))
+    .on_health_check(sh_ntt(
+        &format!(
+            "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+             [ $n -eq 1 ] && exit 0; \
+             trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; \
+             while true; do sleep 0.1; done"
+        ),
+        5,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let started = std::time::Instant::now();
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(exit.state, ActionState::Failed);
+    assert_eq!(exit.exit_code, Some(7));
+    assert!(!exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    assert_eq!(
+        read_trace(&trace),
+        vec!["check-start", "run-exit", "check-term"]
+    );
+    // The instance was READY until it exited; no UNHEALTHY verdict.
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        })
+    );
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"[onHealthCheck] Canceling health check invocation 2: its result will be discarded"
+        ));
+        assert!(!bodies
+            .iter()
+            .any(|b| b.starts_with("[onHealthCheck] Health check invocation 2:")));
+        assert!(!bodies.iter().any(|b| b.contains("UNHEALTHY")));
+    });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// onWrapService* hooks (WRAP_ACTIONS + SERVICE)
+// ────────────────────────────────────────────────────────────────────
+
+/// A wrap hook: a bash wrapper that records `<tag>` and the
+/// `WrappedService.*` values to `trace`, then execs the wrapped command with
+/// its args.
+fn forwarding_hook(tag: &str, trace: &str) -> Action {
+    let script = format!(
+        "echo \"[{tag}] name={{{{WrappedService.Name}}}} \
+         ports={{{{len(WrappedService.Ports)}}}} \
+         p0={{{{WrappedService.PortNames[0]}}}}:{{{{WrappedService.Ports[0]}}}}@{{{{WrappedService.BindAddresses[0]}}}}/{{{{lower(WrappedService.Protocols[0])}}}} \
+         p1={{{{WrappedService.PortNames[1]}}}}:{{{{WrappedService.Ports[1]}}}}@{{{{WrappedService.BindAddresses[1]}}}}/{{{{lower(WrappedService.Protocols[1])}}}} \
+         cmd={{{{WrappedAction.Command}}}} nargs=$#\" >> '{trace}'\n\
+         exec {{{{WrappedAction.Command}}}} \"$@\""
+    );
+    Action {
+        command: fs("bash"),
+        args: Some(vec![
+            fs("-c"),
+            fs(&script),
+            fs("--"),
+            fs("{{WrappedAction.Args}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    }
+}
+
+fn service_wrap_env(name: &str, hooks: [Option<Action>; 4]) -> Environment {
+    let [enter, run, check, exit] = hooks;
+    Environment {
+        name: name.into(),
+        description: None,
+        dependencies: None,
+        script: Some(EnvironmentScript {
+            let_bindings: None,
+            actions: EnvironmentActions {
+                on_enter: Some(sh("true")),
+                on_wrap_env_enter: Some(sh("true")),
+                on_wrap_task_run: None,
+                on_wrap_env_exit: Some(sh("true")),
+                on_wrap_service_enter: enter,
+                on_wrap_service_run: run,
+                on_wrap_service_health_check: check,
+                on_wrap_service_exit: exit,
+                on_exit: None,
+            },
+            embedded_files: None,
+        }),
+        variables: None,
+        resolved_symtab: None,
+    }
+}
+
+#[tokio::test]
+async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        [
+            Some(forwarding_hook("onWrapServiceEnter", &t)),
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
+            Some(forwarding_hook("onWrapServiceExit", &t)),
+        ],
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo from-enter=$FROM_ENTER; echo openjd_service_ready: up on {{{{Service.svc.main.port}}}}; \
+             echo run >> {t}; sleep 60"
+        )),
+    )
+    .health(stdout_check(300))
+    .on_enter(sh("echo openjd_env: FROM_ENTER=yes"))
+    .on_exit(sh(&format!("echo exit >> {t}")))
+    // `metrics` is a UDP port: WrappedService.Protocols reports it.
+    .udp_port("metrics")
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints_with_protocols(
+            "svc",
+            &[
+                ("main", 4100, ServicePortProtocol::Tcp),
+                ("metrics", 4101, ServicePortProtocol::Udp),
+            ],
+        ),
+        vec![],
+    );
+    let ready = ss.start().await.unwrap();
+    // openjd_service_ready is honored through the wrapper's forwarded stdout.
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: Some("up on 4100".into()),
+            failed_probes: 0
+        }
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    // openjd_env from the wrapped onEnter reached onRun.
+    assert_eq!(lines(&exit.stdout)[0], "from-enter=yes");
+    ss.end().await.unwrap();
+
+    let values =
+        "name=svc ports=2 p0=main:4100@127.0.0.1/tcp p1=metrics:4101@127.0.0.1/udp cmd=sh nargs=2";
+    assert_eq!(
+        read_trace(&trace),
+        vec![
+            format!("[onWrapServiceEnter] {values}"),
+            format!("[onWrapServiceRun] {values}"),
+            "run".to_string(),
+            format!("[onWrapServiceExit] {values}"),
+            "exit".to_string(),
+        ]
+    );
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Service 'svc' onEnter: running onWrapServiceEnter of wrapping Environment 'Wrapper' in its place"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' onRun: running onWrapServiceRun of wrapping Environment 'Wrapper' in its place"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' onExit: running onWrapServiceExit of wrapping Environment 'Wrapper' in its place"
+        ));
+        // STDOUT readiness: onWrapServiceHealthCheck never runs.
+        assert!(!bodies
+            .iter()
+            .any(|b| b.contains("onWrapServiceHealthCheck")));
+        assert!(bodies.contains(&"from-enter=yes"));
+    });
+}
+
+#[tokio::test]
+async fn wrap_hooks_run_only_for_actions_the_service_defines() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        [
+            Some(forwarding_hook("onWrapServiceEnter", &t)),
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
+            Some(forwarding_hook("onWrapServiceExit", &t)),
+        ],
+    );
+    // No onEnter, no onExit, TCP_CONNECT readiness: only onRun exists to wrap.
+    let service = ServiceBuilder::new("svc", &["main", "metrics"], python_listener("svc", "x"))
+        .health(tcp_check(&["main"], 300))
+        .build();
+    let port = free_port();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", port), ("metrics", 7)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.end().await.unwrap();
+    assert_eq!(
+        read_trace(&trace),
+        vec![format!(
+            "[onWrapServiceRun] name=svc ports=2 p0=main:{port}@127.0.0.1/tcp p1=metrics:7@127.0.0.1/tcp cmd=python3 nargs=5"
+        )]
+    );
+}
+
+#[tokio::test]
+async fn wrapped_health_check_runs_concurrently_with_wrapped_on_run() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let counter = root.path().join("counter.txt");
+    let t = trace.display().to_string();
+    let c = counter.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        [
+            None,
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
+            None,
+        ],
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo run-start >> {t}; echo service line; while true; do sleep 0.1; done"
+        )),
+    )
+    .health(command_check(1, 300))
+    // READY on the 2nd attempt, but only once onRun has started.
+    .on_health_check(sh(&format!(
+        "grep -q run-start {t} || exit 1; {}",
+        counting_check(&c, 2)
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", 4200), ("metrics", 4201)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    let got = read_trace(&trace);
+    let hooks: Vec<&String> = got.iter().filter(|l| l.starts_with('[')).collect();
+    let values =
+        "name=svc ports=2 p0=main:4200@127.0.0.1/tcp p1=metrics:4201@127.0.0.1/tcp cmd=sh nargs=2";
+    assert_eq!(hooks[0], &format!("[onWrapServiceRun] {values}"));
+    // Every check invocation went through the hook, while onRun ran.
+    assert!(hooks.len() >= 3, "{got:?}");
+    assert!(hooks[1..]
+        .iter()
+        .all(|h| **h == format!("[onWrapServiceHealthCheck] {values}")));
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        // The wrapped check's output is attributed to the hook that ran.
+        assert!(
+            bodies.contains(&"[onWrapServiceHealthCheck] attempt 1"),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"[onWrapServiceHealthCheck] attempt 2"));
+        assert!(bodies.contains(&"service line"));
+        assert!(bodies.contains(
+            &"Service 'svc' onHealthCheck: running onWrapServiceHealthCheck of wrapping Environment 'Wrapper' in its place"
+        ));
+    });
+}
+
+#[tokio::test]
+async fn a_wrapper_without_service_hooks_does_not_wrap_the_service_actions() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // A wrapping Environment with RFC 0008's three hooks and no Service
+    // hooks. Job creation rejects a Job whose Service Session enters one
+    // (RFC 0009 wrap hook rule 1); a Session given one anyway enters it and
+    // runs the Service's own actions, defensively, rather than none.
+    let mut wrapper = service_wrap_env("TaskWrapper", [None, None, None, None]);
+    wrapper.script.as_mut().unwrap().actions.on_wrap_task_run = Some(sh("true"));
+    wrapper.script.as_mut().unwrap().actions.on_enter =
+        Some(sh(&format!("echo wrapper-enter >> {t}")));
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: ok; sleep 60"),
+    )
+    .health(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    assert_eq!(ss.session().environments_entered().len(), 1);
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["wrapper-enter", "svc-enter"]);
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(!bodies.iter().any(|b| b.contains("in its place")));
+    });
+}
+
+#[tokio::test]
+async fn wrapping_scope_environment_wraps_inner_environments_and_the_service_actions() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // A plain scope Environment, then a wrapping scope Environment with the
+    // Service hooks (no onWrapTaskRun, which a Service Session never runs),
+    // then an inner scope Environment that the wrapper's
+    // onWrapEnvEnter/Exit wrap.
+    let scope_env = env(
+        "JobEnv",
+        Some(sh(&format!("echo job-enter >> {t}"))),
+        Some(sh(&format!("echo job-exit >> {t}"))),
+    );
+    let mut wrapper = service_wrap_env(
+        "Container",
+        [
+            Some(forwarding_hook("onWrapServiceEnter", &t)),
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            None,
+            Some(forwarding_hook("onWrapServiceExit", &t)),
+        ],
+    );
+    {
+        let actions = &mut wrapper.script.as_mut().unwrap().actions;
+        actions.on_enter = Some(sh(&format!("echo container-enter >> {t}")));
+        actions.on_exit = Some(sh(&format!("echo container-exit >> {t}")));
+        actions.on_wrap_env_enter = Some(Action {
+            command: fs("sh"),
+            args: Some(vec![
+                fs("-c"),
+                fs(&format!(
+                    "echo \"[onWrapEnvEnter] env={{{{WrappedEnv.Name}}}}\" >> {t}; exec \"$@\""
+                )),
+                fs("argv0"),
+                fs("{{WrappedAction.Command}}"),
+                fs("{{WrappedAction.Args}}"),
+            ]),
+            timeout: None,
+            cancelation: None,
+        });
+        actions.on_wrap_env_exit = Some(Action {
+            command: fs("sh"),
+            args: Some(vec![
+                fs("-c"),
+                fs(&format!(
+                    "echo \"[onWrapEnvExit] env={{{{WrappedEnv.Name}}}}\" >> {t}; exec \"$@\""
+                )),
+                fs("argv0"),
+                fs("{{WrappedAction.Command}}"),
+                fs("{{WrappedAction.Args}}"),
+            ]),
+            timeout: None,
+            cancelation: None,
+        });
+    }
+    let inner = env(
+        "Inner",
+        Some(sh(&format!("echo inner-enter >> {t}"))),
+        Some(sh(&format!("echo inner-exit >> {t}"))),
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo openjd_service_ready: up; echo run >> {t}; sleep 60"
+        )),
+    )
+    .health(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}")))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![scope_env, wrapper, inner],
+        endpoints("svc", &[("main", 4200), ("metrics", 4201)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.end().await.unwrap();
+
+    let values =
+        "name=svc ports=2 p0=main:4200@127.0.0.1/tcp p1=metrics:4201@127.0.0.1/tcp cmd=sh nargs=2";
+    assert_eq!(
+        read_trace(&trace),
+        vec![
+            "job-enter".to_string(),
+            "container-enter".to_string(),
+            "[onWrapEnvEnter] env=Inner".to_string(),
+            "inner-enter".to_string(),
+            format!("[onWrapServiceEnter] {values}"),
+            "svc-enter".to_string(),
+            format!("[onWrapServiceRun] {values}"),
+            "run".to_string(),
+            format!("[onWrapServiceExit] {values}"),
+            "svc-exit".to_string(),
+            "[onWrapEnvExit] env=Inner".to_string(),
+            "inner-exit".to_string(),
+            "container-exit".to_string(),
+            "job-exit".to_string(),
+        ]
+    );
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Service 'svc' onRun: running onWrapServiceRun of wrapping Environment 'Container' in its place"
+        ));
+    });
+}
+
+/// Upstream's brittle-Session rule (spec "Brittle Sessions"): an action that
+/// ends other than Success makes a Session ending-only. A Service Session's
+/// Environment actions run through the Session, so a failed one does that.
+/// The Service's own actions run on the Service Session's runners: a failed
+/// `onRun` leaves the Session `Ready`, so the Service can be relaunched
+/// within it (RFC 0009 "Failure and restart"), and a failed `onEnter`
+/// leaves it `Ready` too, where the Service Session's own `StartFailed`
+/// state allows only `end`.
+#[tokio::test]
+async fn only_a_failed_environment_action_makes_a_service_session_ending_only() {
+    use openjd_sessions::session::SessionState;
+    let root = TempDir::new().unwrap();
+    let stop = root.path().join("stop");
+    let stop_s = stop.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!(
+            "echo openjd_service_ready: ok; while [ ! -e {stop_s} ]; do sleep 0.05; done; \
+             rm -f {stop_s}; exit 1"
+        )),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    std::fs::write(&stop, b"").unwrap();
+    assert_eq!(ss.wait_exit().await.unwrap().exit_code, Some(1));
+    assert_eq!(ss.session().state(), SessionState::Ready);
+    ss.launch().await.unwrap();
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    assert_eq!(ss.session().state(), SessionState::Ready);
+    ss.end().await.unwrap();
+
+    let root = TempDir::new().unwrap();
+    let bad = env("bad", Some(sh("exit 7")), None);
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30")).build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![bad],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap_err();
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    assert_eq!(ss.session().state(), SessionState::ReadyEnding);
+    ss.end().await.unwrap();
+
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_enter(sh("exit 3"))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap_err();
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    assert_eq!(ss.session().state(), SessionState::Ready);
+    ss.end().await.unwrap();
+}

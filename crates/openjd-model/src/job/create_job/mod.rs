@@ -6,6 +6,7 @@
 //!
 //! Mirrors Python `_create_job.py` and `_merge_job_parameter.py`.
 
+mod composition;
 mod env_params;
 mod external;
 mod host_requirements;
@@ -28,8 +29,8 @@ use crate::types::{JobParameterValues, ValidationContext};
 pub use external::{
     check_environment_templates, AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement,
     EnvironmentScope, EnvironmentStatus, HostRequirementKind, OptionalEntryNotFound,
-    StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses, SubmissionWarning,
-    SupersedingEnvironment,
+    RequirementBinding, StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses,
+    SubmissionWarning, SupersedingEnvironment,
 };
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -84,14 +85,34 @@ impl EvalBudgets {
 /// `ENV_PARAMS` an enabled `environment:` entry that names no
 /// `jobEnvironments` entry is an error unless it has `required: false`,
 /// and the error is reported for `JobTemplate`, at the Job Template's
-/// paths, with every other error.
+/// paths, with every other error. The one exception is the `SERVICE` (RFC
+/// 0009) submission checks, which relate the Job Template to the Services
+/// of the attachments: `create_job` does not match `externalServices`
+/// entries (a Job Template that requires an external Service creates a Job
+/// without one) or check wrapping Environments against attached Services
+/// (§1.2.2 items 2 and 4), and returns no requirement bindings.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
 ) -> Result<job::Job, ModelError> {
-    create_job_with_environment_templates(job_template, &[], job_parameter_values, ctx)
-        .map(|created| created.job)
+    create_job_details(job_template, job_parameter_values, ctx).map(|created| created.job)
+}
+
+/// [`create_job`], returning the whole [`CreatedJob`] rather than only the
+/// Job: its warnings and, per Step and per Service, every Environment it
+/// considered and whether its Sessions enter it, as
+/// [`create_job_with_environment_templates`] reports them, for the Job
+/// Template alone. Like `create_job` it makes none of the `SERVICE` (RFC
+/// 0009) submission checks, so its `requirement_bindings` are empty: use it
+/// to inspect a Job Template that requires external Services without
+/// attaching the Environment Templates that provide them.
+pub fn create_job_details(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+) -> Result<CreatedJob, ModelError> {
+    create_job_for_submission(job_template, &[], job_parameter_values, ctx, false)
 }
 
 /// Create an instantiated Job from a validated JobTemplate, the
@@ -237,6 +258,37 @@ pub fn create_job(
 /// `EnvironmentTemplate[i]`, or the attachment's label). The warnings
 /// ([`CreatedJob::warnings`]) have the same paths.
 ///
+/// With the `SERVICE` extension (RFC 0009, Template Schemas §1.2.2) the
+/// Job's `services` are instantiated in job scope, and the attachments'
+/// `services` become external Services of the combined Job, listed before
+/// the Job Template's own. A Service selects Environments exactly as a Step
+/// does (RFC 0009 "Services run inside Environments"): a Job Template's
+/// Service among every Environment of the combined Job, and an Environment
+/// Template's Service among those of its own document and of the
+/// Environment Templates attached before it, where it may decline but not
+/// request or supply values (*services* constraint 5). Each Service gets
+/// its Environment statuses
+/// ([`CreatedJob::service_environment_statuses`]) and its combined host
+/// requirements, and each its §9.1 scope over the combined Job, whose
+/// dependency graph must be acyclic (`<StepDependency>` constraint 3, with
+/// no exception). A Service's errors are filed after every Step's in each
+/// §7.4.1 step, the Job Template's Services first and then the attached
+/// ones, in the combined Job's order; this order is the prototype's
+/// choice, which RFC 0009 leaves to implementations. An attached Service's
+/// errors in its `environment:` entries are reported whatever its scope,
+/// and its other errors only once its scope is known and not empty. The
+/// cycle check and the scopes need every Session's set of Environments, so
+/// while any Step or Service has an error from steps 1–4 they are not
+/// computed, and what depends on them (an inline Service's emptied scope,
+/// and an attached Service's other errors, own checks and
+/// wrapping-Environment rules) is not checked. The wrapping-Environment
+/// rules for the Steps and the Job Template's Services need no scope and
+/// are checked either way. The submission stage first matches each `externalServices`
+/// entry to exactly one attached Service declaring its ports with the same
+/// protocols (item 2), reporting a failure alone for `Submission`; the
+/// matches are returned in [`CreatedJob::requirement_bindings`]. A
+/// services-only attachment contributes no Environment.
+///
 /// For a Job Template without `ENV_PARAMS` that template validation
 /// accepts, with no attachments, the result is what it was before the
 /// one-pass order. With attachments, its own
@@ -251,11 +303,27 @@ pub fn create_job_with_environment_templates(
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
 ) -> Result<CreatedJob, ModelError> {
+    create_job_for_submission(job_template, attached, job_parameter_values, ctx, true)
+}
+
+/// [`create_job_with_environment_templates`], and with `check_services`
+/// false [`create_job`]: the Job Template alone is not a submission for the
+/// RFC 0009 checks (§1.2.2 items 2 and 4), which relate the Job Template's
+/// `externalServices` and wrapping Environments to the Services of the
+/// attached Environment Templates.
+fn create_job_for_submission(
+    job_template: &JobTemplate,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    check_services: bool,
+) -> Result<CreatedJob, ModelError> {
     // §7.4.1: the attached Environments are known first, so `Job.EnvNames`
     // is concrete before any TEMPLATE-scope expression.
     let env_names: Vec<String> = attached
         .iter()
-        .map(|a| a.template.environment().name.clone())
+        // A services-only attachment (RFC 0009) contributes no Environment.
+        .filter_map(|a| a.template.environment().map(|e| e.name.clone()))
         .chain(
             job_template
                 .job_environments
@@ -278,6 +346,7 @@ pub fn create_job_with_environment_templates(
         attached,
         job_parameter_values,
         ctx,
+        check_services,
     )
 }
 
@@ -289,6 +358,9 @@ pub(super) struct Body<'a> {
     pub(super) job: job::Job,
     /// For each Step, what its entries decided.
     pub(super) selections: Vec<env_params::StepSelection<'a>>,
+    /// For each of the Job Template's Services (RFC 0009), index for index
+    /// with `job.services`, what its entries decided, as for a Step.
+    pub(super) service_selections: Vec<env_params::StepSelection<'a>>,
     /// The Job Environments, set up for the submission stage to decide.
     pub(super) job_envs: env_params::JobEnvironments<'a>,
     /// The template-validation-style errors, at paths relative to the Job
@@ -347,7 +419,12 @@ pub(super) fn finish_errors(
 /// Step what the submission stage needs, and the errors found so far,
 /// which the submission stage reports with its own. `env_names` is the
 /// value of `Job.EnvNames`; `attached_count` is the number of attached
-/// Environments, which come first in the Job's Environment order.
+/// Environment Templates, whose Environments come first in the Job's
+/// Environment order (a services-only one, RFC 0009, has none, but is
+/// counted, since the count orders errors and shapes them). With
+/// `SERVICE`, every Service's scope is left to the submission stage, and
+/// for each of the Job Template's Services the Body has what its entries
+/// decided, as for a Step.
 fn create_job_from_template<'a>(
     job_template: &'a JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -422,6 +499,17 @@ fn create_job_from_template<'a>(
     let template_expr = template_profile.has_extension(crate::types::ModelExtension::Expr);
     let limits = EffectiveLimits::from_context(ctx);
     let budgets = EvalBudgets::from_ctx(ctx);
+    let services_t: &[crate::template::Service] = job_template.services();
+    let requirements_t: &[crate::template::ServiceRequirement] = job_template.external_services();
+    let icx = instantiate::InstantiateCtx {
+        has_expr,
+        template_expr,
+        limits: &limits,
+        ctx,
+        budgets,
+        services: services_t,
+        requirements: requirements_t,
+    };
 
     // Required string field (§1.1.1): a single whole-field expression
     // resolves with target type `string` (Expression Language §1.3.2), so
@@ -497,6 +585,22 @@ fn create_job_from_template<'a>(
         })
         .collect();
 
+    let external_services = job_template.external_services.as_ref().map(|reqs| {
+        reqs.iter()
+            .map(|r| job::ServiceRequirement {
+                name: r.name.clone(),
+                ports: r
+                    .ports
+                    .iter()
+                    .map(|p| job::ServiceRequirementPort {
+                        name: p.name.clone(),
+                        protocol: p.protocol,
+                    })
+                    .collect(),
+            })
+            .collect()
+    });
+
     // Re-run the carried-forward resolved-value checks (and evaluate the
     // `let` bindings feeding them) against check symbol tables where job
     // parameters are bound to real values. A violation template
@@ -505,11 +609,14 @@ fn create_job_from_template<'a>(
     //
     // Every check failure across the whole template accumulates into
     // this one collection, in pass 8's order: `jobEnvironments` first,
-    // then each step in turn (step `let`, script, step environments). It
-    // is reported first, with the §7.4.1 steps' errors (`finish_errors`).
-    // Resolution failures that leave a step uninstantiable (host
-    // requirements, parameter space) are not checks: they abort
-    // immediately, reported alone.
+    // then each Service (RFC 0009), then each step in turn (step `let`,
+    // script, step environments). It is reported first, with the §7.4.1
+    // steps' errors (`finish_errors`). Resolution failures that leave a
+    // step or Service uninstantiable (host requirements, parameter space, a
+    // Service numeric field that does not resolve) are not checks: they
+    // abort immediately, reported alone. A job environment also sees the
+    // `Service.*` endpoints of the inline and required Services it lists in
+    // its `dependencies` (RFC 0009 §9 scope rule 4).
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
@@ -524,6 +631,8 @@ fn create_job_from_template<'a>(
                 ctx,
                 &env_path,
                 &mut check_errors,
+                crate::template::listed_services(env.dependencies.as_deref(), services_t),
+                crate::template::listed_requirements(env.dependencies.as_deref(), requirements_t),
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
@@ -551,18 +660,52 @@ fn create_job_from_template<'a>(
         &mut check_errors,
     );
     let mut staged = staged::StagedErrors::default();
+    // RFC 0009 `services`: instantiated in job scope before the steps,
+    // since every Step's Task Sessions may reference them, and after the
+    // job environments, in pass 8's order. Each Service sees the Services
+    // it lists in its `dependencies`, and requests Environments with its
+    // `environment:` entries as a Step does, its errors filed after every
+    // Step's. Its scope depends on the Environments every Step's and
+    // Service's Sessions enter, attached ones included, so the submission
+    // stage computes it (§9.1). Its checks report into `check_errors` like
+    // a step's.
+    let step_count = job_template.steps.len();
+    let services = job_template
+        .services
+        .as_ref()
+        .map(|services| {
+            let list_path = [crate::error::PathElement::Field("services".to_string())];
+            services
+                .iter()
+                .enumerate()
+                .map(|(k, svc)| {
+                    instantiate::instantiate_service(
+                        svc,
+                        &symtab,
+                        icx,
+                        &crate::error::path_index(&list_path, k),
+                        crate::template::listed_services(svc.dependencies.as_deref(), services),
+                        job::ServiceScope::AllSteps,
+                        Some(instantiate::ServiceRequester {
+                            index: k,
+                            step_count,
+                            job_envs: &job_envs,
+                        }),
+                        &mut check_errors,
+                        &mut staged,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
 
     let mut steps = Vec::with_capacity(job_template.steps.len());
     for (step_index, st) in job_template.steps.iter().enumerate() {
         steps.push(instantiate::instantiate_step(
             st,
             &symtab,
-            has_expr,
-            template_expr,
-            &limits,
-            ctx,
+            icx,
             step_index,
-            budgets,
             &job_envs,
             job_template
                 .profile()
@@ -571,11 +714,19 @@ fn create_job_from_template<'a>(
             &mut staged,
         )?);
     }
-    // `instantiate_step` only declines to build a step after recording
-    // the failure in `check_errors`. Such a Step cannot be instantiated, so
-    // the submission stage does not run, and the errors so far are
-    // reported, in the shape the inputs give (see `finish_errors`).
-    let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
+    // `instantiate_step` and `instantiate_service` only decline to build
+    // their item after recording the failure in `check_errors`. Such a
+    // Step or Service cannot be instantiated, so the submission stage does
+    // not run, and the errors so far are reported, in the shape the inputs
+    // give (see `finish_errors`).
+    let built_services = match services {
+        None => Some(None),
+        Some(services) => services.into_iter().collect::<Option<Vec<_>>>().map(Some),
+    };
+    let (Some(built), Some(built_services)) = (
+        steps.into_iter().collect::<Option<Vec<_>>>(),
+        built_services,
+    ) else {
         finish_errors(
             check_errors,
             staged,
@@ -583,8 +734,25 @@ fn create_job_from_template<'a>(
             attached_count > 0,
         )?;
         return Err(ModelError::DecodeValidation(
-            "internal error: a step was skipped without a recorded error".to_string(),
+            "internal error: a step or Service was skipped without a recorded error".to_string(),
         ));
+    };
+    let (services, service_selections): (Option<Vec<job::Service>>, Vec<_>) = match built_services {
+        None => (None, Vec::new()),
+        Some(built) => {
+            let mut services = Vec::with_capacity(built.len());
+            let mut selections = Vec::with_capacity(built.len());
+            for (svc, selection, discarded_host_requirements) in built {
+                let selection =
+                    selection.expect("a Job Template Service is resolved as a requester");
+                selections.push(env_params::StepSelection {
+                    discarded_host_requirements,
+                    ..selection
+                });
+                services.push(svc);
+            }
+            (Some(services), selections)
+        }
     };
     let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) =
         built.into_iter().unzip();
@@ -620,8 +788,11 @@ fn create_job_from_template<'a>(
             parameters,
             steps,
             job_environments,
+            services,
+            external_services,
         },
         selections,
+        service_selections,
         job_envs,
         check_errors,
         staged,

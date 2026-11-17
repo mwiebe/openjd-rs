@@ -3,9 +3,14 @@
 ## Purpose
 
 `openjd summary <path>` prints summary information about a job template: its parameters,
-steps, task counts, environments, and dependencies. It can summarize the entire job or a
+steps, task counts, environments, dependencies, and — with the `SERVICE` extension (RFC 0009)
+— its Services and required Services. It can summarize the entire job or a
 single step. The command instantiates the job (resolving parameters and creating the job
-object) to produce accurate task counts that reflect parameter space expansion.
+object) to produce accurate task counts that reflect parameter space expansion. With
+`--environment`, the attached Environment Templates are applied as `run` applies them, so the
+summary is of the combined Job: attached Environments and Services appear, and each
+`externalServices` entry is shown with the attachment that satisfies it (an unsatisfied
+requirement is the same error `run` reports).
 
 ## Interface
 
@@ -62,7 +67,9 @@ execute(args)
   ├── preprocess_job_parameters() → param_values (merging the Environment
   │     Templates' Job Parameters)
   ├── create_job_with_environment_templates() with the --environment
-  │     templates, as `openjd run` does → Job; print its warnings to stderr.
+  │     templates, as `openjd run` does (create_job_details() without any, so
+  │     an `externalServices` entry is shown unsatisfied rather than
+  │     rejected) → Job; print its warnings to stderr.
   │     context: common::submission_context(&job_template), the same one
   │     `openjd run` uses: the caller limits the decode ran under (see
   │     run.md § Session Configuration / check.md § Caller-Limits
@@ -70,11 +77,14 @@ execute(args)
   │     environment_parameters covers the attached Environments. The
   │     Job's job_environments are filtered back to the Job Template's own
   │     (by CreatedJob::environment_documents), so the environment listings
-  │     and counts are unchanged by --environment
+  │     and counts are unchanged by --environment.
+  │     The Job's services keep the attached ones (RFC 0009), and
+  │     CreatedJob::requirement_bindings give each externalServices entry's
+  │     provider (requirement name → attachment label)
   │
   └── Dispatch on --step
       ├── Some(step_name) → output_step_summary(&job, step_name, output_format)
-      └── None → output_job_summary(&job, &param_order, output_format)
+      └── None → output_job_summary(&job, &param_order, &bindings, output_format)
 ```
 
 ## Parameter Definition Order
@@ -172,7 +182,46 @@ a count.
    omitted when there are none. These are shown when the Job Template or any `--environment` template lists
    `ENV_PARAMS` (an attached Environment's `activation` and `hostRequirements` apply when its own
    document lists it); when no document does, none of them is shown, so such a summary is unchanged.
-4. **Environments** — Root (job-level) and step-level environments with names and parent
+   With `SERVICE`, a count that
+   includes a Service dependency reads `3 dependencies (1 Step, 2 Service)` (or `1
+   dependencies (all Services)`) and is followed by `Services: 'Coord', 'Cache'`; a
+   Step-only count stays `N dependencies`.
+4. **Services** (RFC 0009) — each `services` entry (the Job Template's own, then with
+   `--environment` the attached ones, named `<name> (from <document>)`): scope (the
+   `Display` of `job::ServiceScope`: `every Step` / `Step Work` / `Steps A, B`),
+   description, `Ports: api (TCP), metrics (TCP, port 9100)` (protocol, and the pinned
+   number when the template gives one), `Health check: <TYPE>`, `Restart policy:
+   maxRestarts N, completedTasks KEEP|RERUN|none` (`none` when the template gave none,
+   which it may only with `maxRestarts` 0; JSON `"completed_tasks": null`), and
+   `Dependencies: 'Prepare', Service 'Back'` (a `dependsOn` entry as `'Name'`, a `service`
+   entry as `Service 'Name'`) when it lists any. Then, as for a Step and in the same forms
+   indented under the Service: `Session environments:` lists the combined Job Environments
+   its Sessions enter (`job::Service::enters_environment`, RFC 0009 "Services run inside
+   Environments", which chooses them exactly as for a Step: every `ALWAYS` one, every
+   `BY_DEFAULT` one it does not decline, and each `ON_REQUEST` one it requests, less any
+   whose `enableIf` is false for it or that an earlier one of its `exclusiveGroup`
+   supersedes; an attached Service chooses only among its own document's and the earlier
+   attachments' Environments), attached ones first,
+   each with its declaring document, or `(none)`; `Disabled environments:`, `Declined
+   environments:` and `Optional entries not found:` list the Service's
+   `CreatedJob::service_environment_statuses` in the Step's forms, each omitted when it is
+   empty (an attached Service, which requests nothing, has no optional entries);
+   `Host requirements:` lists
+   `job::Service::host_requirements`, which job creation has combined from the Service's own
+   and its entered Environments' (RFC 0009 `<Service>` item 5, Template Schemas §3.3.3),
+   omitted when it has none; `Discarded host requirements:` lists
+   `CreatedJob::discarded_service_host_requirements` for the Service, in the Step's form
+   with `(Service)` for its own, omitted when there are none; and `Environment parameters:` lists the Service's effective
+   values (`job::Service::environment_parameters`, RFC 0009 `<Service>` item 4), omitted when
+   there are none. In the JSON form a Service gets the same keys as a Step:
+   `disabled_environments` (each with its `status`, `exclusive_group` and, for a superseded
+   one, `superseded_by`), `declined_environments` and `optional_entries_not_found`, each
+   omitted when it is empty.
+5. **Required Services** (RFC 0009 §9.8) — each `externalServices` entry with its ports
+   and either `— satisfied by <document>` (the attachment `create_job_with_environment_templates`
+   bound it to) or `— not satisfied: attach an Environment Template that declares it with
+   --environment`.
+6. **Environments** — Root (job-level) and step-level environments with names and parent
    context.
 
 The environment totals, each Step's environment count, and the Environments listing come from
@@ -221,6 +270,26 @@ conda-env-params.yaml`):
       - Packages (STRING): colmap=3.11
 ```
 
+With Services:
+
+```
+2. 'Work' (1 total Tasks)
+  3 dependencies (1 Step, 2 Service)
+    Services: 'Coord', 'Cache'
+
+
+--- Services in 'ServiceJob' ---
+  - Coord (scope: Step Work)
+    Hands out work items.
+    Ports: api (TCP), metrics (TCP, port 9100)
+    Health check: STDOUT
+    Restart policy: maxRestarts 2, completedTasks KEEP
+    Dependencies: 'Prepare'
+
+--- Required Services in 'ServiceJob' ---
+  - Cache (ports: main (TCP), stats (UDP)) — not satisfied: attach an Environment Template that declares it with --environment
+```
+
 ### JSON Format
 
 The JSON output includes a `status` and `message` field for consistency with the Python
@@ -243,6 +312,16 @@ and, when it has any, `host_requirements`, `{"amounts": [{"name", "min"?, "max"?
 amounts as numbers, and, when any were discarded, `discarded_host_requirements`, an array of
 `{"kind", "name", "environment"?}` objects (`kind` is `amount` or `attribute`;
 `environment`, `{"name", "source"}`, is absent for the Step's own).
+With `SERVICE`: a
+step with Service dependencies also carries `service_dependencies` (the Service names, in
+list order; `dependencies` stays the total count); the root carries `services` — each
+`{"name", "description"?, "document"?, "scope", "ports": [{"name", "protocol", "port"?}],
+"health_check", "restart_policy": {"max_restarts", "completed_tasks"}, "dependencies"?:
+[{"step_name"} | {"service_name"}], "session_environments", "host_requirements"?,
+"discarded_host_requirements"?, "environment_parameters"?}`, the last four in a Step's forms
+(`session_environments` always present, possibly empty; the others when non-empty) — and
+`external_services` — each `{"name", "ports": [{"name", "protocol"}], "satisfied_by"?}` — when
+the Job has any.
 
 ### YAML Format
 
@@ -255,7 +334,10 @@ code, so they are always in sync.
 `output_step_summary()` displays details for a single step:
 
 - Total tasks, total task parameters, total environments
-- Dependencies (step names)
+- Dependencies — `'Prepare'` for a Step, `Service 'Coord'` for a Service (JSON:
+  `{"step_name"}` / `{"service_name"}` entries)
+- Services in scope — the Services whose computed scope includes the Step (RFC 0009 §9.1:
+  those it lists, those reached through them, and every Job-wide one; JSON `services`)
 - Parameter definitions (name and type)
 - Environments (name, parent step, description)
 - With `ENV_PARAMS`, the Step's Environment set, the Environments an `enableIf` disabled or
@@ -278,7 +360,7 @@ These private structs organize the collected summary data (the result types that
 it, `JobSummaryResult` and `StepSummaryResult`, are not shown):
 
 ```rust
-struct StepEnvSets {                     // per Step, with ENV_PARAMS
+struct StepEnvSets {                     // per Step with ENV_PARAMS, and per Service
     entered: Vec<SessionEnvInfo>,        // the Environments its Sessions enter
     disabled: Vec<DisabledEnvInfo>,      // disabled by an enableIf or superseded (§4 items 6, 7)
     declined: Vec<SessionEnvInfo>,       // declined by a disabled entry (§3.2 item 3.2)
@@ -299,7 +381,7 @@ struct StepInfo<'a> {
     total_tasks: u64,
     task_params: Vec<(String, String)>,  // (name, type_name)
     envs: Vec<String>,
-    deps: Vec<String>,
+    deps: Vec<DepInfo>,
     env_params: Vec<EnvParamInfo>,
     env_params_details: Option<EnvParamsDetails<'a>>, // Some with ENV_PARAMS
 }
@@ -311,6 +393,7 @@ struct EnvParamsDetails<'a> {
     not_found: &'a [(usize, String)],                 // optional entries that named nothing
     host_requirements: Option<&'a job::HostRequirements>, // combined (§3.3.3)
     discarded: &'a [DiscardedInfo],                   // resolved to nothing (§3.3)
+    owner: &'static str,                              // `Step` or `Service`, for an own discard
 }
 
 struct DiscardedInfo {
@@ -329,6 +412,16 @@ struct EnvParamInfo {
     document: String,                    // `JobTemplate` or the --environment path
     values: Vec<(String, String, String)>, // (name, TYPE, display value), in name order
 }
+
+struct DepInfo { name: String, is_service: bool }           // one `dependencies` entry: dependsOn (false) or service (true)
+struct PortInfo { name: String, protocol: String, port: Option<u16> }
+struct ServiceInfo<'a> {                                    // one `services` entry
+    name: String, description: Option<String>, document: Option<String>, scope: String,
+    ports: Vec<PortInfo>, health_check: String, max_restarts: u64, completed_tasks: Option<String>,
+    deps: Vec<DepInfo>, env_params: Vec<EnvParamInfo>,
+    env_params_details: EnvParamsDetails<'a>,               // as for a Step
+}
+struct RequirementInfo { name: String, ports: Vec<PortInfo>, satisfied_by: Option<String> }
 
 struct ParamInfo {
     name: String,

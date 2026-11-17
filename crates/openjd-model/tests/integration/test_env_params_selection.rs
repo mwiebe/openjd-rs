@@ -92,8 +92,9 @@ fn an_unrecognized_activation_is_rejected() {
         assert_eq!(
             err,
             format!(
-                "Validation error: 'jobtemplate-2023-09' failed checks: unknown variant \
-                 `{value}`, expected one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`"
+                "Model validation error: 1 validation error for JobTemplate\n\
+                 jobEnvironments[0] -> activation:\n\tunknown variant `{value}`, expected \
+                 one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`"
             )
         );
     }
@@ -149,7 +150,7 @@ environment: {name: A, activation: ON_REQUEST, variables: {V: v}}
 "#,
     );
     assert_eq!(
-        et.environment().activation(),
+        et.environment().unwrap().activation(),
         EnvironmentActivation::OnRequest
     );
 }
@@ -289,8 +290,9 @@ fn an_enable_if_that_is_not_a_scalar_or_a_string_is_a_decode_error() {
         .to_string();
         assert_eq!(
             err,
-            "Validation error: 'jobtemplate-2023-09' failed checks: enableIf must be a boolean, \
-             integer, float, or string (an expression field, Template Schemas §7.6)"
+            "Model validation error: 1 validation error for JobTemplate\n\
+             steps[0] -> dependencies[0] -> enableIf:\n\tenableIf must be a boolean, integer, \
+             float, or string (an expression field, Template Schemas §7.6)"
         );
     }
 }

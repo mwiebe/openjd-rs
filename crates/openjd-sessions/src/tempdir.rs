@@ -316,6 +316,14 @@ impl TempDir {
     pub(crate) fn mark_cleaned_up(&mut self) {
         self.cleaned_up = true;
     }
+
+    /// Keep the directory: neither [`cleanup`](Self::cleanup) nor drop
+    /// removes it. For a Session whose working directory the caller asked
+    /// to retain. The public form of `mark_cleaned_up`, which records the
+    /// same thing for a nested directory that another cleanup removes.
+    pub fn keep(&mut self) {
+        self.mark_cleaned_up();
+    }
 }
 
 /// Delays before each retry of a failed [`TempDir::cleanup`]: about 31 s in total.

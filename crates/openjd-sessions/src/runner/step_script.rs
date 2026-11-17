@@ -89,6 +89,13 @@ impl StepScriptRunner {
         self
     }
 
+    /// The Session-wide log tag every record of this runner's actions
+    /// carries. See [`crate::session::SessionConfig::log_tag`].
+    pub fn with_session_tag(mut self, tag: Option<String>) -> Self {
+        self.base.session_tag = tag;
+        self
+    }
+
     #[allow(
         missing_docs,
         reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"

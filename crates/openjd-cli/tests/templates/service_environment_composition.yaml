@@ -1,0 +1,65 @@
+# RFC 0009 "Services run inside Environments" and `<Service>` item 4: a
+# Service Session enters every ALWAYS Job Environment and every ON_REQUEST
+# one the Service requests, each with the Service's own effective values,
+# less any whose enableIf is false for the Service.
+#
+# - Conda (ALWAYS) is entered by both Sessions, each with its own value of
+#   Packages: X's entry supplies one through its `let`, the Step's another.
+# - StepsOnly (ALWAYS) is disabled for X by its enableIf, evaluated with X's
+#   value of Enabled; the Task Session enters it with the default.
+# - ServiceOnly (ON_REQUEST) is requested by X alone.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "ServiceEnvironmentComposition"
+jobEnvironments:
+  - name: Conda
+    envParameterDefinitions:
+      - name: Packages
+        type: STRING
+        default: "base"
+    variables:
+      PKGS: "{{ Env.Param.Packages }}"
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "print('CONDA_ENTER {{ Env.Param.Packages }}')"] }
+  - name: StepsOnly
+    envParameterDefinitions:
+      - name: Enabled
+        type: STRING
+        default: "yes"
+    enableIf: "Env.Param.Enabled == 'yes'"
+    variables:
+      STEPS_ONLY: "set"
+  - name: ServiceOnly
+    activation: ON_REQUEST
+    variables:
+      SERVICE_ONLY: "set"
+services:
+  - name: X
+    let:
+      - pkg = 'valkey-' + Job.Name
+    dependencies:
+      - environment: Conda
+        parameters: { Packages: "{{ pkg }}" }
+      - environment: StepsOnly
+        parameters: { Enabled: "no" }
+      - environment: ServiceOnly
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time; print('SERVICE_SEES', *(os.environ.get(k, 'UNSET') for k in ('PKGS', 'STEPS_ONLY', 'SERVICE_ONLY')), flush=True); print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Use
+    dependencies:
+      - service: X
+      - environment: Conda
+        parameters: { Packages: "python" }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; print('TASK_SEES', *(os.environ.get(k, 'UNSET') for k in ('PKGS', 'STEPS_ONLY', 'SERVICE_ONLY')))"]

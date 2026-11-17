@@ -287,7 +287,8 @@ fn yaml_wrong_case_boolean_is_rejected_for_bool_field() {
     let err = decode_job_template(v, None, &CallerLimits::default()).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Validation error: 'jobtemplate-2023-09' failed checks: \
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> embeddedFiles[0] -> runnable:\n\t\
          invalid type: string \"tRUE\", expected a boolean"
     );
 }

@@ -1,0 +1,45 @@
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+parameterDefinitions:
+  - name: CacheMemoryMiB
+    type: INT
+    default: 8192
+services:
+  - name: Cache
+    description: "A per-Job Valkey store shared by all of the Job's Tasks."
+    dependencies:
+      # CacheClient waits for this Service to be READY, so this Service's own
+      # Sessions decline it. Entering it would be a cycle, which is rejected.
+      - environment: CacheClient
+        enableIf: false
+    hostRequirements:
+      amounts:
+        - name: amount.worker.memory
+          min: 8192
+    ports:
+      - name: main
+    restartPolicy:
+      maxRestarts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: valkey-server
+          args:
+            - "--port"
+            - "{{ Service.Cache.main.port }}"
+            - "--bind"
+            - "{{ Service.Cache.main.bindAddress }}"
+            - "--maxmemory"
+            - "{{ Param.CacheMemoryMiB }}mb"
+environment:
+  name: CacheClient
+  description: "Tells every Task where the Job's Valkey store is."
+  # Depending on the Service is what lets this Environment reference Service.Cache.*.
+  # Every Session that does not decline this Environment enters it. The Cache
+  # Service's own Sessions decline it above.
+  dependencies:
+    - service: Cache
+  variables:
+    VALKEY_HOST: "{{ Service.Cache.main.connectAddress }}"
+    VALKEY_PORT: "{{ Service.Cache.main.port }}"

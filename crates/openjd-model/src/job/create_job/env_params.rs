@@ -60,6 +60,13 @@
 //! (§4.5 item 2, §3.2.2; plan A19): its value cannot depend on the Step,
 //! since its scope is the document's Job Parameters.
 //!
+//! With `SERVICE` (RFC 0009 `<StepDependency>` item 3) a Service requests,
+//! declines and supplies values to Environments exactly as a Step does, so
+//! everything here that is said of a Step applies to a Service too: each
+//! requesting entity is a [`Who`], named `Step 'X'` or `Service 'X'` in
+//! messages, and a Job Template's Service's entries are decided by
+//! [`resolve_step_entries`] through a [`Requester`].
+//!
 //! [`create_job`]: super::create_job
 //! [`apply_environment_templates`]: super::external::apply_environment_templates
 
@@ -106,6 +113,19 @@ pub(crate) struct Supplied<'s> {
     pub(crate) entry_path: Vec<PathElement>,
 }
 
+/// A requesting entity as job creation names and files it: a Step or, with
+/// `SERVICE`, a Service (RFC 0009 `<StepDependency>` item 3).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Who<'s> {
+    /// How messages name it: `Step 'X'` or `Service 'X'`.
+    pub(crate) label: &'s str,
+    /// The index its errors are filed under in [`StagedErrors`]: a Step's
+    /// own index, or for a Service the number of Steps plus the Service's
+    /// index among the Job's Services, so that in each §7.4.1 step a
+    /// Service's errors come after every Step's.
+    pub(crate) index: usize,
+}
+
 /// One Environment that may declare parameters, set up for computing each
 /// Step's effective values and deciding its own `enableIf` for each Step.
 pub(crate) struct DeclaringEnvironment<'a> {
@@ -145,17 +165,18 @@ pub(crate) struct DeclaringEnvironment<'a> {
     /// first use.
     declared_list: OnceCell<String>,
     /// The `enableIf` results so far, one per distinct set of the values
-    /// it reads (§3.2.2), with the Steps they were resolved for, in Step
-    /// order.
+    /// it reads (§3.2.2), with the entities they were resolved for, in the
+    /// order they were decided.
     decisions: RefCell<EnableIfDecisions>,
     /// The names of the parameters the `enableIf` reads, found on first
     /// use ([`enable_if_reads`](Self::enable_if_reads)).
     reads: OnceCell<Option<HashSet<String>>>,
-    /// For an Environment with `activation: ALWAYS`, the Steps its
-    /// `enableIf` is `false` for, in the order they were decided: each is an
-    /// error (§4 item 4, §3.2.2 item 6), reported once for all of them by
+    /// For an Environment with `activation: ALWAYS`, the entities its
+    /// `enableIf` is `false` for, by label and index, in the order they were
+    /// decided: each is an error (§4 item 4, §3.2.2 item 6), reported once
+    /// for all of them by
     /// [`report_enable_if_errors`](Self::report_enable_if_errors).
-    always_disabled: RefCell<Vec<String>>,
+    always_disabled: RefCell<Vec<(String, usize)>>,
 }
 
 /// A resolved `default` (§4.5 item 1): the value converted to the
@@ -177,13 +198,17 @@ struct Effective {
     value: ExprValue,
 }
 
+/// The entities an `enableIf` result was resolved for, by label and index
+/// ([`Who`]), in the order they were decided.
+type Resolvers = Vec<(String, usize)>;
+
 /// An Environment's `enableIf` results, keyed by the values it reads that
 /// they were evaluated with.
 #[derive(Default)]
 struct EnableIfDecisions {
     by_key: HashMap<String, usize>,
-    /// The result, and the names of the Steps it was resolved for.
-    results: Vec<(Result<EnableIf, String>, Vec<String>)>,
+    /// The result, and the entities it was resolved for.
+    results: Vec<(Result<EnableIf, String>, Resolvers)>,
 }
 
 /// What an Environment's own `enableIf` (§4 item 6) decides for one Step
@@ -420,16 +445,16 @@ impl<'a> DeclaringEnvironment<'a> {
         pending
     }
 
-    /// Report the value checks of `pending`, for a Step named `step_name`
-    /// for which the Environment is not disabled, and return its values
-    /// (`None` when a parameter has no value or a check failed). A failed
-    /// resolved `default` is reported once, naming the first Step that
-    /// reports it. The parameters it lacks (constraint 7) are the caller's
+    /// Report the value checks of `pending`, for the requesting entity
+    /// `who` for which the Environment is not disabled, and return its
+    /// values (`None` when a parameter has no value or a check failed). A
+    /// failed resolved `default` is reported once, naming the first entity
+    /// that reports it. The parameters it lacks (constraint 7) are the caller's
     /// to report, from [`PendingValues::missing`], before this is called.
     pub(crate) fn commit(
         &self,
         pending: PendingValues<'a>,
-        step_name: &str,
+        who: Who<'_>,
         errors: &mut ValidationErrors,
     ) -> Option<job::EnvironmentParameterValues> {
         for d in pending.deferred {
@@ -445,8 +470,8 @@ impl<'a> DeclaringEnvironment<'a> {
                     for e in &outcome.errors {
                         let mut e = e.clone();
                         e.message = format!(
-                            "for Step '{step_name}', which does not supply this parameter: {}",
-                            e.message
+                            "for {}, which does not supply this parameter: {}",
+                            who.label, e.message
                         );
                         errors.errors.push(e);
                     }
@@ -456,8 +481,8 @@ impl<'a> DeclaringEnvironment<'a> {
         pending.values
     }
 
-    /// Decide this Environment's own `enableIf` (§4 item 6) for the Step
-    /// named `step_name`, whose effective values for it are `pending`
+    /// Decide this Environment's own `enableIf` (§4 item 6) for the
+    /// requesting entity `who`, whose effective values for it are `pending`
     /// (§3.2.2): absent is [`EnableIf::Enabled`], a boolean scalar is used
     /// as written, and an expression is evaluated in its scope (§7.3.2):
     /// `base`, which holds the document's Job Parameters, `Job.Name`, and
@@ -475,7 +500,7 @@ impl<'a> DeclaringEnvironment<'a> {
     /// reads is used whether or not it meets the parameter's other
     /// constraints.
     ///
-    /// Steps with the same values share one evaluation, whose error, if
+    /// Entities with the same values share one evaluation, whose error, if
     /// any, [`report_enable_if_errors`](Self::report_enable_if_errors)
     /// reports once, naming them all.
     ///
@@ -488,11 +513,11 @@ impl<'a> DeclaringEnvironment<'a> {
     pub(crate) fn decide(
         &self,
         pending: &PendingValues<'_>,
-        step_name: &str,
+        who: Who<'_>,
         base: &SymbolTable,
         policy: ResolvePolicy<'_>,
     ) -> EnableIf {
-        let decision = self.decide_enable_if(pending, step_name, base, policy);
+        let decision = self.decide_enable_if(pending, who, base, policy);
         if self.activation != template::EnvironmentActivation::Always {
             return decision;
         }
@@ -500,7 +525,7 @@ impl<'a> DeclaringEnvironment<'a> {
             EnableIf::Disabled => {
                 self.always_disabled
                     .borrow_mut()
-                    .push(step_name.to_string());
+                    .push((who.label.to_string(), who.index));
                 EnableIf::Enabled
             }
             EnableIf::NotEvaluated => EnableIf::Enabled,
@@ -537,7 +562,7 @@ impl<'a> DeclaringEnvironment<'a> {
     fn decide_enable_if(
         &self,
         pending: &PendingValues<'_>,
-        step_name: &str,
+        who: Who<'_>,
         base: &SymbolTable,
         policy: ResolvePolicy<'_>,
     ) -> EnableIf {
@@ -588,7 +613,7 @@ impl<'a> DeclaringEnvironment<'a> {
         let mut decisions = self.decisions.borrow_mut();
         if let Some(&i) = decisions.by_key.get(&key) {
             let (result, steps) = &mut decisions.results[i];
-            steps.push(step_name.to_string());
+            steps.push((who.label.to_string(), who.index));
             return result.as_ref().map_or(EnableIf::Failed, |r| *r);
         }
         let mut symtab = base.clone();
@@ -621,54 +646,51 @@ impl<'a> DeclaringEnvironment<'a> {
         decisions.by_key.insert(key, index);
         decisions
             .results
-            .push((result, vec![step_name.to_string()]));
+            .push((result, vec![(who.label.to_string(), who.index)]));
         decision
     }
 
     /// Report each failed `enableIf` evaluation of [`decide`](Self::decide)
     /// at `<environment> -> enableIf`, once per set of known values, naming
-    /// the Steps it was resolved for; then, for an Environment with
-    /// `activation: ALWAYS`, one error naming every Step its `enableIf` is
-    /// `false` for (§4 item 4, §3.2.2 item 6). Each goes to `add` with the
-    /// name of the first Step it names, its path and its message.
+    /// the entities it was resolved for; then, for an Environment with
+    /// `activation: ALWAYS`, one error naming every entity its `enableIf`
+    /// is `false` for (§4 item 4, §3.2.2 item 6). Each goes to `add` with
+    /// the [`Who::index`] of the first entity it names, its path and its
+    /// message.
     pub(crate) fn report_enable_if_errors(
         &self,
-        mut add: impl FnMut(&str, Vec<PathElement>, String),
+        mut add: impl FnMut(usize, Vec<PathElement>, String),
     ) {
-        for (result, steps) in &self.decisions.borrow().results {
+        for (result, entities) in &self.decisions.borrow().results {
             let Err(msg) = result else {
                 continue;
             };
-            let names: Vec<String> = steps.iter().map(|s| format!("'{s}'")).collect();
-            let noun = if steps.len() == 1 { "Step" } else { "Steps" };
             // The note goes after the first line, as for host
             // requirements, so an expression error's source and caret
             // lines stay last.
             let note = format!(
-                "Resolved for {noun} {}.",
-                super::host_requirements::name_list(
-                    &names.iter().map(String::as_str).collect::<Vec<_>>()
+                "Resolved for {}.",
+                super::host_requirements::entity_list(
+                    &entities.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>()
                 )
             );
             add(
-                &steps[0],
+                entities[0].1,
                 path_field(&self.env_path, "enableIf"),
                 super::host_requirements::with_note(msg, &note),
             );
         }
         let disabled = self.always_disabled.borrow();
-        if !disabled.is_empty() {
-            let names: Vec<String> = disabled.iter().map(|s| format!("'{s}'")).collect();
-            let noun = if names.len() == 1 { "Step" } else { "Steps" };
+        if let Some((_, first)) = disabled.first() {
             add(
-                &disabled[0],
+                *first,
                 path_field(&self.env_path, "enableIf"),
                 format!(
                     "Environment '{}' has activation ALWAYS, so it cannot be disabled, but its \
-                     enableIf is false for {noun} {} (Template Schemas §4 item 4).",
+                     enableIf is false for {} (Template Schemas §4 item 4).",
                     self.name,
-                    super::host_requirements::name_list(
-                        &names.iter().map(String::as_str).collect::<Vec<_>>()
+                    super::host_requirements::entity_list(
+                        &disabled.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>()
                     )
                 ),
             );
@@ -688,39 +710,69 @@ impl<'a> DeclaringEnvironment<'a> {
     /// the names of parameters with neither a supplied value nor a
     /// `default` (constraint 7) for the caller to report, whatever
     /// `values_checked` is: constraint 7 does not depend on whether the
-    /// Environment is disabled.
+    /// Environment is disabled. Also returns whether the entity's values
+    /// for the Environment are not certainly the accepted literals
+    /// [`values_for_step`](Self::values_for_step) would find: a parameter
+    /// is missing, a literal value or literal `default` it uses fails, or a
+    /// value or `default` it uses is not a literal (only job creation
+    /// resolves it, and may reject it). Constraint 5 alone does not reject
+    /// the values. The RFC 0009 static combination of a Service's or a
+    /// Step's host requirements reads it.
     pub(crate) fn check_step_statically(
         &self,
         supplied: Option<&Supplied<'_>>,
         values_checked: bool,
         policy: ResolvePolicy<'_>,
         errors: &mut ValidationErrors,
-    ) -> Vec<&'a str> {
+    ) -> (Vec<&'a str>, bool) {
         if let Some(s) = supplied {
             self.check_supplied_keys(s, errors);
         }
         let mut missing = Vec::new();
-        for def in self.defs {
+        let mut uncertain = false;
+        for (k, def) in self.defs.iter().enumerate() {
             match supplied.and_then(|s| s.params.get(def.name()).map(|v| (s, v))) {
                 Some((s, value)) => {
                     let path = path_field(&path_field(&s.entry_path, "parameters"), def.name());
-                    if !values_checked {
-                        continue;
-                    }
                     match value {
                         EnvironmentParameterValue::Literal(_) => {
-                            let _ = resolve_value(def, value, s.symtab, policy, &path, errors);
+                            // An unchecked value is still converted, into a
+                            // scratch collection, to learn whether it is
+                            // accepted.
+                            let mut scratch = ValidationErrors::default();
+                            let target = if values_checked {
+                                &mut *errors
+                            } else {
+                                &mut scratch
+                            };
+                            let (_, ok) =
+                                resolve_value(def, value, s.symtab, policy, &path, target);
+                            uncertain |= !ok;
                         }
                         EnvironmentParameterValue::FormatString(fs) => {
-                            tv::check_list_format_string(def.job_param_type(), fs, &path, errors);
+                            if values_checked {
+                                tv::check_list_format_string(
+                                    def.job_param_type(),
+                                    fs,
+                                    &path,
+                                    errors,
+                                );
+                            }
+                            uncertain = true;
                         }
                     }
                 }
-                None if def.default.is_some() => {}
+                // A literal `default` reads no symbols, and its outcome
+                // was reported by `check_literal_defaults`.
+                None if matches!(def.default, Some(EnvironmentParameterValue::Literal(_))) => {
+                    uncertain |= !self.default_outcome(k, &SymbolTable::new(), policy).ok;
+                }
+                None if def.default.is_some() => uncertain = true,
                 None => missing.push(def.name()),
             }
         }
-        missing
+        uncertain |= !missing.is_empty();
+        (missing, uncertain)
     }
 
     /// Constraint 5: every supplied key names a declared parameter. An
@@ -768,17 +820,18 @@ impl<'a> DeclaringEnvironment<'a> {
 }
 
 /// Report, at `step_path`, the parameters without a `default` that a Step
-/// does not supply (constraint 7): one error per Step, with the list
-/// capped as template validation caps it
+/// (or a Service, `noun`) does not supply (constraint 7): one error per
+/// entity, with the list capped as template validation caps it
 /// ([`tv::missing_parameters_message`]). `missing` pairs each
 /// Environment's label with its missing names; `why` says which
-/// Environments apply to the Step, and cites the rule. `disabled` holds the
-/// labels whose groups get the disabled-entry note (see
+/// Environments apply to the entity, and cites the rule. `disabled` holds
+/// the labels whose groups get the disabled-entry note (see
 /// [`tv::missing_parameters_message`]).
 pub(crate) fn report_missing(
     step_path: &[PathElement],
     missing: &[(String, Vec<&str>)],
     why: &str,
+    noun: &str,
     disabled: &HashSet<&str>,
     errors: &mut ValidationErrors,
 ) {
@@ -791,7 +844,7 @@ pub(crate) fn report_missing(
         .flat_map(|(label, names)| names.iter().map(move |n| (label.as_str(), *n)));
     errors.add(
         step_path,
-        tv::missing_parameters_message(pairs, total, why, disabled),
+        tv::missing_parameters_message(pairs, total, why, noun, disabled),
     );
 }
 
@@ -987,10 +1040,12 @@ pub(crate) struct JobEnvironments<'a> {
     /// before its `Env.*` symbols are added: the Job Parameters, `Job.Name`,
     /// and `Job.EnvNames`.
     pub(crate) enable_if_base: SymbolTable,
-    /// The number of attached Environments, which come before the Job
-    /// Environments in the Job's Environment order: the position of
-    /// `jobEnvironments[k]` in that order is `attached_count + k`, which
-    /// files its errors ([`StagedErrors`]).
+    /// The number of attached Environment Templates, whose Environments
+    /// come before the Job Environments in the Job's Environment order:
+    /// `jobEnvironments[k]` files its errors ([`StagedErrors`]) at position
+    /// `attached_count + k`, after every attachment's. A services-only
+    /// attachment (RFC 0009) has no Environment but is counted, as the
+    /// submission stage counts it.
     pub(crate) attached_count: usize,
 }
 
@@ -1050,7 +1105,54 @@ impl<'a> JobEnvironments<'a> {
     }
 }
 
-/// An enabled `environment:` entry of a Step that names no
+/// An entity that requests Environments with `environment:` entries of its
+/// `dependencies`: a Step (RFC 0010) or, with `SERVICE`, a Service of the
+/// Job Template's `services` (RFC 0009 `<StepDependency>` item 3, which
+/// reads RFC 0010's "Step" as "Service" for the entity that requests an
+/// Environment, supplies its values, and is held to its rules).
+pub(crate) struct Requester<'a> {
+    /// Step or Service.
+    pub(crate) kind: tv::RequesterKind,
+    /// Its `name`.
+    pub(crate) name: &'a str,
+    /// The index its errors are filed under ([`Who::index`]).
+    pub(crate) index: usize,
+    /// Its path, `steps[i]` or `services[k]`.
+    pub(crate) path: Vec<PathElement>,
+    /// Its `dependencies`, as written.
+    pub(crate) dependencies: Option<&'a [template::StepDependency]>,
+    /// Its `stepEnvironments` (none for a Service).
+    pub(crate) step_environments: Option<&'a [template::Environment]>,
+}
+
+impl<'a> Requester<'a> {
+    /// Step `index` of a Job Template.
+    pub(crate) fn step(st: &'a template::StepTemplate, index: usize) -> Self {
+        Self {
+            kind: tv::RequesterKind::Step,
+            name: &st.name,
+            index,
+            path: path_index(&path_field(&[], "steps"), index),
+            dependencies: st.dependencies.as_deref(),
+            step_environments: st.step_environments.as_deref(),
+        }
+    }
+
+    /// Service `index` of a Job Template's `services`, in a Job of
+    /// `step_count` Steps.
+    pub(crate) fn service(svc: &'a template::Service, index: usize, step_count: usize) -> Self {
+        Self {
+            kind: tv::RequesterKind::Service,
+            name: &svc.name,
+            index: step_count + index,
+            path: path_index(&path_field(&[], "services"), index),
+            dependencies: svc.dependencies.as_deref(),
+            step_environments: None,
+        }
+    }
+}
+
+/// An enabled `environment:` entry of a Step (or Service) that names no
 /// `jobEnvironments` entry of the Job Template (`ENV_PARAMS`), kept by job
 /// creation for the submission stage, which resolves it against the
 /// attached Environment Templates (Template Schemas §3.2.1).
@@ -1059,7 +1161,8 @@ impl<'a> JobEnvironments<'a> {
 /// external Environment's definitions are known, so they are kept as
 /// written, with `symtab`: the Step-scope symbols (non-PATH `Param.*`,
 /// `RawParam.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's
-/// `let` bindings, `path` values in POSIX) that the values' format
+/// `let` bindings, `path` values in POSIX; for a Service, the same without
+/// `Step.Name`, with its own `let` bindings) that the values' format
 /// strings reference.
 pub(crate) struct FrozenEntry {
     /// The Environment name the entry gives.
@@ -1075,8 +1178,9 @@ pub(crate) struct FrozenEntry {
     pub(crate) symtab: SymbolTable,
 }
 
-/// A disabled `environment:` entry of a Step that names no
-/// `jobEnvironments` entry, kept by job creation for the submission stage.
+/// A disabled `environment:` entry of a Step (or, with `SERVICE`, a
+/// Service) that names no `jobEnvironments` entry, kept by job creation for
+/// the submission stage.
 /// It supplies nothing, so only its name and position are kept.
 pub(crate) struct DisabledEntry {
     /// The Environment name the entry gives.
@@ -1103,8 +1207,8 @@ pub(crate) struct DeferredJobEnvironment<'a> {
     pub(crate) pending: PendingValues<'a>,
 }
 
-/// What job creation decides about one Step's Environments, for the
-/// submission stage.
+/// What job creation decides about one requesting entity's Environments
+/// (a Step's or, with `SERVICE`, a Service's), for the submission stage.
 pub(crate) struct StepSelection<'a> {
     /// The Step's enabled entries that name no Job Environment.
     pub(crate) frozen: Vec<FrozenEntry>,
@@ -1240,15 +1344,20 @@ fn resolve_enable_if(
 /// format strings and `enableIf` (§7.3.2). Both resolve in it as it is,
 /// with POSIX paths: they are TEMPLATE-scope fields, not host context
 /// (Expression Language §1.2.1, §7.6).
+///
+/// `st` is a Step or, with `SERVICE`, a Job Template's Service, whose
+/// entries are decided exactly as a Step's (RFC 0009 `<StepDependency>`
+/// item 3), in its own scope (`<Service>` item 4: no `Step.Name`), with its
+/// errors filed under its [`Requester::index`], after every Step's.
 pub(crate) fn resolve_step_entries<'a>(
-    st: &template::StepTemplate,
-    step_index: usize,
+    st: &Requester<'_>,
     step_symtab: &SymbolTable,
     job_envs: &JobEnvironments<'a>,
     policy: ResolvePolicy<'_>,
     staged: &mut StagedErrors,
 ) -> StepEntries<'a> {
-    let step_path = path_index(&path_field(&[], "steps"), step_index);
+    let step_index = st.index;
+    let step_path = st.path.clone();
     let deps_path = path_field(&step_path, "dependencies");
     let empty = BTreeMap::new();
     // §4 item 6: each Step Environment's own `enableIf`, in the Step's
@@ -1257,7 +1366,7 @@ pub(crate) fn resolve_step_entries<'a>(
     // entries (plan 3 Q7).
     let mut step_environments_enabled = Vec::new();
     let mut step_environments = Vec::new();
-    for (j, env) in st.step_environments.iter().flatten().enumerate() {
+    for (j, env) in st.step_environments.into_iter().flatten().enumerate() {
         let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
         let enabled = resolve_enable_if(
             env.enable_if.as_ref(),
@@ -1289,7 +1398,7 @@ pub(crate) fn resolve_step_entries<'a>(
     let mut failed: HashSet<&str> = HashSet::new();
     let decisions: Vec<Option<bool>> = st
         .dependencies
-        .iter()
+        .into_iter()
         .flatten()
         .enumerate()
         .map(|(j, dep)| {
@@ -1317,7 +1426,7 @@ pub(crate) fn resolve_step_entries<'a>(
                     {
                         staged.at(Stage::Step4, step_index, j).add(
                             &path_field(&entry_path, "enableIf"),
-                            tv::always_entry_disabled_message(&st.name, &de.label),
+                            tv::always_entry_disabled_message(st.kind, st.name, &de.label),
                         );
                     }
                     disabled.insert(env_name);
@@ -1335,7 +1444,13 @@ pub(crate) fn resolve_step_entries<'a>(
     // Job Environments an enabled entry requests.
     let mut requested: HashSet<&str> = HashSet::new();
     let mut frozen = Vec::new();
-    for ((j, dep), decision) in st.dependencies.iter().flatten().enumerate().zip(&decisions) {
+    for ((j, dep), decision) in st
+        .dependencies
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .zip(&decisions)
+    {
         let (Some(env_name), Some(true)) = (dep.environment(), decision) else {
             continue;
         };
@@ -1416,7 +1531,7 @@ pub(crate) fn resolve_step_entries<'a>(
             frozen,
             disabled: st
                 .dependencies
-                .iter()
+                .into_iter()
                 .flatten()
                 .enumerate()
                 .zip(&decisions)

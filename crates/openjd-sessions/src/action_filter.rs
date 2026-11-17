@@ -20,6 +20,8 @@ pub enum ActionMessageKind {
     RedactedEnv,
     UnsetEnv,
     SessionRuntimeLoglevel,
+    /// `openjd_service_ready: <message>` (RFC 0009).
+    ServiceReady,
 }
 
 /// The value associated with a directive callback.
@@ -58,6 +60,7 @@ fn parse_directive(line: &str) -> Option<(ActionMessageKind, &str)> {
         "redacted_env" => ActionMessageKind::RedactedEnv,
         "unset_env" => ActionMessageKind::UnsetEnv,
         "session_runtime_loglevel" => ActionMessageKind::SessionRuntimeLoglevel,
+        "service_ready" => ActionMessageKind::ServiceReady,
         _ => return None,
     };
     Some((kind, payload))
@@ -95,6 +98,14 @@ pub struct ActionFilter {
     redacted_values: HashSet<String>,
     redacted_lines: HashSet<String>,
     log_level: u32,
+    /// The action name every output line (and process-control line) of this
+    /// action is attributed to in the log, when the action runs concurrently
+    /// with another action of the Session. See `session_action_log!`.
+    action_tag: Option<String>,
+    /// The Session-wide tag every record of this action carries, when the
+    /// Session's log is merged with others' (see
+    /// [`LogTag::session`](crate::logging::LogTag::session)).
+    session_tag: Option<String>,
 }
 
 impl ActionFilter {
@@ -106,6 +117,40 @@ impl ActionFilter {
             redacted_values: HashSet::new(),
             redacted_lines: HashSet::new(),
             log_level: 20, // INFO
+            action_tag: None,
+            session_tag: None,
+        }
+    }
+
+    /// Attribute this action's log records to `tag` (RFC 0009 "Concurrency
+    /// with `onRun`" rule 3). `None` (the default) leaves them untagged.
+    pub fn set_action_tag(&mut self, tag: Option<String>) {
+        self.action_tag = tag;
+    }
+
+    /// The action tag set with [`set_action_tag`](Self::set_action_tag).
+    pub fn action_tag(&self) -> Option<&str> {
+        self.action_tag.as_deref()
+    }
+
+    /// Prefix every record of this action with the Session-wide `tag` (see
+    /// [`SessionConfig::log_tag`](crate::session::SessionConfig::log_tag)).
+    /// `None` (the default) adds no session tag.
+    pub fn set_session_tag(&mut self, tag: Option<String>) {
+        self.session_tag = tag;
+    }
+
+    /// The session tag set with [`set_session_tag`](Self::set_session_tag).
+    pub fn session_tag(&self) -> Option<&str> {
+        self.session_tag.as_deref()
+    }
+
+    /// The attribution of this action's records: its session and action
+    /// tags together, as the subprocess loop applies them to every line.
+    pub fn log_tag(&self) -> crate::logging::LogTag<'_> {
+        crate::logging::LogTag {
+            session: self.session_tag(),
+            action: self.action_tag(),
         }
     }
 
@@ -149,17 +194,21 @@ impl ActionFilter {
                         return (callbacks, true, self.apply_redaction(&msg));
                     }
                 },
+                // The status and failure texts travel beyond the log — into
+                // `ActionStatus`, a Service failure's reason, the Results —
+                // so a redacted value is removed from them here, as from the
+                // echoed line.
                 ActionMessageKind::Status => {
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::Status,
-                        value: ActionMessageValue::String(payload.to_string()),
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
                         cancel: false,
                     });
                 }
                 ActionMessageKind::Fail => {
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::Fail,
-                        value: ActionMessageValue::String(payload.to_string()),
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
                         cancel: false,
                     });
                 }
@@ -206,6 +255,18 @@ impl ActionFilter {
                     if let Some(cb) = self.handle_loglevel(payload) {
                         callbacks.push(cb);
                     }
+                }
+                ActionMessageKind::ServiceReady => {
+                    // RFC 0009: the message is informational; whether it is
+                    // honored (the STDOUT health check of a Service's onRun) is the
+                    // consumer's decision, like `Status` — and, like `Status`, it
+                    // travels into the health state and the `is READY: …` log
+                    // line, so it is redacted here.
+                    callbacks.push(FilterCallback {
+                        kind: ActionMessageKind::ServiceReady,
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
+                        cancel: false,
+                    });
                 }
             }
             pass_through = self.echo_openjd_directives;
@@ -421,6 +482,27 @@ impl ActionFilter {
                 }
 
                 if !self.redactions_enabled {
+                    // The directive is dropped (the Session sets no variable
+                    // under this document's profile), but the line is still
+                    // redacted below, so without a notice the author sees
+                    // `NAME=********` and believes the variable was set. Say
+                    // so in the action's own output stream — a WARN
+                    // `COMMAND_OUTPUT` record, as Python's `_action_filter.py`
+                    // does — naming the variable only, never its value. It
+                    // carries the action's tags like every other line of the
+                    // action, and honors `openjd_session_runtime_loglevel`
+                    // like the command output it accompanies.
+                    if self.log_level <= 30 {
+                        crate::session_tagged_log!(
+                            warn,
+                            &self.session_id,
+                            self.log_tag(),
+                            crate::logging::LogContent::COMMAND_OUTPUT,
+                            "Received openjd_redacted_env for '{}' but the REDACTED_ENV_VARS \
+                             extension is not declared; the variable is not set.",
+                            name
+                        );
+                    }
                     // Still notify session about the redacted value for log redaction,
                     // but don't set the env var (handled by session based on extension flag)
                     callbacks.push(FilterCallback {
@@ -513,6 +595,16 @@ pub fn redact_openjd_redacted_env_requests(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_tag_defaults_to_none_and_round_trips() {
+        let mut f = ActionFilter::new("sid", true, false);
+        assert_eq!(f.action_tag(), None);
+        f.set_action_tag(Some("onHealthCheck".into()));
+        assert_eq!(f.action_tag(), Some("onHealthCheck"));
+        f.set_action_tag(None);
+        assert_eq!(f.action_tag(), None);
+    }
 
     fn make_filter(echo: bool, redactions_enabled: bool) -> ActionFilter {
         ActionFilter::new("foo", echo, redactions_enabled)
@@ -718,6 +810,45 @@ mod tests {
         assert_eq!(cbs.len(), 1);
         assert!(pass);
         assert_eq!(msg, "openjd_env: foo=bar");
+    }
+
+    // === openjd_service_ready (RFC 0009) ===
+
+    #[test]
+    fn test_service_ready_parsed() {
+        let mut f = make_filter(true, false);
+        let (cbs, pass, msg) = f.filter_message("openjd_service_ready: listening on 8080", "foo");
+        assert_eq!(
+            cbs,
+            vec![FilterCallback {
+                kind: ActionMessageKind::ServiceReady,
+                value: ActionMessageValue::String("listening on 8080".into()),
+                cancel: false,
+            }]
+        );
+        assert!(pass);
+        assert_eq!(msg, "openjd_service_ready: listening on 8080");
+    }
+
+    #[test]
+    fn test_service_ready_suppressed_when_echo_false() {
+        let mut f = make_filter(false, false);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready: up", "foo");
+        assert_eq!(cbs.len(), 1);
+        assert!(!pass);
+    }
+
+    #[test]
+    fn test_service_ready_requires_space_and_payload() {
+        // Same syntax as every other `openjd_*` message: `: ` then a
+        // non-empty payload. Near misses are ordinary output.
+        let mut f = make_filter(true, false);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready:up", "foo");
+        assert!(cbs.is_empty());
+        assert!(pass);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready: ", "foo");
+        assert!(cbs.is_empty());
+        assert!(pass);
     }
 
     // === test_malformed_does_not_match_no_callback ===
@@ -929,14 +1060,92 @@ mod tests {
 
     #[test]
     fn test_redacted_env_with_warning_no_extension() {
+        testing_logger::setup();
         let mut f = make_filter(true, false);
         let (cbs, _, msg) = f.filter_message("openjd_redacted_env: SECRET_VAR=secret_value", "foo");
         // RedactedEnv callback returned so session can track value for redaction
         assert_eq!(cbs.len(), 1);
         assert_eq!(cbs[0].kind, ActionMessageKind::RedactedEnv);
+        assert_eq!(
+            cbs[0].value,
+            ActionMessageValue::EnvVar {
+                name: "SECRET_VAR".into(),
+                value: "secret_value".into(),
+            }
+        );
+        assert!(!cbs[0].cancel);
         // Message should still be redacted
         assert!(msg.contains("SECRET_VAR=********"));
         assert!(!msg.contains("secret_value"));
+        // The dropped directive is announced in the action's output stream
+        // (a WARN COMMAND_OUTPUT record, like Python), naming the variable
+        // but never its value.
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            assert_eq!(
+                warns[0].body,
+                "Received openjd_redacted_env for 'SECRET_VAR' but the REDACTED_ENV_VARS \
+                 extension is not declared; the variable is not set."
+            );
+            assert_eq!(warns[0].target, "openjd.sessions");
+            assert!(!warns[0].body.contains("secret_value"));
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_without_extension_warning_carries_the_actions_tags() {
+        testing_logger::setup();
+        let mut f = make_filter(true, false);
+        f.set_session_tag(Some("Service Vault".into()));
+        f.set_action_tag(Some("onHealthCheck".into()));
+        f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            assert_eq!(
+                warns[0].body,
+                "[Service Vault] [onHealthCheck] Received openjd_redacted_env for 'TOKEN' but \
+                 the REDACTED_ENV_VARS extension is not declared; the variable is not set."
+            );
+            assert!(!warns[0].body.contains("hunter2"));
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_without_extension_warning_honors_runtime_loglevel() {
+        testing_logger::setup();
+        let mut f = make_filter(true, false);
+        f.filter_message("openjd_session_runtime_loglevel: ERROR", "foo");
+        f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        testing_logger::validate(|logs| {
+            assert!(
+                !logs.iter().any(|l| l.level == log::Level::Warn),
+                "no warning at ERROR level"
+            );
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_with_extension_does_not_warn() {
+        testing_logger::setup();
+        let mut f = make_filter(true, true);
+        let (cbs, _, msg) = f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        assert_eq!(cbs.len(), 1);
+        assert_eq!(cbs[0].kind, ActionMessageKind::RedactedEnv);
+        assert_eq!(msg, "openjd_redacted_env: TOKEN=********");
+        testing_logger::validate(|logs| {
+            assert!(
+                !logs.iter().any(|l| l.level == log::Level::Warn),
+                "no warning when the extension is declared"
+            );
+        });
     }
 
     // === test_redacted_env_uses_fixed_length_redaction ===

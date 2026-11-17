@@ -20,6 +20,7 @@ fn env_with_variables(vars: &[(&str, &str)]) -> Environment {
     Environment {
         name: "E".to_string(),
         description: None,
+        dependencies: None,
         script: None,
         variables: Some(
             vars.iter()

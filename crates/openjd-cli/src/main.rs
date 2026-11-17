@@ -45,8 +45,16 @@ fn format_log_timestamp() -> String {
 }
 
 /// Logger that prints, with timestamps, subprocess command output and the
-/// warnings and errors openjd reports about the session itself. See
-/// [`shows_record`].
+/// warnings and errors openjd reports about the session itself (see
+/// [`shows_record`]), plus the section banners of a Session that carries a
+/// log tag (`openjd_session_tag`) — a Service Session, whose banners the CLI
+/// cannot print itself since the sessions runtime enters its Environments
+/// and runs its actions internally (see [`shows_tagged_record`]). The Task
+/// Session has no tag; the CLI prints its banners directly, so its BANNER
+/// records stay filtered. The Service Session's outermost banners,
+/// `Starting Service:` and `Ending Service:`, are filtered too: the CLI
+/// prints its own framed `Starting Service:` / `Stopping Service:` banners
+/// around the Session, and a second copy of each said nothing new.
 struct SessionLogger;
 
 /// Whether [`SessionLogger`] prints a record: command output
@@ -62,6 +70,31 @@ fn shows_record(content_bits: Option<u64>, level: log::Level) -> bool {
         || (has(LogContent::EXCEPTION_INFO) && level <= log::Level::Warn)
 }
 
+/// The tagged Session banners the CLI's own framed banners already cover.
+const DUPLICATE_SESSION_BANNERS: &[&str] =
+    &["--------- Starting Service: ", "--------- Ending Service: "];
+
+/// Whether [`SessionLogger`] also prints a record of a tagged Session (a
+/// Service Session, RFC 0009) with text `text`: a section banner
+/// (`BANNER`), other than the outermost ones the CLI frames itself
+/// ([`DUPLICATE_SESSION_BANNERS`]); and, with `--verbose`, a health probe
+/// result (`health probe ok` / `health probe failed (n of m): …` / `is not
+/// yet READY: …`), which the sessions runtime records at DEBUG, WARN and
+/// INFO, so the probe timeline of a TCP_CONNECT or STDOUT check, which has
+/// no command output of its own, is visible.
+fn shows_tagged_record(content_bits: Option<u64>, text: &str) -> bool {
+    let Some(bits) = content_bits else {
+        return false;
+    };
+    let has = |flag: LogContent| bits & u64::from(flag.bits()) != 0;
+    if has(LogContent::BANNER) {
+        return !DUPLICATE_SESSION_BANNERS.iter().any(|b| text.contains(b));
+    }
+    log::max_level() >= LevelFilter::Debug
+        && has(LogContent::PROCESS_CONTROL)
+        && (text.contains("health probe") || text.contains("is not yet READY"))
+}
+
 impl Log for SessionLogger {
     fn enabled(&self, _metadata: &Metadata) -> bool {
         true
@@ -70,6 +103,7 @@ impl Log for SessionLogger {
     fn log(&self, record: &Record) {
         struct Visitor {
             bits: Option<u64>,
+            session_tagged: bool,
         }
         impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
             fn visit_pair(
@@ -77,17 +111,25 @@ impl Log for SessionLogger {
                 key: log::kv::Key<'kvs>,
                 value: log::kv::Value<'kvs>,
             ) -> Result<(), log::kv::Error> {
-                if key.as_str() == "openjd_log_content" {
-                    self.bits = value.to_u64();
+                match key.as_str() {
+                    "openjd_log_content" => self.bits = value.to_u64(),
+                    "openjd_session_tag" => self.session_tagged = true,
+                    _ => {}
                 }
                 Ok(())
             }
         }
-        let mut v = Visitor { bits: None };
+        let mut v = Visitor {
+            bits: None,
+            session_tagged: false,
+        };
         let _ = record.key_values().visit(&mut v);
-        if shows_record(v.bits, record.level()) {
+        let text = record.args().to_string();
+        if shows_record(v.bits, record.level())
+            || (v.session_tagged && shows_tagged_record(v.bits, &text))
+        {
             let ts = format_log_timestamp();
-            println!("{ts}\t{}", record.args());
+            println!("{ts}\t{text}");
         }
     }
 

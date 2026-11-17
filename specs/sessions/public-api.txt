@@ -11,6 +11,7 @@ pub openjd_sessions::action::ActionMessage::Progress(f64)
 pub openjd_sessions::action::ActionMessage::RedactedEnv
 pub openjd_sessions::action::ActionMessage::RedactedEnv::name: alloc::string::String
 pub openjd_sessions::action::ActionMessage::RedactedEnv::value: alloc::string::String
+pub openjd_sessions::action::ActionMessage::ServiceReady(alloc::string::String)
 pub openjd_sessions::action::ActionMessage::SetEnv
 pub openjd_sessions::action::ActionMessage::SetEnv::name: alloc::string::String
 pub openjd_sessions::action::ActionMessage::SetEnv::value: alloc::string::String
@@ -65,6 +66,7 @@ pub mod openjd_sessions::embedded_files
 pub use openjd_sessions::embedded_files::EndOfLine
 pub enum openjd_sessions::embedded_files::EmbeddedFilesScope
 pub openjd_sessions::embedded_files::EmbeddedFilesScope::Env
+pub openjd_sessions::embedded_files::EmbeddedFilesScope::Service
 pub openjd_sessions::embedded_files::EmbeddedFilesScope::Step
 impl openjd_sessions::embedded_files::EmbeddedFilesScope
 pub fn openjd_sessions::embedded_files::EmbeddedFilesScope::prefix(&self) -> &'static str
@@ -112,6 +114,9 @@ pub openjd_sessions::error::SessionError::InvalidEnvironmentParameters
 pub openjd_sessions::error::SessionError::InvalidEnvironmentParameters::environment: alloc::string::String
 pub openjd_sessions::error::SessionError::InvalidEnvironmentParameters::reason: alloc::string::String
 pub openjd_sessions::error::SessionError::InvalidPathMappingRule(openjd_expr::path_mapping::InvalidPathMappingRule)
+pub openjd_sessions::error::SessionError::InvalidServiceState
+pub openjd_sessions::error::SessionError::InvalidServiceState::current: openjd_sessions::service_session::ServiceSessionState
+pub openjd_sessions::error::SessionError::InvalidServiceState::expected: alloc::vec::Vec<openjd_sessions::service_session::ServiceSessionState>
 pub openjd_sessions::error::SessionError::InvalidState
 pub openjd_sessions::error::SessionError::InvalidState::current: openjd_sessions::session::SessionState
 pub openjd_sessions::error::SessionError::InvalidState::expected: alloc::vec::Vec<openjd_sessions::session::SessionState>
@@ -125,6 +130,13 @@ pub openjd_sessions::error::SessionError::PathPermissions
 pub openjd_sessions::error::SessionError::PathPermissions::path: alloc::string::String
 pub openjd_sessions::error::SessionError::PathPermissions::reason: alloc::string::String
 pub openjd_sessions::error::SessionError::Runtime(alloc::string::String)
+pub openjd_sessions::error::SessionError::ServicePortUnassigned
+pub openjd_sessions::error::SessionError::ServicePortUnassigned::name: alloc::string::String
+pub openjd_sessions::error::SessionError::ServicePortUnassigned::port: alloc::string::String
+pub openjd_sessions::error::SessionError::ServiceScriptFailed
+pub openjd_sessions::error::SessionError::ServiceScriptFailed::action: alloc::string::String
+pub openjd_sessions::error::SessionError::ServiceScriptFailed::name: alloc::string::String
+pub openjd_sessions::error::SessionError::ServiceScriptFailed::reason: alloc::string::String
 pub openjd_sessions::error::SessionError::SessionCanceled
 pub openjd_sessions::error::SessionError::SubprocessStart
 pub openjd_sessions::error::SessionError::SubprocessStart::command: alloc::string::String
@@ -261,7 +273,26 @@ pub type openjd_sessions::logging::LogContent::Output = openjd_sessions::logging
 pub fn openjd_sessions::logging::LogContent::not(self) -> Self
 impl log::kv::value::ToValue for openjd_sessions::logging::LogContent
 pub fn openjd_sessions::logging::LogContent::to_value(&self) -> log::kv::value::Value<'_>
+pub struct openjd_sessions::logging::LogTag<'a>
+pub openjd_sessions::logging::LogTag::action: core::option::Option<&'a str>
+pub openjd_sessions::logging::LogTag::session: core::option::Option<&'a str>
+impl openjd_sessions::logging::LogTag<'_>
+pub fn openjd_sessions::logging::LogTag<'_>::is_empty(&self) -> bool
+pub fn openjd_sessions::logging::LogTag<'_>::prefix(&self) -> alloc::string::String
+impl<'a> core::clone::Clone for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::clone(&self) -> openjd_sessions::logging::LogTag<'a>
+impl<'a> core::cmp::Eq for openjd_sessions::logging::LogTag<'a>
+impl<'a> core::cmp::PartialEq for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::eq(&self, &openjd_sessions::logging::LogTag<'a>) -> bool
+impl<'a> core::default::Default for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::default() -> openjd_sessions::logging::LogTag<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::logging::LogTag<'a>
+impl<'a> core::marker::StructuralPartialEq for openjd_sessions::logging::LogTag<'a>
 pub fn openjd_sessions::logging::log_section_banner(&str, &str)
+pub fn openjd_sessions::logging::log_section_banner_tagged(&str, core::option::Option<&str>, &str)
+pub fn openjd_sessions::logging::log_session_note_tagged(&str, core::option::Option<&str>, &str)
 pub fn openjd_sessions::logging::log_subsection_banner(&str, &str)
 pub fn openjd_sessions::logging::timestamp_usec() -> u64
 pub mod openjd_sessions::runner
@@ -281,6 +312,7 @@ pub fn openjd_sessions::runner::env_script::EnvironmentScriptRunner::with_echo_o
 pub fn openjd_sessions::runner::env_script::EnvironmentScriptRunner::with_initial_redacted_values(self, alloc::vec::Vec<alloc::string::String>) -> Self
 pub fn openjd_sessions::runner::env_script::EnvironmentScriptRunner::with_limits(self, openjd_sessions::limits::SessionLimits) -> Self
 pub fn openjd_sessions::runner::env_script::EnvironmentScriptRunner::with_redactions(self, bool) -> Self
+pub fn openjd_sessions::runner::env_script::EnvironmentScriptRunner::with_session_tag(self, core::option::Option<alloc::string::String>) -> Self
 pub mod openjd_sessions::runner::step_script
 pub struct openjd_sessions::runner::step_script::StepScriptRunner
 impl openjd_sessions::runner::step_script::StepScriptRunner
@@ -295,6 +327,7 @@ pub fn openjd_sessions::runner::step_script::StepScriptRunner::with_echo_openjd_
 pub fn openjd_sessions::runner::step_script::StepScriptRunner::with_initial_redacted_values(self, alloc::vec::Vec<alloc::string::String>) -> Self
 pub fn openjd_sessions::runner::step_script::StepScriptRunner::with_limits(self, openjd_sessions::limits::SessionLimits) -> Self
 pub fn openjd_sessions::runner::step_script::StepScriptRunner::with_redactions(self, bool) -> Self
+pub fn openjd_sessions::runner::step_script::StepScriptRunner::with_session_tag(self, core::option::Option<alloc::string::String>) -> Self
 pub enum openjd_sessions::runner::CancelMethod
 pub openjd_sessions::runner::CancelMethod::NotifyThenTerminate
 pub openjd_sessions::runner::CancelMethod::NotifyThenTerminate::terminate_delay: core::time::Duration
@@ -324,6 +357,109 @@ impl core::fmt::Display for openjd_sessions::runner::ScriptRunnerState
 pub fn openjd_sessions::runner::ScriptRunnerState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for openjd_sessions::runner::ScriptRunnerState
 impl core::marker::StructuralPartialEq for openjd_sessions::runner::ScriptRunnerState
+pub mod openjd_sessions::service_session
+pub enum openjd_sessions::service_session::ServiceHealth
+pub openjd_sessions::service_session::ServiceHealth::ExitedBeforeReady
+pub openjd_sessions::service_session::ServiceHealth::Failed
+pub openjd_sessions::service_session::ServiceHealth::Failed::message: alloc::string::String
+pub openjd_sessions::service_session::ServiceHealth::Pending
+pub openjd_sessions::service_session::ServiceHealth::Ready
+pub openjd_sessions::service_session::ServiceHealth::Ready::failed_probes: u64
+pub openjd_sessions::service_session::ServiceHealth::Ready::message: core::option::Option<alloc::string::String>
+pub openjd_sessions::service_session::ServiceHealth::TimedOut
+pub openjd_sessions::service_session::ServiceHealth::Unhealthy(openjd_sessions::service_session::ServiceUnhealthy)
+impl openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::is_ready(&self) -> bool
+pub fn openjd_sessions::service_session::ServiceHealth::is_terminal(&self) -> bool
+impl core::clone::Clone for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::clone(&self) -> openjd_sessions::service_session::ServiceHealth
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceHealth
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::eq(&self, &openjd_sessions::service_session::ServiceHealth) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceHealth
+pub enum openjd_sessions::service_session::ServiceSessionState
+pub openjd_sessions::service_session::ServiceSessionState::Created
+pub openjd_sessions::service_session::ServiceSessionState::Ended
+pub openjd_sessions::service_session::ServiceSessionState::Entered
+pub openjd_sessions::service_session::ServiceSessionState::Exited
+pub openjd_sessions::service_session::ServiceSessionState::Running
+pub openjd_sessions::service_session::ServiceSessionState::StartFailed
+impl core::clone::Clone for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::clone(&self) -> openjd_sessions::service_session::ServiceSessionState
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceSessionState
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::eq(&self, &openjd_sessions::service_session::ServiceSessionState) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_sessions::service_session::ServiceSessionState
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceSessionState
+pub struct openjd_sessions::service_session::ServiceRunExit
+pub openjd_sessions::service_session::ServiceRunExit::canceled: bool
+pub openjd_sessions::service_session::ServiceRunExit::exit_code: core::option::Option<i32>
+pub openjd_sessions::service_session::ServiceRunExit::fail_message: core::option::Option<alloc::string::String>
+pub openjd_sessions::service_session::ServiceRunExit::reported_failure: core::option::Option<alloc::string::String>
+pub openjd_sessions::service_session::ServiceRunExit::state: openjd_sessions::action::ActionState
+pub openjd_sessions::service_session::ServiceRunExit::stdout: alloc::string::String
+pub openjd_sessions::service_session::ServiceRunExit::unhealthy: core::option::Option<openjd_sessions::service_session::ServiceUnhealthy>
+impl core::clone::Clone for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::clone(&self) -> openjd_sessions::service_session::ServiceRunExit
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceRunExit
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::eq(&self, &openjd_sessions::service_session::ServiceRunExit) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceRunExit
+pub struct openjd_sessions::service_session::ServiceSession
+impl openjd_sessions::service_session::ServiceSession
+pub fn openjd_sessions::service_session::ServiceSession::action_status(&self) -> core::option::Option<openjd_sessions::action_status::ActionStatus>
+pub fn openjd_sessions::service_session::ServiceSession::cancel_handle(&self) -> openjd_sessions::session::SessionCancelHandle
+pub fn openjd_sessions::service_session::ServiceSession::cancel_run(&self, core::option::Option<core::time::Duration>) -> bool
+pub async fn openjd_sessions::service_session::ServiceSession::end(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::endpoints(&self) -> &openjd_model::job::service_symbols::ServiceEndpoints
+pub async fn openjd_sessions::service_session::ServiceSession::enter(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::exit_watch(&self) -> core::option::Option<tokio::sync::watch::Receiver<core::option::Option<openjd_sessions::service_session::ServiceRunExit>>>
+pub fn openjd_sessions::service_session::ServiceSession::health(&self) -> core::option::Option<openjd_sessions::service_session::ServiceHealth>
+pub fn openjd_sessions::service_session::ServiceSession::health_watch(&self) -> core::option::Option<tokio::sync::watch::Receiver<openjd_sessions::service_session::ServiceHealth>>
+pub async fn openjd_sessions::service_session::ServiceSession::launch(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::launch_count(&self) -> u32
+pub fn openjd_sessions::service_session::ServiceSession::run_exit(&self) -> core::option::Option<openjd_sessions::service_session::ServiceRunExit>
+pub fn openjd_sessions::service_session::ServiceSession::service(&self) -> &openjd_model::job::Service
+pub fn openjd_sessions::service_session::ServiceSession::session(&self) -> &openjd_sessions::session::Session
+pub async fn openjd_sessions::service_session::ServiceSession::start(&mut self) -> core::result::Result<openjd_sessions::service_session::ServiceHealth, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::state(&self) -> openjd_sessions::service_session::ServiceSessionState
+pub async fn openjd_sessions::service_session::ServiceSession::wait_exit(&mut self) -> core::result::Result<openjd_sessions::service_session::ServiceRunExit, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::service_session::ServiceSession::wait_ready(&self) -> core::result::Result<openjd_sessions::service_session::ServiceHealth, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::with_config(openjd_sessions::service_session::ServiceSessionConfig) -> core::result::Result<Self, openjd_sessions::error::SessionError>
+impl core::ops::drop::Drop for openjd_sessions::service_session::ServiceSession
+pub fn openjd_sessions::service_session::ServiceSession::drop(&mut self)
+pub struct openjd_sessions::service_session::ServiceSessionConfig
+pub openjd_sessions::service_session::ServiceSessionConfig::endpoints: openjd_model::job::service_symbols::ServiceEndpoints
+pub openjd_sessions::service_session::ServiceSessionConfig::environment_parameters: alloc::vec::Vec<core::option::Option<openjd_model::job::EnvironmentParameterValues>>
+pub openjd_sessions::service_session::ServiceSessionConfig::environment_profiles: alloc::vec::Vec<core::option::Option<openjd_model::types::ModelProfile>>
+pub openjd_sessions::service_session::ServiceSessionConfig::environments: alloc::vec::Vec<openjd_model::job::Environment>
+pub openjd_sessions::service_session::ServiceSessionConfig::in_scope_endpoints: alloc::vec::Vec<openjd_model::job::service_symbols::ServiceEndpoints>
+pub openjd_sessions::service_session::ServiceSessionConfig::service: openjd_model::job::Service
+pub openjd_sessions::service_session::ServiceSessionConfig::session: openjd_sessions::session::SessionConfig
+pub struct openjd_sessions::service_session::ServiceUnhealthy
+pub openjd_sessions::service_session::ServiceUnhealthy::failed_probes: u64
+pub openjd_sessions::service_session::ServiceUnhealthy::failure_threshold: u64
+pub openjd_sessions::service_session::ServiceUnhealthy::last_failure: alloc::string::String
+impl core::clone::Clone for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::clone(&self) -> openjd_sessions::service_session::ServiceUnhealthy
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceUnhealthy
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::eq(&self, &openjd_sessions::service_session::ServiceUnhealthy) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceUnhealthy
+pub const openjd_sessions::service_session::SERVICE_EXIT_DEFAULT_TIMEOUT: core::time::Duration
+pub const openjd_sessions::service_session::SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT: core::time::Duration
 pub mod openjd_sessions::session
 pub enum openjd_sessions::session::SessionState
 pub openjd_sessions::session::SessionState::Canceling
@@ -354,6 +490,8 @@ pub fn openjd_sessions::session::Session::clone_cancel_writer(&self) -> core::op
 pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
 pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub async fn openjd_sessions::session::Session::enter_environment_with_parameters(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&openjd_model::job::EnvironmentParameterValues>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_parameters_and_profile(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&openjd_model::job::EnvironmentParameterValues>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, core::option::Option<&openjd_model::types::ModelProfile>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_profile(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, core::option::Option<&openjd_model::types::ModelProfile>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::environment_parameters(&self, &str) -> core::option::Option<&openjd_model::job::EnvironmentParameterValues>
 pub fn openjd_sessions::session::Session::environments_entered(&self) -> &[openjd_sessions::session::EnvironmentIdentifier]
 pub fn openjd_sessions::session::Session::evaluate_env_vars(&self, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> std::collections::hash::map::HashMap<alloc::string::String, core::option::Option<alloc::string::String>>
@@ -362,6 +500,7 @@ pub fn openjd_sessions::session::Session::extend_path_mapping_rules(&mut self, a
 pub fn openjd_sessions::session::Session::files_directory(&self) -> &std::path::Path
 pub fn openjd_sessions::session::Session::get_enabled_extensions(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn openjd_sessions::session::Session::job_parameter_values(&self) -> &openjd_model::types::JobParameterValues
+pub fn openjd_sessions::session::Session::log_tag(&self) -> core::option::Option<&str>
 pub fn openjd_sessions::session::Session::override_action_state(&mut self, openjd_sessions::action::ActionState)
 pub fn openjd_sessions::session::Session::path_mapping_rules(&self) -> &[openjd_expr::path_mapping::PathMappingRule]
 pub fn openjd_sessions::session::Session::redact(&self, &str) -> alloc::string::String
@@ -385,6 +524,7 @@ pub openjd_sessions::session::SessionConfig::debug_collect_stdout: bool
 pub openjd_sessions::session::SessionConfig::echo_openjd_directives: bool
 pub openjd_sessions::session::SessionConfig::job_parameter_values: openjd_model::types::JobParameterValues
 pub openjd_sessions::session::SessionConfig::limits: openjd_sessions::limits::SessionLimits
+pub openjd_sessions::session::SessionConfig::log_tag: core::option::Option<alloc::string::String>
 pub openjd_sessions::session::SessionConfig::os_env_vars: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
 pub openjd_sessions::session::SessionConfig::path_mapping_rules: core::option::Option<alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>>
 pub openjd_sessions::session::SessionConfig::profile: core::option::Option<openjd_model::types::ModelProfile>
@@ -440,6 +580,7 @@ impl core::marker::StructuralPartialEq for openjd_sessions::tempdir::StickyBitPo
 pub struct openjd_sessions::tempdir::TempDir
 impl openjd_sessions::tempdir::TempDir
 pub fn openjd_sessions::tempdir::TempDir::cleanup(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::tempdir::TempDir::keep(&mut self)
 pub fn openjd_sessions::tempdir::TempDir::new(core::option::Option<&std::path::Path>, core::option::Option<&str>, core::option::Option<&dyn openjd_sessions::session_user::SessionUser>) -> core::result::Result<Self, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::tempdir::TempDir::path(&self) -> &std::path::Path
 impl core::convert::AsRef<std::path::Path> for openjd_sessions::tempdir::TempDir
@@ -450,7 +591,9 @@ impl core::ops::drop::Drop for openjd_sessions::tempdir::TempDir
 pub fn openjd_sessions::tempdir::TempDir::drop(&mut self)
 pub fn openjd_sessions::tempdir::find_missing_sticky_bit(&std::path::Path) -> core::option::Option<std::path::PathBuf>
 pub fn openjd_sessions::tempdir::openjd_temp_dir(core::option::Option<&std::path::Path>) -> core::result::Result<std::path::PathBuf, openjd_sessions::error::SessionError>
+pub macro openjd_sessions::session_action_log!
 pub macro openjd_sessions::session_log!
+pub macro openjd_sessions::session_tagged_log!
 pub enum openjd_sessions::ActionMessage
 pub openjd_sessions::ActionMessage::CancelMarkFailed
 pub openjd_sessions::ActionMessage::CancelMarkFailed::fail_message: alloc::string::String
@@ -459,6 +602,7 @@ pub openjd_sessions::ActionMessage::Progress(f64)
 pub openjd_sessions::ActionMessage::RedactedEnv
 pub openjd_sessions::ActionMessage::RedactedEnv::name: alloc::string::String
 pub openjd_sessions::ActionMessage::RedactedEnv::value: alloc::string::String
+pub openjd_sessions::ActionMessage::ServiceReady(alloc::string::String)
 pub openjd_sessions::ActionMessage::SetEnv
 pub openjd_sessions::ActionMessage::SetEnv::name: alloc::string::String
 pub openjd_sessions::ActionMessage::SetEnv::value: alloc::string::String
@@ -517,6 +661,45 @@ impl core::fmt::Display for openjd_sessions::runner::ScriptRunnerState
 pub fn openjd_sessions::runner::ScriptRunnerState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for openjd_sessions::runner::ScriptRunnerState
 impl core::marker::StructuralPartialEq for openjd_sessions::runner::ScriptRunnerState
+pub enum openjd_sessions::ServiceHealth
+pub openjd_sessions::ServiceHealth::ExitedBeforeReady
+pub openjd_sessions::ServiceHealth::Failed
+pub openjd_sessions::ServiceHealth::Failed::message: alloc::string::String
+pub openjd_sessions::ServiceHealth::Pending
+pub openjd_sessions::ServiceHealth::Ready
+pub openjd_sessions::ServiceHealth::Ready::failed_probes: u64
+pub openjd_sessions::ServiceHealth::Ready::message: core::option::Option<alloc::string::String>
+pub openjd_sessions::ServiceHealth::TimedOut
+pub openjd_sessions::ServiceHealth::Unhealthy(openjd_sessions::service_session::ServiceUnhealthy)
+impl openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::is_ready(&self) -> bool
+pub fn openjd_sessions::service_session::ServiceHealth::is_terminal(&self) -> bool
+impl core::clone::Clone for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::clone(&self) -> openjd_sessions::service_session::ServiceHealth
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceHealth
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::eq(&self, &openjd_sessions::service_session::ServiceHealth) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceHealth
+pub fn openjd_sessions::service_session::ServiceHealth::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceHealth
+pub enum openjd_sessions::ServiceSessionState
+pub openjd_sessions::ServiceSessionState::Created
+pub openjd_sessions::ServiceSessionState::Ended
+pub openjd_sessions::ServiceSessionState::Entered
+pub openjd_sessions::ServiceSessionState::Exited
+pub openjd_sessions::ServiceSessionState::Running
+pub openjd_sessions::ServiceSessionState::StartFailed
+impl core::clone::Clone for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::clone(&self) -> openjd_sessions::service_session::ServiceSessionState
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceSessionState
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::eq(&self, &openjd_sessions::service_session::ServiceSessionState) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_sessions::service_session::ServiceSessionState
+pub fn openjd_sessions::service_session::ServiceSessionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_sessions::service_session::ServiceSessionState
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceSessionState
 #[non_exhaustive] pub enum openjd_sessions::SessionError
 pub openjd_sessions::SessionError::DuplicateEnvironment
 pub openjd_sessions::SessionError::DuplicateEnvironment::id: alloc::string::String
@@ -539,6 +722,9 @@ pub openjd_sessions::SessionError::InvalidEnvironmentParameters
 pub openjd_sessions::SessionError::InvalidEnvironmentParameters::environment: alloc::string::String
 pub openjd_sessions::SessionError::InvalidEnvironmentParameters::reason: alloc::string::String
 pub openjd_sessions::SessionError::InvalidPathMappingRule(openjd_expr::path_mapping::InvalidPathMappingRule)
+pub openjd_sessions::SessionError::InvalidServiceState
+pub openjd_sessions::SessionError::InvalidServiceState::current: openjd_sessions::service_session::ServiceSessionState
+pub openjd_sessions::SessionError::InvalidServiceState::expected: alloc::vec::Vec<openjd_sessions::service_session::ServiceSessionState>
 pub openjd_sessions::SessionError::InvalidState
 pub openjd_sessions::SessionError::InvalidState::current: openjd_sessions::session::SessionState
 pub openjd_sessions::SessionError::InvalidState::expected: alloc::vec::Vec<openjd_sessions::session::SessionState>
@@ -552,6 +738,13 @@ pub openjd_sessions::SessionError::PathPermissions
 pub openjd_sessions::SessionError::PathPermissions::path: alloc::string::String
 pub openjd_sessions::SessionError::PathPermissions::reason: alloc::string::String
 pub openjd_sessions::SessionError::Runtime(alloc::string::String)
+pub openjd_sessions::SessionError::ServicePortUnassigned
+pub openjd_sessions::SessionError::ServicePortUnassigned::name: alloc::string::String
+pub openjd_sessions::SessionError::ServicePortUnassigned::port: alloc::string::String
+pub openjd_sessions::SessionError::ServiceScriptFailed
+pub openjd_sessions::SessionError::ServiceScriptFailed::action: alloc::string::String
+pub openjd_sessions::SessionError::ServiceScriptFailed::name: alloc::string::String
+pub openjd_sessions::SessionError::ServiceScriptFailed::reason: alloc::string::String
 pub openjd_sessions::SessionError::SessionCanceled
 pub openjd_sessions::SessionError::SubprocessStart
 pub openjd_sessions::SessionError::SubprocessStart::command: alloc::string::String
@@ -717,6 +910,23 @@ pub type openjd_sessions::logging::LogContent::Output = openjd_sessions::logging
 pub fn openjd_sessions::logging::LogContent::not(self) -> Self
 impl log::kv::value::ToValue for openjd_sessions::logging::LogContent
 pub fn openjd_sessions::logging::LogContent::to_value(&self) -> log::kv::value::Value<'_>
+pub struct openjd_sessions::LogTag<'a>
+pub openjd_sessions::LogTag::action: core::option::Option<&'a str>
+pub openjd_sessions::LogTag::session: core::option::Option<&'a str>
+impl openjd_sessions::logging::LogTag<'_>
+pub fn openjd_sessions::logging::LogTag<'_>::is_empty(&self) -> bool
+pub fn openjd_sessions::logging::LogTag<'_>::prefix(&self) -> alloc::string::String
+impl<'a> core::clone::Clone for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::clone(&self) -> openjd_sessions::logging::LogTag<'a>
+impl<'a> core::cmp::Eq for openjd_sessions::logging::LogTag<'a>
+impl<'a> core::cmp::PartialEq for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::eq(&self, &openjd_sessions::logging::LogTag<'a>) -> bool
+impl<'a> core::default::Default for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::default() -> openjd_sessions::logging::LogTag<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::logging::LogTag<'a>
+pub fn openjd_sessions::logging::LogTag<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::logging::LogTag<'a>
+impl<'a> core::marker::StructuralPartialEq for openjd_sessions::logging::LogTag<'a>
 pub struct openjd_sessions::PosixSessionUser
 pub openjd_sessions::PosixSessionUser::group: alloc::string::String
 pub openjd_sessions::PosixSessionUser::user: alloc::string::String
@@ -731,6 +941,67 @@ pub fn openjd_sessions::session_user::PosixSessionUser::as_any(&self) -> &dyn co
 pub fn openjd_sessions::session_user::PosixSessionUser::group(&self) -> &str
 pub fn openjd_sessions::session_user::PosixSessionUser::is_process_user(&self) -> bool
 pub fn openjd_sessions::session_user::PosixSessionUser::user(&self) -> &str
+pub struct openjd_sessions::ServiceRunExit
+pub openjd_sessions::ServiceRunExit::canceled: bool
+pub openjd_sessions::ServiceRunExit::exit_code: core::option::Option<i32>
+pub openjd_sessions::ServiceRunExit::fail_message: core::option::Option<alloc::string::String>
+pub openjd_sessions::ServiceRunExit::reported_failure: core::option::Option<alloc::string::String>
+pub openjd_sessions::ServiceRunExit::state: openjd_sessions::action::ActionState
+pub openjd_sessions::ServiceRunExit::stdout: alloc::string::String
+pub openjd_sessions::ServiceRunExit::unhealthy: core::option::Option<openjd_sessions::service_session::ServiceUnhealthy>
+impl core::clone::Clone for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::clone(&self) -> openjd_sessions::service_session::ServiceRunExit
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceRunExit
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::eq(&self, &openjd_sessions::service_session::ServiceRunExit) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceRunExit
+pub fn openjd_sessions::service_session::ServiceRunExit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceRunExit
+pub struct openjd_sessions::ServiceSession
+impl openjd_sessions::service_session::ServiceSession
+pub fn openjd_sessions::service_session::ServiceSession::action_status(&self) -> core::option::Option<openjd_sessions::action_status::ActionStatus>
+pub fn openjd_sessions::service_session::ServiceSession::cancel_handle(&self) -> openjd_sessions::session::SessionCancelHandle
+pub fn openjd_sessions::service_session::ServiceSession::cancel_run(&self, core::option::Option<core::time::Duration>) -> bool
+pub async fn openjd_sessions::service_session::ServiceSession::end(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::endpoints(&self) -> &openjd_model::job::service_symbols::ServiceEndpoints
+pub async fn openjd_sessions::service_session::ServiceSession::enter(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::exit_watch(&self) -> core::option::Option<tokio::sync::watch::Receiver<core::option::Option<openjd_sessions::service_session::ServiceRunExit>>>
+pub fn openjd_sessions::service_session::ServiceSession::health(&self) -> core::option::Option<openjd_sessions::service_session::ServiceHealth>
+pub fn openjd_sessions::service_session::ServiceSession::health_watch(&self) -> core::option::Option<tokio::sync::watch::Receiver<openjd_sessions::service_session::ServiceHealth>>
+pub async fn openjd_sessions::service_session::ServiceSession::launch(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::launch_count(&self) -> u32
+pub fn openjd_sessions::service_session::ServiceSession::run_exit(&self) -> core::option::Option<openjd_sessions::service_session::ServiceRunExit>
+pub fn openjd_sessions::service_session::ServiceSession::service(&self) -> &openjd_model::job::Service
+pub fn openjd_sessions::service_session::ServiceSession::session(&self) -> &openjd_sessions::session::Session
+pub async fn openjd_sessions::service_session::ServiceSession::start(&mut self) -> core::result::Result<openjd_sessions::service_session::ServiceHealth, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::state(&self) -> openjd_sessions::service_session::ServiceSessionState
+pub async fn openjd_sessions::service_session::ServiceSession::wait_exit(&mut self) -> core::result::Result<openjd_sessions::service_session::ServiceRunExit, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::service_session::ServiceSession::wait_ready(&self) -> core::result::Result<openjd_sessions::service_session::ServiceHealth, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::service_session::ServiceSession::with_config(openjd_sessions::service_session::ServiceSessionConfig) -> core::result::Result<Self, openjd_sessions::error::SessionError>
+impl core::ops::drop::Drop for openjd_sessions::service_session::ServiceSession
+pub fn openjd_sessions::service_session::ServiceSession::drop(&mut self)
+pub struct openjd_sessions::ServiceSessionConfig
+pub openjd_sessions::ServiceSessionConfig::endpoints: openjd_model::job::service_symbols::ServiceEndpoints
+pub openjd_sessions::ServiceSessionConfig::environment_parameters: alloc::vec::Vec<core::option::Option<openjd_model::job::EnvironmentParameterValues>>
+pub openjd_sessions::ServiceSessionConfig::environment_profiles: alloc::vec::Vec<core::option::Option<openjd_model::types::ModelProfile>>
+pub openjd_sessions::ServiceSessionConfig::environments: alloc::vec::Vec<openjd_model::job::Environment>
+pub openjd_sessions::ServiceSessionConfig::in_scope_endpoints: alloc::vec::Vec<openjd_model::job::service_symbols::ServiceEndpoints>
+pub openjd_sessions::ServiceSessionConfig::service: openjd_model::job::Service
+pub openjd_sessions::ServiceSessionConfig::session: openjd_sessions::session::SessionConfig
+pub struct openjd_sessions::ServiceUnhealthy
+pub openjd_sessions::ServiceUnhealthy::failed_probes: u64
+pub openjd_sessions::ServiceUnhealthy::failure_threshold: u64
+pub openjd_sessions::ServiceUnhealthy::last_failure: alloc::string::String
+impl core::clone::Clone for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::clone(&self) -> openjd_sessions::service_session::ServiceUnhealthy
+impl core::cmp::Eq for openjd_sessions::service_session::ServiceUnhealthy
+impl core::cmp::PartialEq for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::eq(&self, &openjd_sessions::service_session::ServiceUnhealthy) -> bool
+impl core::fmt::Debug for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_sessions::service_session::ServiceUnhealthy
+pub fn openjd_sessions::service_session::ServiceUnhealthy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_sessions::service_session::ServiceUnhealthy
 pub struct openjd_sessions::Session
 impl openjd_sessions::session::Session
 pub fn openjd_sessions::session::Session::action_status(&self) -> core::option::Option<openjd_sessions::action_status::ActionStatus>
@@ -743,6 +1014,8 @@ pub fn openjd_sessions::session::Session::clone_cancel_writer(&self) -> core::op
 pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
 pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub async fn openjd_sessions::session::Session::enter_environment_with_parameters(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&openjd_model::job::EnvironmentParameterValues>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_parameters_and_profile(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&openjd_model::job::EnvironmentParameterValues>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, core::option::Option<&openjd_model::types::ModelProfile>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_profile(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, core::option::Option<&openjd_model::types::ModelProfile>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::environment_parameters(&self, &str) -> core::option::Option<&openjd_model::job::EnvironmentParameterValues>
 pub fn openjd_sessions::session::Session::environments_entered(&self) -> &[openjd_sessions::session::EnvironmentIdentifier]
 pub fn openjd_sessions::session::Session::evaluate_env_vars(&self, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> std::collections::hash::map::HashMap<alloc::string::String, core::option::Option<alloc::string::String>>
@@ -751,6 +1024,7 @@ pub fn openjd_sessions::session::Session::extend_path_mapping_rules(&mut self, a
 pub fn openjd_sessions::session::Session::files_directory(&self) -> &std::path::Path
 pub fn openjd_sessions::session::Session::get_enabled_extensions(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn openjd_sessions::session::Session::job_parameter_values(&self) -> &openjd_model::types::JobParameterValues
+pub fn openjd_sessions::session::Session::log_tag(&self) -> core::option::Option<&str>
 pub fn openjd_sessions::session::Session::override_action_state(&mut self, openjd_sessions::action::ActionState)
 pub fn openjd_sessions::session::Session::path_mapping_rules(&self) -> &[openjd_expr::path_mapping::PathMappingRule]
 pub fn openjd_sessions::session::Session::redact(&self, &str) -> alloc::string::String
@@ -774,6 +1048,7 @@ pub openjd_sessions::SessionConfig::debug_collect_stdout: bool
 pub openjd_sessions::SessionConfig::echo_openjd_directives: bool
 pub openjd_sessions::SessionConfig::job_parameter_values: openjd_model::types::JobParameterValues
 pub openjd_sessions::SessionConfig::limits: openjd_sessions::limits::SessionLimits
+pub openjd_sessions::SessionConfig::log_tag: core::option::Option<alloc::string::String>
 pub openjd_sessions::SessionConfig::os_env_vars: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
 pub openjd_sessions::SessionConfig::path_mapping_rules: core::option::Option<alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>>
 pub openjd_sessions::SessionConfig::profile: core::option::Option<openjd_model::types::ModelProfile>
@@ -810,6 +1085,7 @@ pub fn openjd_sessions::SubprocessResult::fmt(&self, &mut core::fmt::Formatter<'
 pub struct openjd_sessions::TempDir
 impl openjd_sessions::tempdir::TempDir
 pub fn openjd_sessions::tempdir::TempDir::cleanup(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
+pub fn openjd_sessions::tempdir::TempDir::keep(&mut self)
 pub fn openjd_sessions::tempdir::TempDir::new(core::option::Option<&std::path::Path>, core::option::Option<&str>, core::option::Option<&dyn openjd_sessions::session_user::SessionUser>) -> core::result::Result<Self, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::tempdir::TempDir::path(&self) -> &std::path::Path
 impl core::convert::AsRef<std::path::Path> for openjd_sessions::tempdir::TempDir

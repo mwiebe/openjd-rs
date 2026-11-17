@@ -18,9 +18,39 @@ pub enum ActionMessage {
     SetEnv { name: String, value: String },
     UnsetEnv { name: String },
     RedactedEnv { name: String, value: String },
+    ServiceReady(String),
     CancelMarkFailed { fail_message: String },
 }
 ```
+
+### `ServiceReady` — `openjd_service_ready: <message>` (RFC 0009)
+
+The `SERVICE` extension adds one message. `ActionFilter` parses it exactly
+like the others (`openjd_service_ready`, then `: `, then a non-empty payload;
+near-misses are ordinary output), echoes it under `echo_openjd_directives`,
+and the subprocess loop forwards it as `ActionMessage::ServiceReady(message)`.
+It carries no cancel flag.
+
+Which consumer honors it is a scope decision, not the filter's:
+
+| Consumer | Effect |
+|---|---|
+| `ServiceSession` background `onRun` driver, health check type `STDOUT` | The first line makes the instance READY with `message`. Afterwards, when the check gives `healthIntervalSeconds`, each line is a heartbeat (a successful health probe that resets the failure count and restarts the interval); without it later lines have no effect. A line drained after `onRun` exited does neither (onRun exit wins, constraint 10). |
+| `ServiceSession` `onRun` driver, health check type `TCP_CONNECT` or `COMMAND` | Logged as ignored. |
+| `ServiceSession` `onEnter` / `onExit` | Logged as ignored. |
+| `ServiceSession` `onHealthCheck` driver | Logged as ignored, like every message on the check's stdout (RFC 0009 §9.7.1 rule 2: the check's result is its exit status). |
+| `Session` (Environment actions, Tasks, ad-hoc subprocesses) | Ignored silently in `apply_message`. |
+
+See [service-session.md](service-session.md) for the per-action message table
+of a Service Session (notably: `SetEnv` / `UnsetEnv` / `RedactedEnv` /
+`CancelMarkFailed` are honored from a Service's `onEnter` only and are logged
+as ignored from `onRun`, `onHealthCheck`, and `onExit`; from
+`onHealthCheck` *every* message, `Fail` / `Status` / `Progress` included,
+is logged and ignored, and a `Fail` does not change the invocation's
+result). Under `WRAP_ACTIONS` the messages are scanned on the wrap script's
+stdout, so a wrapped `onEnter`'s `SetEnv` and a wrapped `onRun`'s
+`ServiceReady` are honored when the wrapper forwards the wrapped process's
+output.
 
 ### Why an enum instead of a trait or callback
 

@@ -1,0 +1,22 @@
+# Job Template for the per-document profile test. It declares neither
+# REDACTED_ENV_VARS nor any Environment of its own: the Environment carrying
+# the redacted directive comes from service_env_profile_per_document_secrets_env.yaml,
+# attached first, and the external Service R from
+# service_env_profile_per_document_env.yaml, attached after it. R's Service
+# Session enters Secrets (an external Service enters the Environments of
+# Environment Templates attached before its own) under the Secrets
+# document's profile, so the directive is honored there with no warning.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "EnvProfilePerDocument"
+externalServices:
+  - name: R
+    ports: [{ name: main }]
+steps:
+  - name: Use
+    dependencies: [{ service: "R" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; print('TASK_SECRET_SET', 'MY_SECRET' in os.environ)"]

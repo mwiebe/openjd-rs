@@ -1,0 +1,34 @@
+# A Service scoped to one Step through an ON_REQUEST Job Environment that
+# lists it and that only that Step requests (scope rule 3). The Environment
+# references the Service's port, so the Service must be READY before the
+# Task Session enters it, also for a Step that is not the first one run;
+# Step B, which does not request it, runs before Step A without starting
+# the Service.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: StepScopedClient
+jobEnvironments:
+  - name: Client
+    activation: ON_REQUEST
+    dependencies: [{ service: Coord }]
+    variables: { CPORT: "{{ Service.Coord.main.port }}" }
+services:
+  - name: Coord
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(60)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: B
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_B_RAN')"] } } }
+  - name: A
+    dependencies: [{ dependsOn: B }, { environment: Client }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; print('CPORT=' + os.environ['CPORT'])"]

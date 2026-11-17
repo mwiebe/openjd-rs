@@ -156,3 +156,47 @@ Currently implements `2023-09` with extensions:
   8–10, after *exclusiveGroup* as item 7; each plan cites the numbering of the spec it targets. Not yet implemented
   in the Python reference (`openjd-model-for-python`), so there is no Python behavior to
   match.
+- `SERVICE` (RFC 0009) — implemented. The `<Service>` schema (one `services`
+  list per document, `externalServices` on a Job Template, the §9 sub-objects
+  incl. `dependencies` and `<ServiceRequirement>`), the extension gating and
+  the prerequisites (`SERVICE` requires `EXPR` and `ENV_PARAMS`), the §9.9 structural checks (incl. `completedTasks`
+  required when `maxRestarts` > 0), the `<StepDependency>` forms (`dependsOn`
+  / `step` a Step, `service` a Service, `environment` an Environment — the last
+  also in a Job Template Service's `dependencies`; exactly one;
+  `DependencyTarget`; the `service` key gated without `SERVICE`; wrong-key
+  hints), the Job Environments each Service's Sessions enter (every `ALWAYS`
+  one and every `BY_DEFAULT` one it does not decline, plus the `ON_REQUEST` ones it requests, less
+  any whose `enableIf` is false for it or that its `exclusiveGroup` rule leaves out, exactly as for
+  a Step; `template::Entrances`), Service scope
+  computed from those `dependencies` and entrances (`template::service_scope`:
+  the four §9.1 rules, cycle detection over the combined Step/Service/Job-
+  Environment dependency graph, unused-Service rejection), the four
+  `onWrapService*` hooks and RFC 0009 wrap hook rule 1, the Environment
+  Template root changes
+  (`$schema`, optional `environment`, "at least one of"); the `Service.*` /
+  `Service.File.*` format-string scope with the §9 scope rules (an inline
+  Service visible to a Step or Service that lists it in `dependencies` and to
+  Job Environments that list it, required Services' declared ports,
+  no `Service.*` in any field resolved at job
+  creation, §9 visibility rule, §9 job-creation exclusion) and their diagnostics
+  (`service_diagnostics.rs`), the `WrappedService.*` wrap-hook variables,
+  pass-8 validation of every format string and `let` inside a Service, job
+  creation of Services (`job::Service` with its computed `scope`,
+  `dependencies`, the `environments` it enters with its own
+  `environment_parameters`, `enters_environment`, and combined
+  `host_requirements`; `Job::services`, `Job::external_services`, resolved
+  `<Service>.let` and numeric fields, job-side Service hooks), the
+  runtime-facing `job::service_symbols` builders, and the submission stage
+  (in `create_job_with_environment_templates`: §1.2.2 external Services merged before the
+  Job's `services`, each with its §9.1 scope over the combined Job and
+  stamped with its `job::Document`, requirement matching with `RequirementBinding`s, the
+  wrap hook rule 1 check, per-document profiles via
+  `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
+  pass 8 "Service scopes", passes 10 and 12, and "Submission-time checks" in
+  [validation.md](validation.md), "Services" and
+  "Services from Environment Templates" in [job-creation.md](job-creation.md), and
+  [job-types.md](job-types.md). Execution lives in `openjd-sessions`
+  (`ServiceSession`) and orchestration in `openjd-cli` (`openjd run`, which
+  calls `create_job_with_environment_templates`), which passes each
+  Service's own `job::Service::environment_parameters` (one per entered
+  Environment) as `ServiceSessionConfig::environment_parameters`.

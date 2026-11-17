@@ -2,81 +2,232 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Validate or reject `WRAP_ACTIONS` features (RFC 0008).
+//! Validate or reject `WRAP_ACTIONS` features (RFC 0008), including the
+//! RFC 0009 Service hooks.
 //!
-//! Three fields are gated by the `WRAP_ACTIONS` extension:
-//! - `onWrapEnvEnter` on `<EnvironmentActions>`
-//! - `onWrapTaskRun` on `<EnvironmentActions>`
-//! - `onWrapEnvExit` on `<EnvironmentActions>`
+//! Seven fields on `<EnvironmentActions>` are gated by the `WRAP_ACTIONS`
+//! extension:
+//! - `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit` (RFC 0008)
+//! - `onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceHealthCheck`,
+//!   `onWrapServiceExit` (RFC 0009) — these additionally require `SERVICE`.
 //!
 //! When the extension is not enabled, using any of these fields is a
 //! validation error. When it is enabled, we additionally enforce the
-//! constraints from RFC 0008:
+//! constraints from RFC 0008 and RFC 0009 (Template Schemas §4.3,
+//! "WRAP_ACTIONS extension constraints"):
 //!
-//! - **All-or-nothing.** An environment that defines any of the three
-//!   wrap hooks must define all three.
-//! - **Single-layer.** At most one environment in the session stack
-//!   (each step's Environment set: the job environments its sessions
-//!   enter, by `activation` and its `environment:` entries, plus its step
-//!   environments, less any whose `enableIf` is `false`) may define any wrap hook. Template validation
-//!   counts only the Environments certainly entered; job creation checks
-//!   the final set.
-//! - **EXPR prerequisite.** A template that lists `WRAP_ACTIONS` in
-//!   `extensions:` must also list `EXPR`.
+//! - **All-or-nothing** (constraint 1; without `SERVICE`). An environment
+//!   that defines any of the three RFC 0008 wrap hooks must define all
+//!   three.
+//! - **Every action inside a wrapper is wrapped** (RFC 0009 wrap hook rule
+//!   1; with `SERVICE`, replacing the all-or-nothing rule). A wrapping
+//!   environment — one that defines any wrap hook — must define the hook
+//!   for every kind of action a kind of Session entering it may run inside
+//!   it: `onWrapEnvEnter`, `onWrapTaskRun`, and `onWrapEnvExit` if any Task
+//!   Session enters it, and `onWrapEnvEnter`, `onWrapEnvExit`, and the four
+//!   `onWrapService*` hooks if any Service Session enters it. A hook for a
+//!   kind of action that never runs inside it is permitted. The check is
+//!   made here for a kind of Session known to enter the wrapper ([`Entrances`]
+//!   for a Job Environment; its Step, for a Step Environment whose
+//!   `enableIf` is absent or `true`), and otherwise when the Job is
+//!   created; an Environment Template's wrapper is checked when the Job is
+//!   created, against the Sessions that enter it in the combined Job.
+//! - **Single-layer** (constraint 2). At most one environment in the
+//!   session stack (each step's Environment set: the job environments its
+//!   sessions enter, by `activation` and its `environment:` entries, plus
+//!   its step environments, less any
+//!   whose `enableIf` is `false`; each Service's: the job environments its
+//!   Sessions enter) may define any wrap hook. Template validation counts
+//!   only the Environments certainly entered; job creation checks the final
+//!   set.
+//! - **EXPR prerequisite** (constraint 3). A template that lists
+//!   `WRAP_ACTIONS` in `extensions:` must also list `EXPR`.
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::actions::EnvironmentActions;
 use std::collections::HashSet;
 
 use crate::template::{
-    Environment, EnvironmentActivation, EnvironmentTemplate, JobTemplate, KnownEntry,
+    Entrance, Entrances, Environment, EnvironmentActivation, EnvironmentTemplate, JobTemplate,
+    KnownEntry, WrapHookScope,
 };
 use crate::types::{ModelExtension, ValidationContext};
+
+/// Which extensions govern the wrap hooks, computed once per template.
+#[derive(Debug, Clone, Copy)]
+struct WrapGating {
+    /// `WRAP_ACTIONS` is declared.
+    wrap_active: bool,
+    /// `SERVICE` is declared.
+    service_active: bool,
+}
+
+/// The entities known at template validation to enter a wrapping
+/// environment, one of each kind of Session, as messages name them
+/// (`Step 'S'`, `Service 'C'`): wrap hook rule 1 is checked here for each
+/// kind that has one.
+#[derive(Default)]
+struct KnownEntrants {
+    task: Option<String>,
+    service: Option<String>,
+}
 
 /// Check one environment's `<EnvironmentActions>` for wrap hook usage.
 ///
 /// Reports every offending field individually so users see a complete list
 /// rather than having to fix them one at a time. Also enforces the
-/// all-or-nothing rule when the extension is enabled.
+/// all-or-nothing rule (RFC 0008) or, when `SERVICE` is declared, wrap hook
+/// rule 1 (RFC 0009) that replaces it, for the kinds of Session `entrants`
+/// knows to enter the environment.
 fn check_environment_actions(
     actions: &EnvironmentActions,
     actions_path: &[PathElement],
-    active: bool,
+    entrants: &KnownEntrants,
+    gating: WrapGating,
     errors: &mut ValidationErrors,
 ) {
     let wrap_hooks = actions.wrap_hooks();
-    for (name, slot, _) in wrap_hooks {
-        if slot.is_some() && !active {
-            errors.add(
-                &path_field(actions_path, name),
-                format!("{name} requires the WRAP_ACTIONS extension."),
-            );
+    for (name, slot, scope) in wrap_hooks {
+        if slot.is_none() {
+            continue;
         }
+        let needs_service = scope == WrapHookScope::Service;
+        let missing: &str = match (gating.wrap_active, needs_service && !gating.service_active) {
+            (true, false) => continue,
+            (false, false) => "the WRAP_ACTIONS extension",
+            (true, true) => "the SERVICE extension",
+            (false, true) => "the WRAP_ACTIONS and SERVICE extensions",
+        };
+        errors.add(
+            &path_field(actions_path, name),
+            format!("{name} requires {missing}."),
+        );
     }
 
-    // All-or-nothing rule (RFC 0008): an env that defines any wrap hook
-    // must define all three. Only enforced when the extension is active —
+    // The completeness rules are only enforced when WRAP_ACTIONS is active —
     // otherwise the per-hook errors above already cover it.
-    if active {
-        let defined = wrap_hooks
-            .iter()
-            .filter(|(_, slot, _)| slot.is_some())
-            .count();
-        if defined > 0 && defined < wrap_hooks.len() {
-            errors.add(
-                actions_path,
-                "an environment that defines any of onWrapEnvEnter, onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).",
-            );
+    if !gating.wrap_active {
+        return;
+    }
+
+    if gating.service_active {
+        let defined = defined_wrap_hooks(&wrap_hooks);
+        if let Some(message) = wrap_hook_rule_1(&defined, entrants.task.as_deref(), true) {
+            errors.add(actions_path, message);
         }
+        if let Some(message) = wrap_hook_rule_1(&defined, entrants.service.as_deref(), false) {
+            errors.add(actions_path, message);
+        }
+        return;
+    }
+
+    // All-or-nothing rule (RFC 0008, without SERVICE): an env that defines
+    // any of the three RFC 0008 wrap hooks must define all three. The RFC
+    // 0009 Service hooks are not part of this count; each of them has
+    // already been rejected above for lacking SERVICE.
+    let rfc0008_hooks: Vec<_> = wrap_hooks
+        .iter()
+        .filter(|(_, _, scope)| *scope != WrapHookScope::Service)
+        .collect();
+    let defined = rfc0008_hooks
+        .iter()
+        .filter(|(_, slot, _)| slot.is_some())
+        .count();
+    if defined > 0 && defined < rfc0008_hooks.len() {
+        errors.add(
+            actions_path,
+            "an environment that defines any of onWrapEnvEnter, onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).",
+        );
+    }
+}
+
+/// Wrap hook rule 1 (RFC 0009) for one kind of Session: the hooks a
+/// wrapping environment with the hooks `defined` (each name and whether it
+/// is defined) must define for the actions that kind of Session runs inside
+/// it — `onWrapEnvEnter`, `onWrapTaskRun`, and `onWrapEnvExit` for a Task
+/// Session (`task`), and `onWrapEnvEnter`, `onWrapEnvExit`, and the four
+/// `onWrapService*` hooks for a Service Session — and those of them it
+/// lacks. `None` when nothing is missing or the environment defines no wrap
+/// hook.
+pub(crate) fn missing_wrap_hooks(
+    defined: &[(&'static str, bool)],
+    task: bool,
+) -> Option<(Vec<&'static str>, Vec<&'static str>)> {
+    if !defined.iter().any(|(_, d)| *d) {
+        return None;
+    }
+    let is_defined = |name: &str| defined.iter().any(|(n, d)| *n == name && *d);
+    let mut required: Vec<&'static str> = vec!["onWrapEnvEnter"];
+    if task {
+        required.push("onWrapTaskRun");
+    }
+    required.push("onWrapEnvExit");
+    if !task {
+        required.extend([
+            "onWrapServiceEnter",
+            "onWrapServiceRun",
+            "onWrapServiceHealthCheck",
+            "onWrapServiceExit",
+        ]);
+    }
+    let missing: Vec<&'static str> = required
+        .iter()
+        .copied()
+        .filter(|n| !is_defined(n))
+        .collect();
+    (!missing.is_empty()).then_some((required, missing))
+}
+
+/// `a`, `a and b`, or `a, b, and c`, for hook names in messages.
+pub(crate) fn join_hook_names(names: &[&str]) -> String {
+    join_names(names)
+}
+
+/// Wrap hook rule 1 at template validation: the message for a wrapping
+/// environment that the Sessions of `entrant` (`Step 'S'`, `Service 'C'`)
+/// are known to enter, when it lacks hooks for them; see
+/// [`missing_wrap_hooks`].
+fn wrap_hook_rule_1(
+    defined: &[(&'static str, bool)],
+    entrant: Option<&str>,
+    task: bool,
+) -> Option<String> {
+    let entrant = entrant?;
+    let (required, missing) = missing_wrap_hooks(defined, task)?;
+    Some(format!(
+        "the Sessions of {entrant} enter this wrapping environment, which therefore must define \
+         {}; missing: {} (RFC 0009 wrap hook rule 1).",
+        join_names(&required),
+        missing.join(", ")
+    ))
+}
+
+/// Each wrap hook's name and whether it is defined, from an
+/// `<EnvironmentActions>`' `wrap_hooks()`, template or job side.
+pub(crate) fn defined_wrap_hooks<A>(
+    hooks: &[(&'static str, &Option<A>, WrapHookScope)],
+) -> Vec<(&'static str, bool)> {
+    hooks.iter().map(|(n, s, _)| (*n, s.is_some())).collect()
+}
+
+/// `a`, `a and b`, or `a, b, and c`.
+fn join_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [a, b] => format!("{a} and {b}"),
+        [init @ .., last] => format!("{}, and {last}", init.join(", ")),
     }
 }
 
 /// Walk one environment for WRAP_ACTIONS gating and return whether it
 /// defined any wrap hook (used for the single-layer check upstream).
+/// `entrants` are the entities known to enter it, for wrap hook rule 1.
 fn check_env(
     env: &Environment,
     path: &[PathElement],
-    active: bool,
+    entrants: KnownEntrants,
+    gating: WrapGating,
     errors: &mut ValidationErrors,
 ) -> bool {
     let Some(script) = &env.script else {
@@ -84,7 +235,7 @@ fn check_env(
     };
     let script_path = path_field(path, "script");
     let actions_path = path_field(&script_path, "actions");
-    check_environment_actions(&script.actions, &actions_path, active, errors);
+    check_environment_actions(&script.actions, &actions_path, &entrants, gating, errors);
     script.actions.has_any_wrap_hook()
 }
 
@@ -101,21 +252,38 @@ pub(super) fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut Vali
     }
 }
 
-/// Validate RFC 0008 constraints for a job template.
+fn gating_for(ctx: &ValidationContext) -> WrapGating {
+    WrapGating {
+        wrap_active: ctx.profile.has_extension(ModelExtension::WrapActions),
+        service_active: ctx.profile.has_extension(ModelExtension::Service),
+    }
+}
+
+/// Validate RFC 0008 (and RFC 0009 Service hook) constraints for a job
+/// template.
 ///
 /// This runs regardless of whether `WRAP_ACTIONS` is enabled:
 /// - When disabled, it rejects templates that attempt to use any of the
 ///   new fields.
 /// - When enabled, it additionally enforces the EXPR prerequisite, the
-///   all-or-nothing rule, and the single-wrap-layer rule per session.
+///   all-or-nothing rule (or, with `SERVICE`, wrap hook rule 1 for the
+///   kinds of Session known to enter each wrapper), and the
+///   single-wrap-layer rule per session.
 pub fn validate_wrap_actions_job_template(
     jt: &JobTemplate,
     ctx: &ValidationContext,
     known: &super::format_strings::KnownEnableIfs,
     errors: &mut ValidationErrors,
 ) {
-    let active = ctx.profile.has_extension(ModelExtension::WrapActions);
+    let gating = gating_for(ctx);
+    let active = gating.wrap_active;
     check_expr_prerequisite(ctx, errors);
+    // Which entities are known to enter each Job Environment (RFC 0009
+    // "Services run inside Environments"), for wrap hook rule 1 and the
+    // Service Sessions' single-layer rule.
+    let entrances = Entrances::from_known(jt, known);
+    let first_known =
+        |of: &[Vec<Entrance>], e: usize| of.iter().position(|row| row[e] == Entrance::Enters);
 
     // Single-wrap-layer enforcement (RFC 0008).
     //
@@ -164,11 +332,19 @@ pub fn validate_wrap_actions_job_template(
         for (i, env) in envs.iter().enumerate() {
             // `check_env` gates the hooks whatever the Environment's
             // `enableIf`; only one certainly entered is counted.
+            let entrants = KnownEntrants {
+                task: first_known(&entrances.steps, i)
+                    .map(|s| format!("Step '{}'", jt.steps[s].name)),
+                service: first_known(&entrances.services, i)
+                    .map(|k| format!("Service '{}'", jt.services()[k].name)),
+            };
             // A grouped one is never certainly entered before the
             // Environment Templates are known: one of its group may come
             // first and supersede it (§4 item 7, and the paragraph after
             // item 10).
-            if check_env(env, &path_index(&envs_path, i), active, errors) && env.group().is_none() {
+            if check_env(env, &path_index(&envs_path, i), entrants, gating, errors)
+                && env.group().is_none()
+            {
                 let enabled = known.job_environment(i);
                 if env.activation() == EnvironmentActivation::OnRequest {
                     if env.certainly_entered(enabled, KnownEntry::Enabled) {
@@ -251,9 +427,15 @@ pub fn validate_wrap_actions_job_template(
         let envs_path = path_field(&base, "stepEnvironments");
         let mut step_env_wrap_count = 0usize;
         for (j, env) in envs.iter().enumerate() {
-            if check_env(env, &path_index(&envs_path, j), active, errors)
-                && known.step_environment(i, j) == Some(true)
-            {
+            // A Step Environment is entered only by its Step's Task
+            // Sessions; they are known to enter it when its `enableIf` is
+            // known to be `true` (§7.6 rule 5).
+            let enabled = known.step_environment(i, j) == Some(true);
+            let entrants = KnownEntrants {
+                task: enabled.then(|| format!("Step '{}'", step.name)),
+                service: None,
+            };
+            if check_env(env, &path_index(&envs_path, j), entrants, gating, errors) && enabled {
                 step_env_wrap_count += 1;
             }
         }
@@ -274,32 +456,73 @@ pub fn validate_wrap_actions_job_template(
             errors.add(&at, SINGLE_WRAP_LAYER_MSG);
         }
     }
+
+    // 3. A Service Session's stack is the Job Environments its Sessions
+    //    enter (RFC 0009 "Services run inside Environments"); count those
+    //    known to be entered.
+    if active {
+        let envs = jt.job_environments.as_deref().unwrap_or(&[]);
+        for (k, row) in entrances.services.iter().enumerate() {
+            let layers = envs
+                .iter()
+                .zip(row)
+                .filter(|(env, entrance)| {
+                    **entrance == Entrance::Enters
+                        && env
+                            .script
+                            .as_ref()
+                            .is_some_and(|s| s.actions.has_any_wrap_hook())
+                })
+                .count();
+            if layers > 1 {
+                errors.add(
+                    &path_index(&path_field(&[], "services"), k),
+                    SINGLE_WRAP_LAYER_MSG,
+                );
+            }
+        }
+    }
 }
 
-const SINGLE_WRAP_LAYER_MSG: &str =
+pub(crate) const SINGLE_WRAP_LAYER_MSG: &str =
     "only one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).";
 
-/// Validate RFC 0008 constraints for an environment template.
+/// Validate RFC 0008 (and RFC 0009 Service hook) constraints for an
+/// environment template.
 ///
-/// An environment template defines one environment, so the single-layer
-/// rule is trivially satisfied. We gate the new fields on the extension
-/// being enabled, enforce the EXPR prerequisite, and enforce the
-/// all-or-nothing rule via `check_env`.
+/// An environment template defines at most one environment, so the
+/// single-layer rule is trivially satisfied. We gate the new fields on the
+/// extensions being enabled, enforce the EXPR prerequisite, and, without
+/// `SERVICE`, the all-or-nothing rule via `check_env`. With `SERVICE`, no
+/// kind of Session is known to enter the environment before the Job is
+/// created, so wrap hook rule 1 is checked then.
 pub fn validate_wrap_actions_environment_template(
     et: &EnvironmentTemplate,
     ctx: &ValidationContext,
     errors: &mut ValidationErrors,
 ) {
-    let active = ctx.profile.has_extension(ModelExtension::WrapActions);
+    let gating = gating_for(ctx);
     check_expr_prerequisite(ctx, errors);
-    let env_path = path_field(&[], "environment");
-    check_env(&et.environment, &env_path, active, errors);
+    if let Some(env) = &et.environment {
+        let env_path = path_field(&[], "environment");
+        check_env(env, &env_path, KnownEntrants::default(), gating, errors);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Integration tests in `tests/integration/test_wrap_actions.rs`
-    //! exercise the full decode + validate pipeline against real templates.
-    //! No direct unit tests here: every helper is pure-data and already
-    //! covered through the integration surface.
+    //! Integration tests in `tests/integration/test_wrap_actions.rs` and
+    //! `tests/integration/test_service.rs` exercise the full decode +
+    //! validate pipeline against real templates. The only direct
+    //! unit test here is for the message-formatting helper.
+
+    use super::join_names;
+
+    #[test]
+    fn join_names_english_list() {
+        assert_eq!(join_names(&[]), "");
+        assert_eq!(join_names(&["a"]), "a");
+        assert_eq!(join_names(&["a", "b"]), "a and b");
+        assert_eq!(join_names(&["a", "b", "c"]), "a, b, and c");
+    }
 }

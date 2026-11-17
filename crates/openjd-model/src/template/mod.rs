@@ -6,6 +6,8 @@
 
 pub mod parse;
 
+mod decode_errors;
+
 mod actions;
 mod constrained_strings;
 mod env_parameters;
@@ -16,6 +18,8 @@ mod expr_parameters;
 mod host_requirements;
 mod job_template;
 mod parameters;
+mod service;
+pub mod service_scope;
 mod step;
 mod task_parameters;
 pub(crate) mod validate_v2023_09;
@@ -48,8 +52,8 @@ pub use expr_parameters::{
 };
 // step
 pub use step::{
-    DependencyTarget, SimpleAction, SimpleActionKind, StepDependency, StepKey, StepScript,
-    StepTemplate,
+    listed_service_names, listed_step_names, lists_service, DependencyTarget, SimpleAction,
+    SimpleActionKind, StepDependency, StepKey, StepScript, StepTemplate,
 };
 // env_parameters (ENV_PARAMS extension)
 pub use env_parameters::{
@@ -60,6 +64,17 @@ pub use expr_field::ExprField;
 // environment
 pub(crate) use environment::{apply_exclusive_groups, Known, KnownEntry};
 pub use environment::{EmbeddedFile, Environment, EnvironmentActivation, EnvironmentScript};
+// service (SERVICE extension, RFC 0009)
+pub use service::{
+    CompletedTasksPolicy, Service, ServiceActions, ServiceHealthCheck, ServicePort,
+    ServicePortProtocol, ServiceRequirement, ServiceRequirementPort, ServiceRestartPolicy,
+    ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
+};
+pub use service_scope::{
+    compute_service_scopes, environment_template_service_cycle, listed_requirements,
+    listed_services, ComputedServiceScope, CycleViaEnvironment, Entrance, Entrances,
+    ServiceDependencyCycle, ServiceScope, ServiceScopes,
+};
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;
 pub use actions::{Action, CancelationMode, EnvironmentActions, StepActions, WrapHookScope};

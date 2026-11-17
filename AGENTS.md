@@ -103,6 +103,7 @@ Spec entry point: `specs/model/README.md`
 Local job execution runtime. Manages session lifecycle, runs actions via subprocess, handles environment setup/teardown.
 
 - **Session** (`src/session.rs`) — Session state machine: enter environments, run task actions, cleanup.
+- **ServiceSession** (`src/service_session.rs`) — RFC 0009 `SERVICE`: runs one Service's `onEnter` / `onRun` / `onHealthCheck` / `onExit` inside the Job's Environments, with `TCP_CONNECT`, `COMMAND`, and `STDOUT` readiness and health probes and per-action log attribution.
 - **Subprocess** (`src/subprocess.rs`) — Process spawning, I/O streaming, signal handling (SIGTERM/SIGKILL), process tree management.
 - **Action filter** (`src/action_filter.rs`) — Real-time stdout/stderr message parsing, redaction, and annotation.
 - **Cross-user** (`src/cross_user_helper.rs`) — Subprocess execution as a different OS user via an embedded helper binary.
@@ -117,7 +118,7 @@ CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
-- **run** (`src/run/`) — Local job execution using the sessions runtime.
+- **run** (`src/run/`) — Local job execution using the sessions runtime. `services.rs` and `service_ports.rs` are the single-host Service scheduler (RFC 0009): start Services before the Steps in their scope, gate Tasks on READY, apply the restart policy, stop at scope end.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`
@@ -169,6 +170,7 @@ specs/
 ├── cli/README.md                # → cli spec index
 ├── job-attachments-snapshots.md # Cross-cutting design doc
 ├── rust-port-agent-method.md    # Porting methodology from Python
+├── service-extension-status.md  # RFC 0009 (SERVICE) alignment record: status table, gaps, open spec questions
 └── windows-cross-user-helper.md # Cross-cutting Windows design
 ```
 
@@ -270,7 +272,7 @@ PRs run these checks (all must pass):
 | **Clippy** | `cargo clippy` on Linux, Windows, macOS — includes the helper binary |
 | **Build** | Release build on all three platforms |
 | **Test** | `cargo test --workspace` + helper tests on all three platforms |
-| **Conformance** | Full OpenJD conformance suite (1,038 tests) on all three platforms |
+| **Conformance** | Full OpenJD conformance suite on all three platforms (1,231 tests on the openjd-specifications `mainline`; 1,587 with the `SERVICE` suite on its `rfc-service` branch) |
 | **MSRV** | `cargo check --workspace` with Rust 1.97.0 |
 | **Documentation** | `cargo doc --no-deps --workspace` with `-D warnings` |
 | **Compliance** | Copyright header check |

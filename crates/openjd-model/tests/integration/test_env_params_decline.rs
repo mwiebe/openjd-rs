@@ -695,6 +695,24 @@ fn wrap_job(envs: &[String], steps: &str) -> String {
 const SINGLE_LAYER: &str = "only one environment in the session stack may define any of \
                             onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).";
 
+/// A Step's declining entry is found among its other dependencies: Step
+/// `B` lists Step `A` before declining `W1`, so each Step's Sessions enter
+/// one wrapping Environment and template validation accepts the Job.
+#[test]
+fn a_declining_entry_after_another_dependency_leaves_one_layer() {
+    let envs = [wrap_env("W1", "BY_DEFAULT"), wrap_env("W2", "BY_DEFAULT")];
+    let src = wrap_job(
+        &envs,
+        "- name: A\n  dependencies: [{environment: W2, enableIf: false}]\n  \
+         script: {actions: {onRun: {command: x}}}\n\
+         - name: B\n  dependencies: [{step: A}, {environment: W1, enableIf: false}]\n  \
+         script: {actions: {onRun: {command: x}}}\n",
+    );
+    job_ok(&src);
+    let created = create_ok(&src, &[], &[]);
+    assert!(!enters(&created, 1, &Document::JobTemplate, "W1"));
+    assert!(enters(&created, 1, &Document::JobTemplate, "W2"));
+}
 #[test]
 fn a_declined_wrapper_is_not_a_layer() {
     let envs = [wrap_env("W1", "BY_DEFAULT"), wrap_env("W2", "BY_DEFAULT")];

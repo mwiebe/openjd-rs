@@ -9,6 +9,7 @@ use super::constrained_strings::Description;
 use super::env_parameters::EnvironmentParameterDefinition;
 use super::expr_field::ExprField;
 use super::host_requirements::HostRequirements;
+use super::step::{listed_service_names, StepDependency};
 use crate::format_string::FormatString;
 use crate::types::{EndOfLine, FileType};
 use serde::Deserialize;
@@ -80,11 +81,43 @@ pub struct Environment {
     /// entry, and on an Environment with `activation: ALWAYS` (constraint
     /// 1).
     pub exclusive_group: Option<String>,
+    /// §4 item 3 (RFC 0009) — the Services this Environment depends on,
+    /// each a [`StepDependency`] with the `service` key. Requires the
+    /// `SERVICE` extension. Permitted only on a `jobEnvironments` entry and
+    /// on an Environment Template's `environment`; a `stepEnvironments`
+    /// entry follows its Step's `dependencies` and may not give a list of
+    /// its own. Listing a Service is what makes `Service.<name>.<port>.port`
+    /// / `.connectAddress` available to the Environment's format strings; a
+    /// Job Environment that lists an inline Service puts every Step in that
+    /// Service's scope (§9.1 rule 3). Held as written: validation reports a
+    /// `dependsOn` entry, an unknown Service, or a duplicate with a field
+    /// path. See [`listed_services`](Self::listed_services).
+    pub dependencies: Option<Vec<StepDependency>>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
 
 impl Environment {
+    /// The Service names this Environment lists in `dependencies` with the
+    /// `service` key (§4 item 3), in list order. Empty when the list is
+    /// absent; a `dependsOn` entry (a validation error) yields nothing here.
+    pub fn listed_services(&self) -> impl Iterator<Item = &str> + '_ {
+        listed_service_names(self.dependencies.as_deref())
+    }
+
+    /// True when this Environment lists any Service in `dependencies` (§4
+    /// item 3).
+    pub fn depends_on_service(&self) -> bool {
+        self.listed_services().next().is_some()
+    }
+
+    /// True when any format string of this Environment (`variables`,
+    /// actions, embedded files, script `let`) references a `Service.*`
+    /// value.
+    pub fn references_service(&self) -> bool {
+        super::service_scope::environment_references_service(self)
+    }
+
     /// `activation` with its default applied (§4 item 4: absent means
     /// `BY_DEFAULT`), as it applies in a document that lists `ENV_PARAMS`.
     ///
@@ -355,4 +388,61 @@ pub struct EmbeddedFile {
     pub runnable: Option<bool>,
     #[serde(rename = "endOfLine")]
     pub end_of_line: Option<EndOfLine>,
+}
+
+#[cfg(test)]
+mod tests {
+    //! The decode + validate surface is covered by
+    //! `tests/integration/test_service_environments.rs`; these pin the
+    //! accessor semantics on bare structs.
+
+    use super::*;
+
+    fn env() -> Environment {
+        Environment {
+            name: "E".into(),
+            description: None,
+            dependencies: None,
+            env_parameter_definitions: None,
+            activation: None,
+            host_requirements: None,
+            enable_if: None,
+            exclusive_group: None,
+            script: None,
+            variables: None,
+        }
+    }
+
+    #[test]
+    fn listed_services_follow_the_dependencies_list() {
+        let mut e = env();
+        assert!(!e.references_service());
+        assert!(!e.depends_on_service());
+        assert_eq!(e.listed_services().count(), 0);
+        e.dependencies = Some(vec![
+            StepDependency::on_service("Cache"),
+            // A `dependsOn` entry (rejected by validation) is not a Service.
+            StepDependency::on_step("Prepare"),
+        ]);
+        assert_eq!(e.listed_services().collect::<Vec<_>>(), vec!["Cache"]);
+        assert!(e.depends_on_service());
+        assert!(!e.references_service());
+    }
+
+    #[test]
+    fn a_reference_is_not_a_listing() {
+        // A Job Environment that references a Service without listing it is
+        // a validation error; the accessors report the two separately.
+        let mut e = env();
+        e.variables = Some(
+            [(
+                "ADDR".to_string(),
+                FormatString::new("{{ Service.Cache.main.connectAddress }}").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        assert!(e.references_service());
+        assert!(!e.depends_on_service());
+    }
 }

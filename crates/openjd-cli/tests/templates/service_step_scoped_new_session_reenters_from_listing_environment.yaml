@@ -1,0 +1,55 @@
+# A Step-scoped Service (Coord, through the ON_REQUEST Client) whose
+# relaunch begins a new Session during Step A's first Task. The Task Session
+# re-enters from Client, the first Job Environment that lists a Step-scoped
+# Service: Client, Plain2 and the Step Environment SE; not JW (which lists
+# the job-wide J) nor Plain1, entered before Client.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: Reent
+parameterDefinitions:
+  - name: Counter
+    type: STRING
+jobEnvironments:
+  - name: JW
+    dependencies: [{ service: J }]
+    script: { actions: { onEnter: { command: python, args: ["-c", "print('JW_ENTER {{ Service.J.main.port }}')"] } } }
+  - name: Plain1
+    script: { actions: { onEnter: { command: python, args: ["-c", "print('PLAIN1_ENTER')"] } } }
+  - name: Client
+    activation: ON_REQUEST
+    dependencies: [{ service: Coord }]
+    variables: { CPORT: "{{ Service.Coord.main.port }}" }
+    script: { actions: { onEnter: { command: python, args: ["-c", "print('CLIENT_ENTER {{ Service.Coord.main.port }}')"] } } }
+  - name: Plain2
+    script: { actions: { onEnter: { command: python, args: ["-c", "print('PLAIN2_ENTER')"] } } }
+services:
+  - name: J
+    # JW waits for J to be READY, so J's own Sessions decline it.
+    dependencies: [{ environment: JW, enableIf: false }]
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun: { command: python, args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(60)"], cancelation: { mode: TERMINATE } }
+  - name: Coord
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxRestarts: 3, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nc = r'{{ Param.Counter }}'\nn = int(open(c).read()) + 1 if os.path.exists(c) else 1\nopen(c, 'w').write(str(n))\nif n == 2:\n    raise SystemExit(7)\nprint('openjd_service_ready: up', flush=True)\nif n == 1:\n    time.sleep(0.6); raise SystemExit(1)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ environment: Client }]
+    stepEnvironments:
+      - name: SE
+        script: { actions: { onEnter: { command: python, args: ["-c", "print('SE_ENTER')"] } } }
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import os, time; time.sleep(1.5 if {{ Task.Param.N }} == 1 else 0); print('TASK_{{ Task.Param.N }} CPORT=' + os.environ['CPORT'])"] } } }
+  - name: Other
+    dependencies: [{ dependsOn: A }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('OTHER_RAN')"] } } }

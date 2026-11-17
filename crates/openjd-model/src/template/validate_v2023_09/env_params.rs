@@ -59,6 +59,10 @@
 //! Each `enableIf` is known as [`KnownEnableIfs`] gives it, the same value
 //! that passes 8 and 10 read.
 //!
+//! With `SERVICE` (RFC 0009 `<StepDependency>` item 3) a Job Template's
+//! Services have `environment:` entries too, and every rule above applies
+//! to them as to a Step's.
+//!
 //! §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and
 //! `environment`) is checked with the other dependency rules in pass 6. Format-string
 //! values, `default`s, and `enableIf` expressions are checked against their
@@ -189,12 +193,14 @@ pub(crate) fn capped_name_list<'n>(names: impl Iterator<Item = &'n str>, total: 
 /// The §3.2 constraint 7 message for one Step: `missing` yields
 /// `(environment label, parameter name)` pairs grouped by label, in
 /// order, and `total` is how many there are. `why` says which Environments
-/// apply to the Step, and cites the rule. A label in `disabled` names an
-/// Environment the Step has an `environment:` entry for whose `enableIf`
-/// disabled it (§3.2 item 3.2), which its group says, since a reader would
-/// otherwise take the Step's entry as enabled. The message also says that
-/// the Environments' own `enableIf` does not matter, since constraint 7 is
-/// checked whatever it is (§3.2 constraint 7).
+/// apply to the Step, and cites the rule. `noun` names the kind of
+/// requesting entity, `Step` or (RFC 0009) `Service`. A label in
+/// `disabled` names an Environment the Step has an `environment:` entry
+/// for whose `enableIf` disabled it (§3.2 item 3.2), which its group says,
+/// since a reader would otherwise take the Step's entry as enabled. The
+/// message also says that the Environments' own `enableIf` does not
+/// matter, since constraint 7 is checked whatever it is (§3.2 constraint
+/// 7).
 ///
 /// One error per Step, so the report grows with the number of Steps and
 /// not with Steps times parameters. The list holds at most 50 names and
@@ -205,11 +211,13 @@ pub(crate) fn missing_parameters_message<'n>(
     missing: impl Iterator<Item = (&'n str, &'n str)>,
     total: usize,
     why: &str,
+    noun: &str,
     disabled: &HashSet<&str>,
 ) -> String {
+    let disabled_note = disabled_note(noun);
     let note = |label: &str| {
         if disabled.contains(label) {
-            DISABLED_NOTE
+            disabled_note.as_str()
         } else {
             ""
         }
@@ -273,9 +281,14 @@ pub(crate) fn missing_parameters_message<'n>(
 }
 
 /// The note [`missing_parameters_message`] adds to an Environment's group
-/// when the Step's entry for it is disabled by its `enableIf`.
-const DISABLED_NOTE: &str = " (the Step's 'environment:' dependency for it is disabled by its \
-     enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2)";
+/// when the requesting entity's entry for it is disabled by its
+/// `enableIf`; `noun` is `Step` or `Service`.
+fn disabled_note(noun: &str) -> String {
+    format!(
+        " (the {noun}'s 'environment:' dependency for it is disabled by its enableIf, so it \
+         supplies nothing; Template Schemas §3.2 item 3.2)"
+    )
+}
 
 /// The constraint 7 reason for `jobEnvironments` entries, which completes
 /// [`missing_parameters_message`].
@@ -285,16 +298,61 @@ pub(crate) const EVERY_JOB_ENVIRONMENT: &str =
      with activation ON_REQUEST that the Step requests; Template Schemas §3.2 \
      constraint 7";
 
-/// The message for a Step's disabled `environment:` entry that names an
-/// Environment with `activation: ALWAYS`, reported at the entry's
-/// `enableIf` (§3.2 item 3.2, §3.2.2 item 6): no Step can leave such an
-/// Environment out. `label` names the Environment as constraint 7
-/// messages do (`'Name'`, plus the document for an attached one).
-pub(crate) fn always_entry_disabled_message(step_name: &str, label: &str) -> String {
+/// The message for a disabled `environment:` entry of a Step (or, with
+/// `SERVICE`, a Service) that names an Environment with `activation:
+/// ALWAYS`, reported at the entry's `enableIf` (§3.2 item 3.2, §3.2.2
+/// item 6): no Step can leave such an Environment out, and RFC 0009 has a
+/// Service's entries work exactly as a Step's. `label` names the
+/// Environment as constraint 7 messages do (`'Name'`, plus the document for
+/// an attached one).
+pub(crate) fn always_entry_disabled_message(
+    kind: RequesterKind,
+    name: &str,
+    label: &str,
+) -> String {
+    let noun = kind.noun();
     format!(
-        "is false, so Step '{step_name}' would decline Environment {label}, whose activation is \
-         ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2)."
+        "is false, so {noun} '{name}' would decline Environment {label}, whose activation is \
+         ALWAYS: no {noun} can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2)."
     )
+}
+
+/// The constraint 7 reason for a Service's `jobEnvironments` entries (RFC
+/// 0009 "Services run inside Environments", which applies RFC 0010's rules
+/// to a Service as to a Step), which completes
+/// [`missing_parameters_message`].
+pub(crate) const SERVICE_EVERY_JOB_ENVIRONMENT: &str =
+    "every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT \
+     that the Service does not decline, and each one with activation ON_REQUEST that the \
+     Service requests; Template Schemas §3.2 constraint 7, RFC 0009 <Service> item 4";
+
+/// The kind of entity that requests Environments with `environment:`
+/// entries (RFC 0010; RFC 0009 adds the Services).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequesterKind {
+    /// A `<StepTemplate>`.
+    Step,
+    /// A `<Service>` (RFC 0009).
+    Service,
+}
+
+impl RequesterKind {
+    /// `Step` or `Service`, for messages.
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            Self::Step => "Step",
+            Self::Service => "Service",
+        }
+    }
+
+    /// The constraint 7 reason for the `jobEnvironments` entries that apply
+    /// to an entity of this kind.
+    pub(crate) fn every_job_environment(self) -> &'static str {
+        match self {
+            Self::Step => EVERY_JOB_ENVIRONMENT,
+            Self::Service => SERVICE_EVERY_JOB_ENVIRONMENT,
+        }
+    }
 }
 
 /// The prerequisite of `ENV_PARAMS`: a document that lists it must also
@@ -376,70 +434,123 @@ pub fn validate_env_params_job_template(
             }
         }
 
-        let Some(deps) = &step.dependencies else {
-            continue;
-        };
-        let deps_path = path_field(&step_path, "dependencies");
         let step_env_names: HashSet<&str> = step
             .step_environments
             .iter()
             .flatten()
             .map(|e| e.name.as_str())
             .collect();
-        let mut seen_envs: HashSet<&str> = HashSet::new();
-        for (j, dep) in deps.iter().enumerate() {
-            let dep_path = path_index(&deps_path, j);
-            // §3.2 item 2: `step` is the ENV_PARAMS synonym of `dependsOn`;
-            // its Step rules are pass 6's.
-            if dep.step.is_some() && !active {
-                errors.add(
-                    &dep_path,
-                    "the 'step' form of a dependency requires the ENV_PARAMS extension.",
-                );
-            }
-            if dep.environment.is_none() {
-                continue;
-            }
-            if !active {
-                errors.add(
-                    &dep_path,
-                    "the 'environment' form of a dependency requires the ENV_PARAMS extension.",
-                );
-                continue;
-            }
-            // §4.1 `<EnvironmentName>`: the name is checked whatever the
-            // entry's form, since an invalid name can never resolve.
-            if let Some(name) = &dep.environment {
-                check_environment_name(
-                    name,
-                    &path_field(&dep_path, "environment"),
-                    &limits,
-                    errors,
-                );
-            }
-            // A malformed entry (`environment` with `dependsOn` or `step`)
-            // is reported by pass 6; its environment half is not checked.
-            let Some(env_name) = dep.environment() else {
-                continue;
-            };
-            check_environment_entry(
-                dep,
-                known.entry(i, j),
-                env_name,
-                &step.name,
-                &dep_path,
-                &step_env_names,
-                &mut seen_envs,
-                job_envs.get(env_name),
-                &limits,
-                ctx,
-                errors,
-            );
-        }
+        check_requester_entries(
+            RequesterKind::Step,
+            &step.name,
+            step.dependencies.as_deref(),
+            |j| known.entry(i, j),
+            &path_field(&step_path, "dependencies"),
+            &step_env_names,
+            &job_envs,
+            active,
+            &limits,
+            ctx,
+            errors,
+        );
+    }
+    // RFC 0009 `<StepDependency>` item 3: a Job Template's Services request
+    // Environments as Steps do. (Without SERVICE there are none; an
+    // Environment Template's Services may have only disabled entries, which
+    // pass 12 checks.)
+    for (k, svc) in jt.services().iter().enumerate() {
+        check_requester_entries(
+            RequesterKind::Service,
+            &svc.name,
+            svc.dependencies.as_deref(),
+            |j| known.service_entry(k, j),
+            &path_field(
+                &path_index(&path_field(&root, "services"), k),
+                "dependencies",
+            ),
+            &HashSet::new(),
+            &job_envs,
+            active,
+            &limits,
+            ctx,
+            errors,
+        );
     }
 
     if active {
         check_required_parameters_supplied(jt, &job_envs, known, errors);
+    }
+}
+
+/// The `environment:` entries of one requesting entity's `dependencies`
+/// (a Step's, or with `SERVICE` a Job Template Service's), at `deps_path`:
+/// the gating of the `step` and `environment` forms, the Environment name,
+/// and [`check_environment_entry`]. `kind` and `name` name the entity for
+/// messages; `known_entry(j)` is what the `enableIf` of `dependencies[j]`
+/// is known to be (§7.6 rule 5); `step_env_names` are its own
+/// `stepEnvironments` names (none for a Service).
+#[allow(clippy::too_many_arguments)]
+fn check_requester_entries(
+    kind: RequesterKind,
+    name: &str,
+    deps: Option<&[StepDependency]>,
+    known_entry: impl Fn(usize) -> Option<bool>,
+    deps_path: &[PathElement],
+    step_env_names: &HashSet<&str>,
+    job_envs: &HashMap<&str, JobEnvIndex<'_>>,
+    active: bool,
+    limits: &EffectiveLimits,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let Some(deps) = deps else {
+        return;
+    };
+    let mut seen_envs: HashSet<&str> = HashSet::new();
+    for (j, dep) in deps.iter().enumerate() {
+        let dep_path = path_index(deps_path, j);
+        // §3.2 item 2: `step` is the ENV_PARAMS synonym of `dependsOn`;
+        // its Step rules are pass 6's.
+        if dep.step.is_some() && !active {
+            errors.add(
+                &dep_path,
+                "the 'step' form of a dependency requires the ENV_PARAMS extension.",
+            );
+        }
+        if dep.environment.is_none() {
+            continue;
+        }
+        if !active {
+            errors.add(
+                &dep_path,
+                "the 'environment' form of a dependency requires the ENV_PARAMS extension.",
+            );
+            continue;
+        }
+        // §4.1 `<EnvironmentName>`: the name is checked whatever the
+        // entry's form, since an invalid name can never resolve.
+        if let Some(name) = &dep.environment {
+            check_environment_name(name, &path_field(&dep_path, "environment"), limits, errors);
+        }
+        // A malformed entry (`environment` with `dependsOn` or `step`)
+        // is reported by pass 6; its environment half is not checked.
+        let Some(env_name) = dep.environment() else {
+            continue;
+        };
+        check_environment_entry(
+            dep,
+            known_entry(j),
+            env_name,
+            kind,
+            name,
+            &dep_path,
+            step_env_names,
+            &mut seen_envs,
+            job_envs.get(env_name),
+            limits,
+            ctx,
+            errors,
+        );
     }
 }
 
@@ -451,15 +562,19 @@ pub fn validate_env_params_environment_template(
 ) {
     let active = ctx.profile.has_extension(ModelExtension::EnvParams);
     let limits = EffectiveLimits::from_context(ctx);
-    check_environment(
-        &et.environment,
-        &path_field(&[], "environment"),
-        EnvPlacement::Declaring,
-        active,
-        super::format_strings::known_environment_template_enable_if(et, ctx),
-        &limits,
-        errors,
-    );
+    // A services-only Environment Template (RFC 0009) has no Environment
+    // to check.
+    if let Some(env) = &et.environment {
+        check_environment(
+            env,
+            &path_field(&[], "environment"),
+            EnvPlacement::Declaring,
+            active,
+            super::format_strings::known_environment_template_enable_if(et, ctx),
+            &limits,
+            errors,
+        );
+    }
 }
 
 /// §4 item 6: whether one Environment's `enableIf` is
@@ -671,8 +786,9 @@ fn check_definition(
     }
 }
 
-/// §3.2 constraints 2–6 and 8 for one `environment:` entry of the Step
-/// named `step_name`, whose `enableIf` is known to be `known` (§7.6 rule
+/// §3.2 constraints 2–6 and 8 for one `environment:` entry of the
+/// requesting entity `kind` named `requester_name` (a Step, or with
+/// `SERVICE` a Service), whose `enableIf` is known to be `known` (§7.6 rule
 /// 5), and §3.2 item 3.2 for one known to be disabled that names a Job
 /// Environment with `activation: ALWAYS`, an error. Constraints 5 and 6
 /// apply only to an entry known to be enabled: a disabled entry's
@@ -685,7 +801,8 @@ fn check_environment_entry<'a>(
     dep: &'a StepDependency,
     known: Option<bool>,
     env_name: &'a str,
-    step_name: &str,
+    kind: RequesterKind,
+    requester_name: &str,
     dep_path: &[PathElement],
     step_env_names: &HashSet<&str>,
     seen_envs: &mut HashSet<&'a str>,
@@ -720,7 +837,7 @@ fn check_environment_entry<'a>(
     {
         errors.add(
             &path_field(dep_path, "enableIf"),
-            always_entry_disabled_message(step_name, &format!("'{env_name}'")),
+            always_entry_disabled_message(kind, requester_name, &format!("'{env_name}'")),
         );
     }
     // Constraint 8.
@@ -925,17 +1042,43 @@ fn check_required_parameters_supplied(
         .filter(|r| r.activation != EnvironmentActivation::OnRequest)
         .map(|r| r.names.len())
         .sum();
-    for (i, step) in jt.steps.iter().enumerate() {
+    // The requesting entities: every Step, then (RFC 0009 `<Service>` item
+    // 4) every Service of the Job Template, which is held to the same rule.
+    let requesters = jt
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            (
+                path_index(&path_field(&[], "steps"), i),
+                step.dependencies.as_deref(),
+                RequesterKind::Step,
+                i,
+            )
+        })
+        .chain(jt.services().iter().enumerate().map(|(k, svc)| {
+            (
+                path_index(&path_field(&[], "services"), k),
+                svc.dependencies.as_deref(),
+                RequesterKind::Service,
+                k,
+            )
+        }));
+    for (entity_path, dependencies, kind, i) in requesters {
+        let known_entry = |j: usize| match kind {
+            RequesterKind::Step => known.entry(i, j),
+            RequesterKind::Service => known.service_entry(i, j),
+        };
         // The first entry for each Job Environment with required
         // parameters, matched on the `environment` key as written, so an
         // entry that also has `dependsOn` (reported by pass 6) does not add
         // a second, cascading error here; with what its `enableIf` is known
         // to be.
         let mut entries: HashMap<&str, (&StepDependency, Option<bool>)> = HashMap::new();
-        for (j, d) in step.dependencies.iter().flatten().enumerate() {
+        for (j, d) in dependencies.into_iter().flatten().enumerate() {
             if let Some(env) = d.environment.as_deref() {
                 if by_name.contains_key(env) {
-                    entries.entry(env).or_insert((d, known.entry(i, j)));
+                    entries.entry(env).or_insert((d, known_entry(j)));
                 }
             }
         }
@@ -1009,8 +1152,14 @@ fn check_required_parameters_supplied(
                 .map(move |n| (r.label.as_str(), *n))
         });
         errors.add(
-            &path_index(&path_field(&[], "steps"), i),
-            missing_parameters_message(missing_pairs, missing, EVERY_JOB_ENVIRONMENT, &disabled),
+            &entity_path,
+            missing_parameters_message(
+                missing_pairs,
+                missing,
+                kind.every_job_environment(),
+                kind.noun(),
+                &disabled,
+            ),
         );
     }
 }
@@ -1076,7 +1225,7 @@ pub(crate) fn enable_if_reads_unconvertible_literal(
 /// §4.1 `<EnvironmentName>` for the `environment` key of a dependency
 /// entry: 1 to `max_env_name_len` characters, no Cc characters. The
 /// messages match the ones for an `<Environment>`'s own `name`.
-fn check_environment_name(
+pub(crate) fn check_environment_name(
     name: &str,
     path: &[PathElement],
     limits: &EffectiveLimits,
@@ -1389,7 +1538,7 @@ mod tests {
     #[test]
     fn missing_parameters_list_counts_every_character_up_to_512() {
         let msg = |pairs: &[(&str, &str)], total: usize| {
-            missing_parameters_message(pairs.iter().copied(), total, "X", &HashSet::new())
+            missing_parameters_message(pairs.iter().copied(), total, "X", "Step", &HashSet::new())
         };
         let prefix = "must supply, in an 'environment:' dependency, every parameter without a \
                       default of each Environment that applies to it (X), whatever that \
@@ -1425,11 +1574,12 @@ mod tests {
         // 'E'<note>" is 512 bytes, so both names fit; one more does not.
         let disabled: HashSet<&str> = ["'E'"].into_iter().collect();
         let noted = |pairs: &[(&str, &str)], total: usize| {
-            missing_parameters_message(pairs.iter().copied(), total, "X", &disabled)
+            missing_parameters_message(pairs.iter().copied(), total, "X", "Step", &disabled)
         };
-        let room = 512 - DISABLED_NOTE.len() - "'', '' of Environment 'E'".len();
+        let dnote = disabled_note("Step");
+        let room = 512 - dnote.len() - "'', '' of Environment 'E'".len();
         let (n1, n2) = ("p".repeat(room / 2), "q".repeat(room - room / 2));
-        let list = format!("'{n1}', '{n2}' of Environment 'E'{DISABLED_NOTE}");
+        let list = format!("'{n1}', '{n2}' of Environment 'E'{dnote}");
         assert_eq!(list.len(), 512);
         assert_eq!(
             noted(&[("'E'", &n1), ("'E'", &n2)], 2),
@@ -1438,12 +1588,12 @@ mod tests {
         let n2 = format!("{n2}q");
         assert_eq!(
             noted(&[("'E'", &n1), ("'E'", &n2)], 2),
-            format!("{prefix}'{n1}' of Environment 'E'{DISABLED_NOTE}; and 1 more.")
+            format!("{prefix}'{n1}' of Environment 'E'{dnote}; and 1 more.")
         );
         // Only the disabled Environment's group gets the note.
         assert_eq!(
             noted(&[("'A'", "a"), ("'E'", "e")], 2),
-            format!("{prefix}'a' of Environment 'A'; 'e' of Environment 'E'{DISABLED_NOTE}.")
+            format!("{prefix}'a' of Environment 'A'; 'e' of Environment 'E'{dnote}.")
         );
         // The first name is listed however long it is.
         let long = "z".repeat(600);

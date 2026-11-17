@@ -1,0 +1,42 @@
+# A Service scoped to Steps A and B through an ON_REQUEST Job Environment
+# (Client) both request. Coord's first instance exits after A's Task, while
+# A's Step Environment exits; B's gate relaunches it in a new Session with a
+# new port (its second launch exits before READY). The Task Session keeps
+# Client across the Steps, so the gate must re-enter it: B sees the new port.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: Stale
+parameterDefinitions:
+  - name: Counter
+    type: STRING
+jobEnvironments:
+  - name: Client
+    activation: ON_REQUEST
+    dependencies: [{ service: Coord }]
+    variables: { CPORT: "{{ Service.Coord.main.port }}" }
+services:
+  - name: Coord
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxRestarts: 3, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nc = r'{{ Param.Counter }}'\nn = int(open(c).read()) + 1 if os.path.exists(c) else 1\nopen(c, 'w').write(str(n))\nif n == 2:\n    raise SystemExit(7)\nprint('openjd_service_ready: up', flush=True)\nif n == 1:\n    time.sleep(1.0); raise SystemExit(1)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ environment: Client }]
+    stepEnvironments:
+      - name: SlowExit
+        script:
+          actions:
+            onExit: { command: python, args: ["-c", "import time; time.sleep(2.5); print('A_ENV_EXIT')"] }
+    script: { actions: { onRun: { command: python, args: ["-c", "import os; print('A_CPORT=' + os.environ['CPORT'])"] } } }
+  - name: B
+    dependencies: [{ dependsOn: A }, { environment: Client }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import os; print('B_CPORT=' + os.environ['CPORT'])"] } } }
+  - name: C
+    dependencies: [{ dependsOn: B }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('C_RAN')"] } } }

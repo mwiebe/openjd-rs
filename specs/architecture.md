@@ -42,13 +42,14 @@ openjd-rs/
 │   │       ├── lib.rs
 │   │       ├── action.rs
 │   │       ├── session.rs
+│   │       ├── service_session.rs  # RFC 0009 Service Session
 │   │       └── embedded_files.rs
 │   └── openjd-cli/             # CLI binary
 │       └── src/
 │           ├── main.rs
 │           ├── check.rs
 │           ├── summary.rs
-│           ├── run.rs
+│           ├── run/            # run subcommand; services.rs is the Service scheduler
 │           └── help.rs
 └── specs/                      # Design specs
     ├── architecture.md
@@ -92,12 +93,15 @@ Core template library. Depends on openjd-expr. Provides:
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:
 - Session lifecycle management
+- Service Session lifecycle (RFC 0009): a Service's actions, health probes, and
+  per-action log attribution
 - Action execution (subprocess management)
 - Re-exports path mapping from openjd-expr
 
 ### openjd-cli
 Binary crate. Depends on all three libraries.
-Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally).
+Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs
+locally, including a single-host Service scheduler for RFC 0009).
 
 ## Key Design Decisions
 
@@ -139,3 +143,7 @@ Detailed design specifications for individual crates:
 - [snapshots/](snapshots/) — `openjd-snapshots` crate (**experimental**): job attachment snapshot operations
 - [cli/](cli/) — `openjd-cli` crate: CLI binary, command implementations, output formatting, context-aware help
 - [openjd-for-js/spec.md](openjd-for-js/spec.md) — `openjd-for-js` crate (**experimental**): ECMAScript/WebAssembly bindings
+
+Cross-cutting records:
+
+- [service-extension-status.md](service-extension-status.md) — RFC 0009 (`SERVICE`) alignment: every normative statement with its implementation status and file, the gaps, the choices the specification leaves open, and the open questions for the RFC author

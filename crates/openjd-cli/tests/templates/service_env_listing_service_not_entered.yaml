@@ -1,0 +1,60 @@
+# RFC 0009 "Services run inside Environments": a Service's Sessions select
+# Environments as a Step's do, with no exception for one that lists the
+# Service, so X declines the BY_DEFAULT XClient, which lists X, with a
+# disabled `environment:` dependency (entering it would be the cycle
+# X -> X). XClient is entered in the Task Session (its X_ENDPOINT variable
+# reaches the Task) but not in X's Service Session; Plain, which lists no
+# Service, is entered in both. XClient's dependency is what lets it reference Service.X.*, and
+# makes X's scope every Step (§9.1 rule 3).
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "ListingEnvironmentNotEntered"
+services:
+  - name: X
+    dependencies:
+      - environment: XClient
+        enableIf: false
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.X.main.bindAddress }}", "{{ Service.X.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            print("SERVICE_SEES_X_ENDPOINT", os.environ.get("X_ENDPOINT", "UNSET"), flush=True)
+            print("SERVICE_SEES_PLAIN", os.environ.get("PLAIN_VAR", "UNSET"), flush=True)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: x up", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(b"X_SAYS_HI")
+                c.close()
+jobEnvironments:
+  - name: Plain
+    variables:
+      PLAIN_VAR: "plain-value"
+  - name: XClient
+    dependencies:
+      - service: X
+    variables:
+      X_ENDPOINT: "{{ Service.X.main.connectAddress }}:{{ Service.X.main.port }}"
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,socket; h,p=os.environ['X_ENDPOINT'].rsplit(':',1); c=socket.create_connection((h,int(p)),timeout=10); print('TASK_X_ENDPOINT', p, c.recv(64).decode(), 'PLAIN', os.environ.get('PLAIN_VAR'), flush=True)"]

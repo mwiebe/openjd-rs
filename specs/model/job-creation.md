@@ -382,6 +382,8 @@ budgets template validation and the session runtime apply.
      result is unchanged.
    - Step-level let bindings (template scope; a failure is reported at
      `steps[i] -> let[j]` — see the carried-forward checks below)
+   - With SERVICE (RFC 0009): every Service's `<Service>.let`, numeric
+     `@fmtstring` fields, and `hostRequirements` (see "Services" below)
 3. With EXPR extension: inject `Job.Name` and `Job.EnvNames` (before step instantiation)
    and `Step.Name` (per step) into the symbol table. `Job.EnvNames` (ENV_PARAMS, Template
    Schemas §7.3.1) is a `list[string]` of the attached Environments' names, in attachment
@@ -504,6 +506,22 @@ supplies keys to a Job Environment that declares none is rejected (constraint 5)
 `create_job` stores them on `job::Step::environment_parameters`, one
 `EnvironmentParameterValues { document: JobTemplate, environment, values }` per such Job
 Environment in `jobEnvironments` order (see [job-types.md](job-types.md#step)).
+
+With `SERVICE` (RFC 0009 `<Service>` item 4, "Services run inside Environments") every
+Service is a requester too (`Requester::service`, path `services[k]`): its Sessions enter, in
+`jobEnvironments` order, exactly as a Step's do: every `ALWAYS` Job Environment and every
+`BY_DEFAULT` one it does not decline with a disabled `environment:` entry (§3.2 item 3.2), plus
+every `ON_REQUEST` one an enabled `environment:` entry of its own `dependencies` requests, less any
+whose `enableIf` is `false` for it or that the `exclusiveGroup` rule leaves out. There is no
+exception for an Environment that lists the Service: entering one is the cycle `X -> X`. Its effective values are computed
+as a Step's — the entry's values, else the `default`s — with the Service's own scope (the
+merged Job Parameters, `Job.Name`, `Job.EnvNames`, its `<Service>.let`; no `Step.Name`), and
+constraints 5–7 apply to it, 7 for every Environment its Sessions enter. The result is stored
+on `job::Service::environments` and `job::Service::environment_parameters`, which a Service
+Session enters each Environment with. A Service of an attached Environment Template chooses only among the Environments of
+its own document and of the attachments before it, and its `environment:` entries may only be
+disabled ones (pass 12), so it enters every such `ALWAYS` Environment and every `BY_DEFAULT` one it
+does not decline, with every parameter at its `default` (see [Services from Environment Templates](#services-from-environment-templates-service)).
 
 The code is `job/create_job/env_params.rs`, shared with [the submission
 stage](#the-submission-stage):
@@ -661,6 +679,150 @@ computed with POSIX semantics.
 `Step::resolved_symtab` cannot serve here, because it holds only what the Step's host-side
 format strings reference. No returned Job holds frozen entries.
 
+`instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
+extension flags, limits, budgets, and the template's `services` and
+`externalServices` slices, from which each Step's and Service's in-scope sets
+are drawn), the collected-errors contract (both take `create_job`'s
+`&mut ValidationErrors` and return `Option<_>` — see "Aggregation" below),
+and pass 8's per-binding `let` evaluator
+`check_carried_forward_let_bindings`, which `<StepTemplate>.let`,
+`<Service>.let`, and every script-level `let` use. `resolve_host_requirements`
+takes the owner's path (`steps[i]`, `services[k]`) so the same code — and the
+same messages — serve a Step's and a Service's `hostRequirements`; every path
+it reports is built from that prefix.
+
+#### Services (RFC 0009, Template Schemas §9)
+
+`services` are instantiated in job scope before the steps (the Steps in a
+Service's scope may reference it), each seeing the Services it lists in its
+`dependencies` — `listed_services(svc.dependencies, services)`, the inline
+Services named by its `service` entries, in declaration order (list order
+carries no meaning). First `compute_service_scopes` (see
+[template-types.md](template-types.md), "Service scope") computes every
+Service's scope as known from the template: its `dependencies` lists and the
+Job Environments the Steps and Services are known to enter (`Entrances`); a
+known cycle cannot reach here (pass 12 rejected it) and is reported as a
+`ModelValidation` error carrying the `ServiceDependencyCycle` message if it
+does. The final scopes, and a cycle whose edges depend on an `enableIf` not
+known before the Job is created (§7.6 rule 5), an `exclusiveGroup`, or an
+attached document, are computed by the submission stage
+over the combined Job (`job/create_job/composition.rs`; see
+[The submission stage](#the-submission-stage)). Per Service (`instantiate_service(svc, base, icx, path,
+in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
+
+1. **`<Service>.let`** — evaluated with pass 8's
+   `check_carried_forward_let_bindings` into a clone of the scope's symbol
+   table (template library, no PATH `Param.*`, no host context). A binding
+   that fails is a check failure at `services[k] -> let[j]` with pass 8's
+   `Invalid expression in let binding '<name>': <error>` message and
+   caret, the name is bound `Unresolved`, and — as for a failed step-level
+   binding — steps 2–3 below are skipped (they need the concrete value)
+   while step 4 still runs; pass 8 already type-checked the binding with
+   everything unresolved, so a failure comes from the real parameter
+   values.
+2. **`hostRequirements`** — the Service's own: `resolve_host_requirements` against that table,
+   with every check decode and pass 8 could not finish on a non-literal
+   value (name pattern and uniqueness, bounds, attribute values) re-applied
+   on the resolved values, reported at the Service's path. The submission stage
+   later combines them with those of every Environment its Sessions enter
+   ([Combined host requirements](#combined-host-requirements-env_params)).
+3. **Numeric `@fmtstring` fields** (§9.5.1) — `resolve_service_int`
+   resolves `port`, the four `healthCheck` numeric fields
+   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`,
+   `failureThreshold`), and `restartPolicy.maxRestarts` with target type
+   `int?`, the same target pass 8 validated them with: a whole-field `null`
+   is "not provided" (`port: None`, or the §9 default — readiness interval 1
+   s for `TCP_CONNECT` and 5 s for `COMMAND`, 300 s ready timeout, 30 s
+   health interval, threshold 3, 0 restarts; a `STDOUT` check's
+   `healthIntervalSeconds` has no default and resolves to `None`, meaning no
+   heartbeat is expected); a multi-segment string concatenates and parses with
+   surrounding whitespace tolerated (`must be an integer.` otherwise); the
+   result must lie in the field's range (`must be between 1 and 65535.`,
+   `must be > 0.`, `must be >= 0.`), recorded as a check failure at the
+   field path with pass 12's wording — every violating field is reported,
+   and the Service's remaining checks still run. A resolution failure (a
+   whole-field value the `int?` target rejects) is a `FormatStringError`
+   whose message carries the field path and aborts alone, like a Step's
+   host requirements. The §9 defaults also fill the
+   `healthCheck` / `restartPolicy` objects when the template omits
+   them, and a `TCP_CONNECT` check without `ports` is expanded to every
+   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 7 —
+   validation has rejected a Service with none), so `job::Service` never
+   needs the template defaults. Each `job::ServicePort` carries its
+   `protocol` (§9.3 item 3) unchanged from the template. Once every
+   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 6.4
+   / §9 item 6.4 to the resolved numbers: two ports with the same
+   `protocol` and the same number fail at `ports[i] -> port` of the later
+   one with pass 12's wording (`<TCP|UDP> port <n> is also used by port
+   '<earlier>'; two ports with the same protocol must not have the same
+   port number.`), which catches the format-string forms the template
+   validator could not compare. The same number on a TCP and a UDP port
+   is accepted. Once `maxRestarts` is resolved, §9.5 item 2
+   is applied to the resolved value: a `maxRestarts` greater than 0 without
+   `completedTasks` fails at `restartPolicy` with pass 12's wording
+   (`completedTasks must be provided when maxRestarts is greater than 0
+   (maxRestarts is 2): …`), which catches the format-string form the
+   template validator deferred; `job::ServiceRestartPolicy::completed_tasks`
+   is carried as given (`None` only with `maxRestarts` 0 — see
+   [job-types.md](job-types.md)).
+4. **Carried-forward re-checks** — `build_service_check_symtab` extends the
+   Service's table with the `Unresolved` placeholders the Service Session
+   binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
+   files, its own `Service.<name>.<port>.*` including `bindAddress`, the
+   `port` / `connectAddress` of every Service in `in_scope` — the Services
+   of its document it lists with the `service` key — and of the declared ports
+   of the `externalServices` entries it lists,
+   `listed_requirements(svc.dependencies, requirements)`), evaluates the
+   `<ServiceScript>.let` bindings into it through
+   `check_carried_forward_let_bindings` (a failure is a check failure at
+   `services[k] -> script -> let[j]`, the name bound `Unresolved`), and
+   `check_carried_forward_service` re-runs the pass 8 constraints on
+   `variables` (§4.4.2 length), every action's `command` / `args`, every
+   action's `timeout` / `cancelation` (`validate_action_timing_fs` against
+   the Service's job-creation table — `<Service>.let` in scope, as at pass
+   8), and embedded-file `data` — the Service counterpart of
+   `check_carried_forward_environment`.
+5. **Conversion** — `variables` and `script` are carried as
+   `FormatString`s; `dependencies` is copied as written (`dependsOn` and
+   `service` entries; an `environment:` entry orders nothing and is left out,
+   as for a Step); `scope` is the computed value, replaced by the submission
+   stage's over the combined Job (for an external Service, the only one);
+   `environment_parameters` holds the Service's values for the Job Template's
+   Job Environments, to which the submission stage prepends those for the
+   attached ones, and `environments` is set by the submission stage;
+   `resolved_symtab` is `filter_symtab_for_service` (the
+   symbols those fields and `<ServiceScript>.let` reference, with the
+   `RawParam.*` fallback). A Service that recorded any check failure in
+   steps 1, 3, or 4 is returned as `None` instead — its resolved values are
+   incomplete — and job creation fails on the collection.
+
+`externalServices` is converted field for field into `Job::external_services`.
+
+The check symbol tables of the entities *around* a Service follow the same
+dependencies. `build_task_check_symtab` seeds a Step's check table with the
+`port` / `connectAddress` of the inline and required Services the Step lists —
+`listed_services(step.dependencies, services)` and
+`listed_requirements(step.dependencies, requirements)`; its `stepEnvironments`
+are checked by `build_env_check_symtab` against the same
+Services and requirements, seeded unconditionally — a Step Environment is
+entered only by the Task Sessions of its Step. A
+`jobEnvironments` entry is checked against the inline
+Services and the requirements it lists in its *own* `dependencies` —
+`listed_services(env.dependencies, services)` and
+`listed_requirements(env.dependencies, requirements)` — the same rule as for
+a Step (listing an inline Service from a Job Environment is what puts every
+Step whose Sessions enter it in its scope, §9.1 rule 3), seeded
+unconditionally — the same visibility rules pass 8 applied, so a reference
+that validated resolves here and at run time. No Job that job creation returns has a Service
+whose Sessions enter an Environment that lists it: entering one, by its `activation` or
+through the Service's own `environment:` entry, is the dependency cycle `X -> X`, which
+template validation or job creation rejects.
+
+Environment conversion carries `dependencies` (as written) and the four
+`onWrapService*` hooks into `job::Environment`. Which Sessions enter it is
+recorded on the entities (`job::Step::environments`,
+`job::Service::environments`), not on the Environment.
+
 #### Resolved-value checks on carried-forward fields
 
 Of the spec's three processing stages (Template Schemas §7.4: template
@@ -677,6 +839,8 @@ re-run on the result:
 | Field | Constraint |
 |---|---|
 | environment `variables` values | resolved-length bound vs 2048 (§4.4.2, spec-mandated, always on) |
+| Service `variables` values (RFC 0009) | the same §4.4.2 bound |
+| Service action `command`/`args`, embedded-file `data` (RFC 0009) | the same opt-in caps as a Step's / Environment's |
 | action `command`, each `args[*]` entry | bound vs `CallerLimits::max_resolved_arg_len`, if set |
 | embedded file `data` | bound vs `CallerLimits::max_resolved_data_len`, if set |
 | action `timeout` (FB1) | coerced integer > 0; `null` = unset (spec-mandated) |
@@ -783,26 +947,36 @@ diagnostic from this stage names a synthesized node.
 
 **Aggregation.** Like pass 8, job creation reports every check failure
 in the template at once: one `ValidationErrors` collection is threaded
-through the job environments and every step (`instantiate_step` takes
-it as `&mut`) and converted to a single `ModelError::ModelValidation`
-once, together with the submission stage's errors and before them, as the
-`Validation` key of [Error order](#error-order) says; the caller-limit
-task-count and size checks come after them. The order is pass 8's order — deterministic
-except within one environment's `variables`, which is a `HashMap` and
-iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
-order — its step-level `let`, its script (`let`, `onRun`
-`command`/`args`, `timeout`/`cancelation`, embedded-file `data`), then
-its `stepEnvironments` in order (`let`, `variables`, every action's
+through the job environments, every Service (RFC 0009), and every step
+(`instantiate_service` and `instantiate_step` take it as `&mut`) and
+converted to a single `ModelError::ModelValidation` once, together with
+the submission stage's errors and before them, as the `Validation` key of
+[Error order](#error-order) says; the caller-limit task-count and size
+checks come after them. The order is pass 8's order — deterministic except
+within one environment's or Service's `variables`, which is a `HashMap`
+and iterates in arbitrary order (shared with pass 8): `jobEnvironments` in
+template order, then each Service in `services` order (`let`,
+`hostRequirements`, the numeric fields — `ports[*].port`, the
+`healthCheck` fields, `restartPolicy.maxRestarts` and its
+`completedTasks` requirement — then its script's `let`, `variables`,
+every action's `command`/`args` and `timeout`/`cancelation`,
+embedded-file `data`), then each step in template order — its
+step-level `let`, its script (`let`, `onRun` `command`/`args`,
+`timeout`/`cancelation`, embedded-file `data`), then its
+`stepEnvironments` in order (`let`, `variables`, every action's
 `command`/`args`, every action's `timeout`/`cancelation`, embedded-file
-`data`). **Non-check failures are reported alone.** The job name and
-parameter constraints are checked before any check failure is
-collected, and the caller task-count / size caps are reported only when
-no error at all was found, after the submission stage, so a cap is never
-reported together with a check failure. Resolving a step's host
-requirements or parameter space for real (a value that cannot coerce,
-a duplicate resolved capability name, an association length mismatch,
-…) aborts immediately, discarding any check failures collected from
-earlier scopes. These leave the job unconstructible
+`data`). The submission stage files each attached document's checks the
+same way, after the Job Template's (see below). **Non-check failures are
+reported alone.** The job name and parameter constraints are checked
+before any check failure is collected, and the caller task-count / size
+caps are reported only when no error at all was found, after the
+submission stage, so a cap is never reported together with a check
+failure. Resolving a step's host requirements or parameter space for real
+(a value that cannot coerce, a duplicate resolved capability name, an
+association length mismatch, …), or a Service's host requirements or a
+Service numeric field that does not resolve to `int?`, aborts
+immediately, discarding any check failures collected from earlier
+scopes. These leave the job unconstructible
 rather than describing a defect in a carried-forward field, and they
 are reported with their own (pre-existing) error kinds and formats.
 
@@ -858,20 +1032,29 @@ The paths below are written in the form they take when Environment Templates are
 [Error order](#error-order) says.
 
 The last stage of `create_job_with_environment_templates` (Template Schemas §3.2.1–§3.2.2, §4
-item 4), the crate-private `apply_environment_templates` in `job/create_job/external.rs`. A
+item 4, and with `SERVICE` §1.2.2), the crate-private `apply_environment_templates` in
+`job/create_job/external.rs`. A
 submission combines one Job Template with zero or more Environment Templates that the
 scheduler attaches, in its order. It takes the Job that job creation proper built from the
-Job Template, what job creation decided for each Step (its frozen and disabled entries, and
-the `jobEnvironments` entries that apply to it by their `activation`, with its values
-for them, undecided), the errors job creation found, the `Job.EnvNames` value, and the merged
-values
+Job Template, what job creation decided for each Step and each of the Job Template's Services
+(its frozen and disabled entries, and the `jobEnvironments` entries that apply to it by their
+`activation`, with its values for them, undecided), the errors job creation found, the
+`Job.EnvNames` value, and the merged values
 `preprocess_job_parameters` produced with the same Environment Templates. `ctx` supplies the
 caller limits, and its profile is the Job Template's (job creation checked that), which the
 Job Environments' host requirements read. Each attached template is
 evaluated under its own profile (`EnvironmentTemplate::profile()`), since an extension applies
 to the document that lists it (§1.2 item 3): an attachment that lists `ENV_PARAMS` lists `EXPR`
 too, so its `default`s may use `EXPR` when the Job Template lists neither, and a Job Template
-that has entries lists both.
+that has entries lists both. A services-only attachment (RFC 0009: `services` and no
+`environment`) takes no part in steps 1–8: no entry can name it, and it contributes no
+Environment to `Job.EnvNames` or the combined `jobEnvironments`.
+
+0. With `SERVICE`, first, requirement matching (§1.2.2 item 2; see
+   [Services from Environment Templates](#services-from-environment-templates-service)) runs
+   against the attachments, and a violation is reported alone, as one `Submission` error. `create_job` (and
+   `create_job_details`), for the Job Template alone, skip them, so a Job Template that
+   requires an external Service creates a Job without one, as in the `SERVICE` prototype.
 
 1. Each attachment's literal `default`s are checked, as job creation checks the Job
    Template's. An attachment named like a Job Environment gets a warning (§3.2.1 item 4) when
@@ -907,11 +1090,12 @@ that has entries lists both.
      enabled entry names are not an error (plan A11), unless their `activation` is `ALWAYS` or
      `BY_DEFAULT` and they have parameters without a `default`: no enabled entry can reach
      them, so each such attachment gets one error at its `envParameterDefinitions`, as in step
-     1, whatever its `enableIf` or group, when it applies to some Step that is not stopped (for
-     a `BY_DEFAULT` one, a Step that does not decline it), and those parameters are not
-     reported per Step. Same-named attachments whose name is also a Job Environment's get only
-     step 1's error: an entry with that name refers to the Job Environment and is not matched
-     to the attachments, so item 3 does not apply to them.
+     1, whatever its `enableIf` or group, when it applies to some Step or, with `SERVICE`, Job
+     Template Service that is not stopped (for a `BY_DEFAULT` one, one that does not decline
+     it), and those parameters are not reported per Step or Service. Same-named attachments
+     whose name is also a Job Environment's get only step 1's error: an entry with that name
+     refers to the Job Environment and is not matched to the attachments, so item 3 does not
+     apply to them.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
@@ -975,14 +1159,63 @@ that has entries lists both.
    and label lengths.
 4. The attachments' Environments are converted with `convert_environment_with_symtab`, with the
    merged Job Parameters, plus `Job.Name` and `Job.EnvNames` when the attachment lists `EXPR`,
-   as the frozen table.
+   as the frozen table, after the carried-forward resolved-value checks job creation runs on a
+   `jobEnvironments` entry (from the `SERVICE` prototype; against the same table, with the
+   Services of its own document it lists). Each attachment's external Services (RFC 0009) are
+   instantiated here too, in attachment order (see
+   [Services from Environment Templates](#services-from-environment-templates-service)).
 5. The Job is combined: `job_environments` becomes the attachments followed by the Job's own
-   (a Session enters the attachments first), and each Step's `environment_parameters` becomes
-   its values for the attachments followed by its own.
+   (a Session enters the attachments first), each Step's `environment_parameters` becomes
+   its values for the attachments followed by its own, and `services` becomes the external
+   Services followed by the Job Template's own (`None` when that is empty).
 6. Each Step's `environments` lists the combined Job Environments its Sessions enter after
    §7.4.1 step 6: each Environment's own `enableIf` and its `exclusiveGroup`, all decided in
    step 3 (see [Environment enableIf](#environment-enableif-env_params) and
    [Exclusive groups](#exclusive-groups-env_params)), or is `None` when it enters every one.
+   Each Service's `environments`, `environment_parameters` and statuses
+   (`CreatedJob::service_environment_statuses`) are completed the same way (RFC 0009
+   "Services run inside Environments"): a Job Template Service's exactly as a Step's, in the
+   same per-entity loop, with its errors filed after every Step's; an external Service's among
+   the Environments of its own document and of the Environment Templates attached before it.
+   An external Service has only disabled `environment:` entries (§1.2 *services* constraint 5):
+   each resolves to its own document's Environment if it has that name and otherwise among the
+   earlier attachments' Environments, where a name that two or more define refers to each of
+   them (as for a Step, §3.2.1 item 3), none has no effect, and declining an `ALWAYS` one (not
+   from a document without `ENV_PARAMS`, on which it has no effect) is an error. Its Sessions
+   enter every `ALWAYS` one and every `BY_DEFAULT` one it does not decline, with the
+   `default`s, after the group rule and their own `enableIf`, decided for it with its own
+   copies of those Environments so that a failure is reported only with it.
+   The errors of its entries depend only on the documents, so they are reported whatever its
+   scope, as `check` reports them; its other errors only once its scope is known and not empty.
+   Then, with every edge known, and only when no Step or Service has an error from steps 1–4,
+   `composition::analyze` builds the combined dependency graph — the
+   `dependsOn`/`step`/`service` edges plus an edge from each Step and each Service whose
+   Sessions enter a Job Environment to each Service that Environment lists. There is no
+   exception for an Environment that lists the Service: a Service whose Sessions enter one,
+   by its `activation` or through its own `environment:` entry, is the edge `X -> X`. A cycle
+   is reported with the `ServiceDependencyCycle` message, under step 7 after the entities'
+   errors: at `<document> -> services` when every node on it is a Service of one attached
+   Environment Template (the cycle is that document's, as template validation would report
+   it), and otherwise at the Job Template's root. The checks that need the scopes are then not
+   made.
+   Otherwise it gives every Service its final §9.1 scope: the Steps that list it
+   (rule 1), the Steps whose Sessions enter a Job Environment that lists it (rule 3), and the
+   scope of every Service with an edge to it (rule 2). An inline Service left with no Step
+   once every `enableIf` is decided is an error at `services[k]`: "Service 'X' is unused: no
+   Step is in its scope once every enableIf and exclusiveGroup is decided (Template Schemas §9.1 rule 4)." An
+   external Service with an empty scope is never started, and its errors other than those of
+   its `environment:` entries are dropped.
+   After step 7's single-layer rule, wrap hook rule 1 (RFC 0009) and the Service Sessions'
+   single-layer rule are checked over the final sets, also when the scopes are not known (a
+   stopped entity's Sessions enter nothing, and an attached Service then counts as unused): a wrapping Job
+   Environment that a Task Session enters must define `onWrapEnvEnter`, `onWrapTaskRun` and
+   `onWrapEnvExit` (checked here for a document that declares `SERVICE`; without it RFC 0008's
+   rule was checked at template validation), and one that the Sessions of a Service with a
+   non-empty scope enter must define `onWrapEnvEnter`, `onWrapEnvExit` and the four
+   `onWrapService*` hooks, whatever its document (§1.2.2 item 4); a wrapping Step Environment
+   whose `enableIf` template validation does not know is checked for the Task hooks. The
+   error is at the Environment's `script -> actions` (see
+   [Services from Environment Templates](#services-from-environment-templates-service)).
 7. The `WRAP_ACTIONS` single-layer rule (RFC 0008) is checked over each Step's final
    Environment set: the combined Job Environments it enters and its Step Environments. More
    than one Environment defining wrap hooks is an error at `JobTemplate -> steps[i]` naming
@@ -990,17 +1223,23 @@ that has entries lists both.
    own layers that are certainly entered, by entries and Environments whose `enableIf` is
    known there (§7.6 rule 5; see [validation.md](validation.md)); this check also covers an
    `enableIf` that is not known there, on an entry or an Environment, and the attached
-   Environments (prototype plan R8).
-8. Each Step gets its combined host requirements (see
+   Environments (prototype plan R8). With `SERVICE` the same rule is checked over the Job
+   Environments each Service with a non-empty scope enters, reported at the Service's path
+   (`JobTemplate -> services[k]`, or `<doc> -> services[k]` for an external one) as
+   `Service 'X': its Sessions would enter …` (`Service 'X' (<doc>)` for an external one).
+8. Each Step, and each Service with a non-empty scope, gets its combined host requirements (see
    [Combined host requirements](#combined-host-requirements-env_params)), the last stage of
    §7.4.
 
 Every error, with the ones job creation proper found, is reported in one `ModelValidation`
 error in §7.4.1 order (see [Error order](#error-order)). The submission stage runs
-whenever job creation proper built every Step, with or without `ENV_PARAMS`: an error there
-does not stop it. The stage
-does not re-run the carried-forward resolved-value checks on the attachments' own format
-strings (the `SERVICE` prototype's submission function does).
+whenever job creation proper built every Step and Service, with or without `ENV_PARAMS`: an
+error there does not stop it. With `SERVICE` it also runs, for each attachment, the
+carried-forward resolved-value checks on its Environment (against the Services of its own
+document the Environment lists) and its external Services' instantiation checks, filed with
+the template-validation-style errors after the attachments' literal `default`s; a resolution
+failure there (an external Service's `hostRequirements` or numeric field that does not
+resolve) aborts alone, with its document prefixed.
 
 #### Error order
 
@@ -1011,7 +1250,11 @@ alone stopped job creation before the attachments were applied, so errors were r
 of §7.4.1 order. A Job Template without `ENV_PARAMS` kept the two passes until now (see
 [Without ENV_PARAMS](#without-env_params)). Every error is filed in a crate-private
 `StagedErrors` (`job/create_job/staged.rs`) under a key: the §7.4.1 step, then the Step's
-index, then a position within the Step. `finish_errors` (`job/create_job/mod.rs`) reports
+index, then a position within the Step. With `SERVICE` each Service is filed as a Step is,
+under an index after every Step's: the Job Template's Services at `n_steps + k` in `services`
+order, then the attached Environment Templates' Services at `n_steps + n_own + x` in attachment
+order, so in each step a Service's errors follow every Step's. This order is the prototype's
+choice; RFC 0009 does not specify one. `finish_errors` (`job/create_job/mod.rs`) reports
 them in key order, and in the order they were filed within a key:
 
 | Key | Errors | Position |
@@ -1030,8 +1273,8 @@ values; an Environment's resolved `hostRequirements`) is filed under the first o
 about no single Step (an unreachable attachment) is filed after every Step's errors of its
 step.
 
-A Step with an error from steps 1–4 has no fixed set of Environments, so steps 5–8 are not
-taken for it: the submission stage skips its values, groups and `enableIf`s, counts it as
+A Step with an error from steps 1–4 (and so a Service, which follows the same rule) has no
+fixed set of Environments, so steps 5–8 are not taken for it: the submission stage skips its values, groups and `enableIf`s, counts it as
 entering no Environment for the single-layer rule, the unreachable-attachment error and host
 requirements, and `finish_errors` drops anything job creation proper filed for it under steps
 5–8 (an undeclared key, a Step Environment's `enableIf`). The other Steps are checked in full.
@@ -1367,25 +1610,42 @@ Environments and the attached ones are handled alike.
   Step none of whose entered Environments has requirements left keeps its own unchanged
   (`None` when it has none), so a Job without Environment requirements serializes as
   before. Discarded requirements take no part in the combination (§3.3.3).
+- **Services** (RFC 0009 `<Service>` item 5). Every Service with a non-empty scope is an
+  entity like a Step: each Environment its Sessions enter is resolved with the Service's
+  effective values (sharing a resolution with Steps and Services whose values have the same
+  transport form), and the combination — its own requirements, then each entered
+  Environment's — replaces `job::Service::host_requirements`. A conflict is an error at the
+  Service's path (`JobTemplate -> services[k]`, or `EnvironmentTemplate[i] -> services[k]`
+  for an external Service), naming `Service 'X'` (with its document when external). A
+  Service's own requirements are resolved when it is instantiated, as a Step's are, so with
+  ENV_PARAMS (which `SERVICE` requires) one that resolves to nothing is discarded, and so is
+  an entered Environment's for it; a Service left with none has `host_requirements: None`.
 
 The result, `CreatedJob { job, environment_documents, warnings, disabled_environments,
-environment_statuses, discarded_host_requirements }`, holds the combined Job, the document of
-each of its `job_environments`, the warnings as `SubmissionWarning { path, message }`, for
-each Step the Environments an `enableIf` disabled or a group superseded
+environment_statuses, discarded_host_requirements, service_environment_statuses,
+discarded_service_host_requirements, requirement_bindings }`, holds the combined Job, the
+document of each of its `job_environments`, the warnings as `SubmissionWarning { path,
+message }`, for each Step the Environments an `enableIf` disabled or a group superseded
 (`StepDisabledEnvironments`; see [Environment enableIf](#environment-enableif-env_params) and
 [Exclusive groups](#exclusive-groups-env_params)), for each Step every Environment it
 considered with its status and its optional entries that named nothing
 (`StepEnvironmentStatuses`; see [Environment statuses](#environment-statuses-env_params)),
 and for each Step the host
 requirements that resolved to nothing and were discarded (`DiscardedHostRequirement`, the
-Step's own first, then each entered Environment's in Job order; Template Schemas §3.3).
+Step's own first, then each entered Environment's in Job order; Template Schemas §3.3). With
+`SERVICE` it holds the same statuses and discards for each Service of `job.services`, index
+for index (`service_environment_statuses`, `discarded_service_host_requirements`), and the
+`RequirementBinding` each `externalServices` entry was matched to (step 0). Each Service of
+the combined Job carries the Job Environments its Sessions enter and its own effective values
+for them (`job::Service::environments`, `job::Service::environment_parameters`), with which a
+runtime enters them in a Service Session — the CLI passes the latter as
+`ServiceSessionConfig::environment_parameters` — and its combined host requirements.
 
-`AttachedEnvironmentTemplate` matches the `SERVICE` prototype's (`service-extension`
-branch). That branch's public `apply_environment_templates` takes `&CallerLimits` and
-returns a delta (`AppliedEnvironmentTemplates` with Services, requirement bindings, and the
-attached Environments) that `into_combined_job` folds into the Job; this stage is
-crate-private, takes `&ValidationContext` because it needs the caller limits, and
-returns the combined Job. Merging the two is a follow-up (prototype plan P1).
+`AttachedEnvironmentTemplate` is the one type both prototypes had: a `&EnvironmentTemplate`
+and an optional label. The `SERVICE` prototype's public `apply_environment_templates` (taking
+`&CallerLimits` and returning an `AppliedEnvironmentTemplates` delta that `into_combined_job`
+folded into the Job) is merged into this stage and is no longer public: the stage takes
+`&ValidationContext`, because it needs the caller limits, and returns the combined Job.
 
 ### check_environment_templates
 
@@ -1414,11 +1674,12 @@ certain of, in its own order (so it can report a Step's value errors that job cr
 reports only once the Step's step 1–4 errors are fixed):
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
-   for an unreachable attachment is reported when it certainly applies to some Step (by its
-   `activation`, since no enabled entry decides it, and for a `BY_DEFAULT` one only for a Step
-   that has no entry for its name that is known to be disabled or whose `enableIf` is not
-   known), whatever its own `enableIf` or `exclusiveGroup` (§3.2 constraint 7). That error is reported after item 3's errors (job creation files it
-   under step 5, after every Step's step 5 errors);
+   for an unreachable attachment is reported when it certainly applies to some Step or, with
+   `SERVICE`, Job Template Service (by its `activation`, since no enabled entry decides it,
+   and for a `BY_DEFAULT` one only for one that has no entry for its name that is known to be
+   disabled or whose `enableIf` is not known), whatever its own `enableIf` or
+   `exclusiveGroup` (§3.2 constraint 7). That error is reported after item 3's errors (job
+   creation files it under step 5, after every Step's step 5 errors);
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
    template-validation error), with `required` defaulting to `true`. Whether an entry is
@@ -1502,15 +1763,21 @@ reports only once the Step's step 1–4 errors are fixed):
    has job creation's message. A literal requirement is never discarded (Template Schemas
    §3.3), so leaving out the others finds only conflicts job creation also has. When a non-literal requirement of the same capability also
    takes part, job creation may name other sources or bounds, or report a conflict this
-   check cannot see. An Environment whose values for the Step fail here (reported by item 3,
-   or, for an attachment no entry can reach, by item 1's attachment-level error for its
-   parameters without a `default`) is still combined, while job creation skips it until its values are fixed, so `check` can
-   report one more conflict than `openjd run` for such a submission, or name that Environment
-   where `openjd run` names another source with the same bound. An attachment that
-   declares parameters and that an enabled, or not known, ambiguous entry of the Step names is left out, since job
-   creation computes no values for it and so skips its requirements. An `ALWAYS` attachment that
-   an entry whose `enableIf` is not known names is kept, since the Step's Sessions enter it
-   either way; a `BY_DEFAULT` one is left out, since the entry may decline it. A conflict that involves
+   check cannot see. An attachment that declares parameters is left out of an entity's (a
+   Step's or a Job Template Service's) combination when an enabled ambiguous entry of the
+   entity names it; when an entry whose `enableIf` is not known may name it and either two or more
+   attachments define that name (it is then ambiguous where the entry is enabled) or the
+   entity's values for it are not certain both with the entry's values and with the
+   `default`s (job creation may otherwise compute no values for it); when item 3 rejected the
+   entity's values for it, or when any of them is not a literal (`check_step_statically`
+   reports whether a value failed constraint 6, a parameter lacks a value, a literal `default`
+   it uses failed, or a value or `default` it uses is a format string; constraint 5 alone does
+   not reject them, as at job creation). Job creation computes no values for a rejected one and
+   skips its requirements, and only it resolves a format string, which may fail, so `check`
+   never reports a conflict through such an Environment; job creation reports any it has. An
+   `ALWAYS` attachment that an entry whose `enableIf` is not known names is kept when its
+   values are certain both ways, since the entity's Sessions enter it either way; a
+   `BY_DEFAULT` one is left out, since the entry may decline it. A conflict that involves
    only the Job Template's own requirements (a Job Environment's with its Step's, no
    attachment) is reported here too, though `openjd check` without `--environment` and
    template validation leave it to job creation.
@@ -1519,11 +1786,265 @@ reports only once the Step's step 1–4 errors are fixed):
    to every list of an `attr.worker.os.family` or `attr.worker.cpu.arch` requirement. A
    Step with no literal Environment requirement is skipped.
 
+With `SERVICE`, each Service of the Job Template's `services` is checked as a Step is (RFC 0009
+`<StepDependency>` item 3: RFC 0010's "Step" reads as "Service" for these rules), after the
+Steps, by the same code path over its template `dependencies`, with the messages job creation
+gives for a Service (`RequesterKind::Service`: "the Service can run without the Environment",
+and the constraint 7 reason `SERVICE_EVERY_ATTACHED`): items 2 and 3 for its entries and the
+attachments that apply to it (every `ALWAYS` one, every `BY_DEFAULT` one it does not decline,
+and each `ON_REQUEST` one it requests), and item 5 for its combined host requirements (RFC
+0009 `<Service>` item 5), over the Environments its Sessions certainly enter, exactly as for a
+Step: there is no exception for an Environment that lists the Service (RFC 0009 "Services run
+inside Environments"). Item 5 is applied to a Service only when template validation knows its
+scope is not empty (`compute_service_scopes`), since job creation combines a Service's
+requirements only when something uses it.
+
+Each attached (external) Service is checked as job creation decides for it, among the
+Environments of its own document and of the attachments before it: its disabled entries are
+resolved as job creation resolves them, so one whose name two or more earlier attachments
+define refers to each of them, and declining an earlier attachment's `ALWAYS` one is an error
+(declining its own document's `ALWAYS` one was reported at template validation); its Sessions
+certainly enter every `ALWAYS` one and every `BY_DEFAULT` one it does not decline whose own
+`enableIf` is known to be `true`, after the group rule. For one known to be used, constraint
+7 is checked over those that apply to it (each parameter needs a `default`,
+`check_step_statically` with no entry, reported at `<doc> -> services[k]` with
+`EVERY_ENVIRONMENT_OF_EXTERNAL_SERVICE`), and item 5 over the ones it certainly enters with
+its own `hostRequirements`, leaving out each Environment for which constraint 7 or a failed
+literal `default` rejected its values, as job creation does, and each whose `default`s are
+not all literals, which only job creation resolves. An attached Service is known to be used
+when an entity known to be in a scope (a Step, or a Job Template Service whose
+`compute_service_scopes` scope is not empty) certainly enters its document's Environment that
+lists it, when the `externalServices` entry of its name has a non-empty
+`required_service_scopes` scope, or, to a fixed point, when an attached Service of its
+document known to be used lists it (scope rule 2). Others are left to job creation, which
+computes the scopes over the combined graph.
+
+Before all of this, the Job Template's `externalServices` are matched against the attached
+Services by job creation's `check_services` (§1.2.2 item 2), and a failure is reported alone,
+as at job creation; so when an `externalServices` entry is checked here, exactly one attached
+Service has its name. After the entities' values and the unreachable attachments' error, the
+combined dependency graph is checked for a cycle (`certain_cycle`, RFC 0009
+`<StepDependency>` constraint 3): the nodes, labels, and edge order of
+`composition::analyze`, over the edges certain without Job Parameter values (each `step:` and
+`service:` entry, and the edges from entering each Environment an entity, or an attached
+Service, certainly enters; an Environment in an `exclusiveGroup` counts when no earlier member
+of its group can supersede it). A cycle is reported with job creation's message and at its
+path (at `<document> -> services` when every node is a Service of one attachment, otherwise
+at the Job Template's root), together with the errors found before it, and the checks below
+are not made. A cycle that needs an edge that an `enableIf` not known here, or a group member
+that may come first, decides is left to job creation, which may also name an earlier cycle
+such an edge makes.
+
+For every Service known to be used, in job creation's order (attached first), two more checks
+follow item 4's Steps: wrap hook rule 1 (`report_wrap_hooks`, shared with job creation's
+`check_wrap_hooks`) over every Environment of the combined Job, naming the first Step (for a
+document that declares `SERVICE`) and the first such Service that certainly enter it; and the
+single-layer rule over the wrapping Environments the Service certainly enters, at the
+Service's path, for an attached Service and for a Job Template Service with an attached layer.
+
+Each entity's entries and values are reported together, Steps first, then the unreachable
+attachments' error of item 1, the Steps' single-layer rule, the attached Services' resolution
+errors, a cycle (after which nothing more is checked), the attached Services' constraint 7,
+wrap hook rule 1, the Services' single-layer rule, and the host requirements (Steps, attached
+Services, Job Template Services).
+
 `ctx` supplies the caller limits, as for job creation. A submission that passes can still be
 rejected at job creation, for a format-string value or non-literal `default` that does not
 resolve to a valid value with the submitted Job Parameters, for an entry or an Environment
 whose `enableIf` is an expression (and the Environments it may bring into a Step's set), or
 for a host requirement that is not a literal.
+
+#### Services from Environment Templates (SERVICE)
+
+The RFC 0009 part of [the submission stage](#the-submission-stage) (Template Schemas §1.2.2
+"Services from Environment Templates", RFC 0009 "Environment Template" and the "Validation"
+section's submission-time check), merged from the `SERVICE` prototype's
+`apply_environment_templates`. `create_job` stays a function of the Job Template only; the
+submission stage is the only place the crate sees several documents together.
+
+Inputs: `attached` in the scheduler's order (an
+`AttachedEnvironmentTemplate` is a `&EnvironmentTemplate` plus an optional
+label — a file path, say — that replaces the positional document name
+`EnvironmentTemplate[i]` in error paths and messages);
+`job_parameter_values` as `preprocess_job_parameters` produced them for the
+same submission (every template's `parameterDefinitions` merged per
+§1.2.1); and the caller's limits and path policy (from `ctx`), applied to
+every template as they were to the Job Template.
+
+What it contributes to `CreatedJob`: the external Services instantiated
+in attachment order (then each template's `services` order), each stamped
+with its attachment as `job::Service::document` and with its scope computed over the combined Job by the §9.1 rules (the Steps whose Sessions enter its own document's `environment` when that lists it; the bound `externalServices` entry's scope when a requirement matched it; closed over the Services that depend on it; empty, and never started, otherwise),
+each instantiated seeing the Services of its own attached document it lists
+with the `service` key (`listed_services(svc.dependencies, services)` over that
+document's `services`), and the attached `environment` checked against every
+Service of its document; and the `RequirementBinding { requirement, document,
+service }` each `externalServices` entry was matched to, in requirement order
+(`CreatedJob::requirement_bindings`). The combined Job's `services` are the
+external Services followed by the Job Template's own (merge rule 1: every
+attached Service is part of the combined Job, scoped by §9.1 over it — the
+Steps whose Sessions enter the document's own Environment when that lists it, the bound
+`externalServices` entry's scope when a requirement is bound to it, closed
+transitively over the document's Services, and empty otherwise, in which case
+it is never started); the attached Environments are placed in
+`jobEnvironments` by step 5 of the submission stage, and a services-only
+template contributes none. The bindings do not fold into the Job; a runtime
+keeps them to seed `Service.<requirement>.*` from the bound Service's
+endpoints. `Job::extensions` is left as the Job Template declared it — an
+extension applies to the document that lists it (§1.2 item 3), and every
+external Service and attached Environment carries the symbols it needs in its
+own `resolved_symtab`.
+
+**Per-document profile.** Each attachment is evaluated under its own
+`EnvironmentTemplate::profile()` (its `specificationVersion` and
+`extensions`, the counterpart of `JobTemplate::profile`) with the caller
+limits layered on. The Job Template need not declare `SERVICE` or `EXPR`
+for an attachment to use them, and vice versa: the RFC's queue-cache
+example applies a `[SERVICE, ENV_PARAMS, EXPR]` attachment to a Job
+Template with no `extensions` at all. The symbol table for a template is
+`build_symbol_table(job_parameter_values)` (the merged `Param.*` /
+`RawParam.*`), plus `Job.Name` and `Job.EnvNames` when that template
+declares `EXPR` — the same table pass 8 validated the document against, now
+with real values.
+
+The profile does not travel on the converted `job::Environment` (`ModelProfile`
+is not serializable and a `job::Environment` is a plain data record a scheduler
+ships to a worker); it stays a property of the template, and a runtime that
+evaluates the attached Environment's `@fmtstring[host]` fields at session time
+must obtain it from `EnvironmentTemplate::profile()` alongside
+`environment_documents` — the CLI keeps the attachments' profiles by attachment
+index and hands each Environment's to
+`Session::enter_environment_with_parameters_and_profile`
+(and each external Service's to its Service Session) so that `join_host_port`
+and the other `SERVICE`-gated functions in an attachment resolve under the
+attachment's extensions rather than the Job Template's.
+
+**Order of work.** Requirement matching runs first (step 0 of the
+submission stage), and every violation is reported in one `ModelValidation`
+error for the model name `Submission` (no single template is "the" model).
+Only if it passes does the rest of the submission stage run; the Services
+are instantiated and the Environments checked in its step 4, and the
+wrapping-Environment rule is checked in step 6, once every Session's
+Environments are known:
+
+1. **Merge rule 2 — requirement matching.** For each entry `i` of the Job
+   Template's `externalServices`, the attached Services named like it are
+   collected across every attachment. Exactly one must exist, and it must
+   declare every port the requirement lists with the same `protocol`;
+   otherwise the error is reported at `JobTemplate -> externalServices[i]`,
+   naming the requirement and the cause:
+
+   ```
+   required Service 'Cache' is not provided: no Environment Template is attached (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is not provided: none of the attached Environment Templates (queue.yaml) defines a Service named 'Cache' (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is ambiguous: 2 attached Environment Templates define a Service with that name (EnvironmentTemplate[0], EnvironmentTemplate[1]); a requirement must match exactly one (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is provided by queue.yaml, which is missing port 'admin'; its ports: main (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is provided by queue.yaml, whose port 'main' has protocol UDP but the requirement declares TCP (Template Schemas §1.2.2 item 2).
+   ```
+
+   A match records `RequirementBinding { requirement, document, service }`.
+   Matching reads the requirement alone — never the Job Template's
+   references.
+
+   **Merge rule 3 — Service names are per document.** Nothing else
+   is compared across documents: an external Service may have the same
+   `name` as a Service in another attachment or in the Job Template's
+   `services` (the Job Template's references resolve to its own Service),
+   and two attachments may both declare a `Cache` when no requirement
+   names it. Each external Service is stamped with `document =
+   Document::EnvironmentTemplate { index, label }` (its 0-based attachment
+   index and the caller's label, if any) after `instantiate_service`,
+   while `create_job`'s own Services keep the default
+   `Document::JobTemplate`; a scheduler keys Services on `(document,
+   name)`. A repeat within one document remains a template-validation
+   error (§9.2, §1.1 item 9.4). The combined Service list is still assembled with
+   provenance (every external Service, then the Job's `services`) — the
+   wrapper check below names a witness from it.
+
+2. **Merge rule 4 — wrapping Environments and Service Sessions** (RFC 0009 wrap hook
+   rule 1, Template Schemas §1.2.2 item 4). A wrapping Environment of the combined Job
+   (one with any `WRAP_ACTIONS` hook) that the Sessions of a Service with a non-empty
+   scope enter must define `onWrapEnvEnter`, `onWrapEnvExit` and the four
+   `onWrapService*` hooks; one that a Task Session enters must define `onWrapEnvEnter`,
+   `onWrapTaskRun` and `onWrapEnvExit`. Extra hooks are permitted. Which Sessions enter
+   it is read from `job::Step::environments` / `job::Service::environments` (step 6), so
+   an `enableIf` expression and an attached Environment are covered. A document that does
+   not declare `SERVICE` cannot define the `onWrapService*` hooks, so its wrapper is
+   rejected exactly when such a Service enters it; an Environment Template alone is never
+   rejected for lacking them. A Step Environment is never entered by a Service Session.
+   The error is at the Environment's `script -> actions` (`EnvironmentTemplate[i] ->
+   environment -> script -> actions` or `JobTemplate -> jobEnvironments[i] -> script ->
+   actions`), naming the first such Service as the witness, the document, and the missing
+   hooks:
+
+   ```
+   the Sessions of Service 'Cache' (EnvironmentTemplate[1]) enter wrapping Environment
+   'QueueContainer', defined by EnvironmentTemplate[0], which therefore must define
+   onWrapEnvEnter, onWrapEnvExit, onWrapServiceEnter, onWrapServiceRun,
+   onWrapServiceHealthCheck, and onWrapServiceExit; missing: onWrapServiceEnter,
+   onWrapServiceRun, onWrapServiceHealthCheck, onWrapServiceExit (RFC 0009 wrap hook rule
+   1, Template Schemas §1.2.2 item 4). Its document, EnvironmentTemplate[0], does not
+   declare the SERVICE extension, so it cannot define the onWrapService* hooks: declare
+   SERVICE and define them, or declare ENV_PARAMS and make the Environment ON_REQUEST, so that only the Steps
+   that request it enter it.
+   ```
+
+   The last sentence is added only for a document that does not declare `SERVICE`; a
+   Service of the Job Template is named without its document. The Task-Session form ends
+   "(RFC 0009 wrap hook rule 1)." and names `Step 'X'`. Both directions are covered by the
+   same walk: a queue's wrapper attachment with a Job that declares Services (or with
+   another attachment that does), and a Job Template's Job-level wrapper with an
+   attachment that defines a Service. With no Service entering a wrapper, a SERVICE-less
+   wrapper is accepted exactly as before RFC 0009.
+
+3. **External Services.** Each `services[k]` is instantiated with the same
+   `instantiate_service` as a Job Template `services[k]` entry, with
+   `InstantiateCtx` built from the attachment's profile and `services` set
+   to that document's `services` (no requirements), `in_scope` the
+   Services of that document it lists with the `service` key —
+   `listed_services(svc.dependencies, services)`, the only ones a
+   `Service.*` reference there can name — and its scope from step 6's
+   composition (§9.1 over the combined Job, §1.2.2; empty when nothing in the
+   Job depends on it).
+   `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
+   and the carried-forward re-checks all run as for an inline Service,
+   reporting into the submission's collection (below).
+4. **Attached Environments.** The carried-forward resolved-value checks
+   run as for a `jobEnvironments` entry (`build_env_check_symtab` seeded
+   with the Services of the document the Environment lists in its own
+   `dependencies` — `listed_services(env.dependencies, services)`, exactly
+   the pass 8 scope), then `convert_environment_with_symtab` freezes the
+   attachment's table into `resolved_symtab` and carries the `dependencies`,
+   and the attachment's `Document` is pushed onto `environment_documents` so
+   a runtime seeding `Service.*` for the Environment seeds, of that
+   document's Services, the ones the Environment lists.
+
+Errors raised inside one document in steps 3–4 are attributed to it.
+Check failures (the collected kind — a Service's `let`, numeric fields,
+and carried-forward fields; an Environment's `let` and carried-forward
+fields) accumulate across **every** attached document into the submission
+stage's collection, each path
+prefixed with its document's (`EnvironmentTemplate[0] -> services[0] ->
+ports[0] -> port: must be between 1 and 65535.`, `queue.yaml ->
+environment -> variables -> BIG: ...`), and are reported with the
+submission stage's other errors as one `ModelValidation` error for
+`Submission` — the same whole-template aggregation `create_job` performs,
+extended to the submission. Resolution failures abort alone, as in `create_job`, with
+the document prefixed: validation errors get it on every path, and
+format-string errors on the message (`Format string error:
+EnvironmentTemplate[0]: services[0] -> ports[0] -> port: ...`).
+
+**Limits.** The 10-element cap on `services` is per document (pass 12)
+and is not re-applied to the combined list: three documents at the cap
+combine to 30 Services. `CallerLimits::max_environment_size` is applied
+by `create_job` to the Job Template's Environments; an application that
+wants it on attached Environments measures the combined Job's attached
+`job_environments`.
+
+**Unchanged behavior.** An attachment that defines no Services and
+declares no `SERVICE` has exactly the pre-RFC-0009 behavior: its
+Environment is converted with the merged parameter table (what the CLI
+did by hand with `build_symbol_table` + `convert_environment_with_symtab`),
+and the wrapper rule has no Service in scope.
 
 ### convert_environment
 
@@ -1531,8 +2052,11 @@ for a host requirement that is not a literal.
 pub fn convert_environment(env: &template::Environment) -> job::Environment
 ```
 
-Converts a template environment to a resolved job environment. Takes 1 argument and is
+Converts a template environment — a Job Environment, a Step Environment, or an Environment
+Template's `environment` — to a resolved job environment. Takes 1 argument and is
 infallible. Environment variables and script fields remain as FormatString (session-scope).
+Which Sessions enter the Environment is not part of it; it is recorded on the entities
+(`job::Step::environments`, `job::Service::environments`).
 
 A separate `convert_environment_with_symtab` function accepts an optional `&SymbolTable`
 to filter the symbol table to only symbols referenced by the environment's format strings.

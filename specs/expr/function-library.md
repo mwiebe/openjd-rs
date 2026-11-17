@@ -601,11 +601,24 @@ the default library category modules (see `default_library.rs`).
 
 ## Function Coverage
 
-200 Rust signatures registered in `default_library.rs`. All function names from the
-specification are present. Some per-type overloads use generic `T1` signatures where
-the specification spells out per concrete type (e.g., `repr_pwsh` has separate
-signatures for string, int, float, bool, path, range_expr, list in the spec but uses
-generic `T1` in Rust).
+224 Rust signatures registered in `default_library.rs` (counted over
+`FunctionLibrary::for_profile(&ExprProfile::current())`), plus the 6 that the
+`SERVICE` extension (RFC 0009) adds — `join_host_port`, `split_host_port`,
+`is_ipv4`, `is_ipv6` (§2.2.4) and the `repr_sh(int)` / `repr_sh(list[int])` signatures
+(§2.2.6) — for 230 under `ExprProfile::latest()`. Those six are registered by
+`register_service_functions`, which `build_library_skeleton` calls only for a profile
+with `ExprExtension::Service`; the host and port functions are implemented in
+`functions/host_port.rs`, and the two `repr_sh` signatures reuse `repr_sh_fn`
+(`functions/repr.rs` already rendered an `int` as its decimal form and a list as its
+space-joined items; only the signatures were absent, so without `SERVICE` the call is
+a type error — `No matching signature for repr_sh(int)` — wherever the argument is
+evaluated without a string target; in a whole-field string-target value such as an
+Environment `variables` entry, RFC 0005 target-type propagation coerces the `int` to
+`string` before dispatch and the base `(string)` signature accepts it, exactly as
+`upper(5)` does there). All function names from the specification are present. Some per-type
+overloads use generic `T1` signatures where the specification spells out per concrete
+type (e.g., `repr_pwsh` has separate signatures for string, int, float, bool, path,
+range_expr, list in the spec but uses generic `T1` in Rust).
 
 ## Function Semantics
 
@@ -671,6 +684,35 @@ sections 2.1 (Operators) and 2.2 (Built-in Functions). Key implementation choice
   ≥ 3.8 semantics) and lowercases the rest. Both apply the Final_Sigma
   context rule when lowering U+03A3 (via the `CASED` and `CASE_IGNORABLE`
   tables), which Rust's context-free `char::to_lowercase` cannot express.
+- **Host and port functions** (`join_host_port`, `split_host_port`, `is_ipv4`,
+  `is_ipv6`, §2.2.4; added by RFC 0009) follow Go's `net.JoinHostPort` and
+  `net.SplitHostPort` with the two deviations the spec requires. `join_host_port`
+  brackets the host when it contains a colon and is not already wrapped in a
+  matching `[`…`]` pair, so `"[2001:db8::5]"` is not bracketed again; the port is
+  formatted from its `int` value without range validation; a `%zone` suffix is
+  carried through verbatim. `split_host_port` finds the port after the *last*
+  colon. It returns `null` (not an error) when there is no port: no colon at all,
+  a `[host]` with nothing after `]`, or an unbracketed host containing more than
+  one colon (a bare IPv6 literal). Malformed brackets are an evaluation error whose
+  message quotes the input: a `[` with no `]` (`missing ']'`), characters between
+  `]` and the port's `:` (`unexpected characters after ']'`), a `]:` followed by a
+  further colon (`too many colons`), or a `[`/`]` anywhere else
+  (`unexpected '[' or ']'`). Brackets are stripped from the returned host, the
+  port element is returned as an unvalidated string (so `"host:"` splits to
+  `["host", ""]` as in Go), and the result list is `list[string]`; the signature's
+  `list[string]?` return type makes `split_host_port(S)` with an unresolved `S`
+  evaluate to `unresolved[list[string]?]`. `is_ipv4` is `std::net::Ipv4Addr`
+  parsing (dotted quad only; leading-zero octets are rejected). `is_ipv6` strips
+  one matching pair of brackets and a non-empty `%zone` suffix, then uses
+  `std::net::Ipv6Addr` parsing, so `"::1"`, `"[::1]"`, `"fe80::1%eth0"` and
+  `"[fe80::1%eth0]"` are all `true` while `"[::1]:80"` and `"fe80::1%"` are
+  `false`. All four count string operations proportional to the input length;
+  `join_host_port` reserves its output budget before formatting and
+  `split_host_port` builds its list through `make_list_checked`.
+  These are registered only when the profile enables `ExprExtension::Service`
+  (`FunctionLibrary::for_profile` merges them in `register_service_functions`); a
+  profile with EXPR alone reports them as unknown functions, and the base-library
+  inventory test asserts their absence.
 - **Regex functions** reject lookahead, lookbehind, backreferences, and `\Z` (§2.2.5).
   Validation parses the pattern with `regex_syntax`, rather than a substring
   scan. This correctly ignores lookaround-shaped syntax that appears inside
@@ -709,6 +751,9 @@ sections 2.1 (Operators) and 2.2 (Built-in Functions). Key implementation choice
   (Python's `$` ≈ Rust's `(?:\n?\z)`); the intersection dialect allows `$`,
   so results differ on newline-terminated input.
 - **`repr_sh/cmd/pwsh`** produce shell-safe quoting per platform conventions (§2.2.6).
+  Under `SERVICE`, `repr_sh` also accepts `int` (the decimal form; never quoted) and
+  `list[int]` (decimal forms joined with single spaces), so a port number or
+  `WrappedService.Ports` needs no `string()` first (RFC 0009).
   `repr_pwsh` renders nested lists as nested array literals, using the unary
   comma for a one-element outer list (`@(,@(1, 2))`) since `@(@(1, 2))`
   flattens in PowerShell. `repr_sh` and `repr_cmd` reject nested lists at

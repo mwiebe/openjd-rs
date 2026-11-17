@@ -51,6 +51,7 @@ fn env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> Environ
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -58,6 +59,10 @@ fn env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> Environ
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit,
             },
             embedded_files: None,
@@ -580,6 +585,7 @@ fn env_with_var(name: &str, value: &str) -> Environment {
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         script: None,
         variables: Some(HashMap::from([("CLEAR_TEST_VAR".into(), fs(value))])),
         resolved_symtab: None,
@@ -847,6 +853,7 @@ fn config_for_test(tmp: &TempDir) -> openjd_sessions::session::SessionConfig {
         retain_working_dir: false,
         callback: None,
         os_env_vars: None,
+        log_tag: None,
         session_root_directory: Some(tmp.path().to_path_buf()),
         user: None,
         profile: None,
@@ -1042,5 +1049,77 @@ async fn clear_ending_only_after_per_action_cancel_with_session_token() {
     assert!(!token.is_cancelled());
     clear_and_check(&mut s);
     assert_accepts_new_actions(&mut s).await;
+    s.cleanup();
+}
+
+/// Cancel the action `s` is about to run through a `SessionCancelHandle`,
+/// with `mark_action_failed`, retrying until an action is registered so the
+/// cancel can't land before the subprocess starts.
+fn cancel_next_action(s: &Session, mark_action_failed: bool) {
+    let handle = s.cancel_handle();
+    tokio::spawn(async move {
+        for _ in 0..200 {
+            if handle.cancel(Some(Duration::from_secs(0)), mark_action_failed) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the task never became cancelable");
+    });
+}
+
+/// `SessionCancelHandle::cancel` reports `false` once an action has ended,
+/// whether it succeeded or was canceled: the ended action's cancelation
+/// state is cleared, so there is nothing running to cancel.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_handle_finds_nothing_after_an_action_ends() {
+    let tmp = TempDir::new().unwrap();
+    let mut s = Session::new_for_test(tmp.path().to_path_buf());
+    let handle = s.cancel_handle();
+    let r = s
+        .run_task("t", &step("echo done"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Success);
+    assert!(
+        !handle.cancel(None, false),
+        "no action is running after a successful one ends"
+    );
+
+    cancel_next_action(&s, false);
+    let r = s
+        .run_task("t2", &step("sleep 30"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Canceled);
+    assert!(
+        !handle.cancel(None, false),
+        "no action is running after a canceled one ends"
+    );
+    s.cleanup();
+}
+
+/// A cancel with `mark_action_failed = true` applies to the action it
+/// canceled only: once the session is cleared, the next action canceled
+/// plainly reports `Canceled`, not `Failed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_marked_failed_does_not_carry_over_to_the_next_action() {
+    let tmp = TempDir::new().unwrap();
+    let mut s = Session::new_for_test(tmp.path().to_path_buf());
+    cancel_next_action(&s, true);
+    let r = s
+        .run_task("t", &step("sleep 30"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(s.state(), SessionState::ReadyEnding);
+    s.clear_ending_only().unwrap();
+
+    cancel_next_action(&s, false);
+    let r = s
+        .run_task("t2", &step("sleep 30"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Canceled);
     s.cleanup();
 }

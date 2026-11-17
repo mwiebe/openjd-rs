@@ -66,8 +66,20 @@ impl Site {
         }
     }
 
+    /// The own `hostRequirements` of the object at `owner_path` (a Step,
+    /// `steps[i]`, or a Service under RFC 0009, `services[k]`), named
+    /// `owner` in messages (`Step 'A'`, `Service 'C'`), with the error
+    /// forms of [`step`](Self::step).
+    pub(super) fn owner(owner_path: &[PathElement], owner: &str) -> Self {
+        Self {
+            path: path_field(owner_path, "hostRequirements"),
+            owner: owner.to_string(),
+            resolved_for: None,
+        }
+    }
+
     /// The `hostRequirements` of Environment `env_name` at `path`
-    /// (starting with its document), resolved for the Steps named in
+    /// (starting with its document), resolved for the entities named in
     /// `resolved_for`.
     fn environment(path: Vec<PathElement>, env_name: &str, resolved_for: String) -> Self {
         Self {
@@ -679,25 +691,44 @@ struct Source {
     requirements: job::HostRequirements,
 }
 
+/// One entity whose combined host requirements
+/// [`combine_step_host_requirements`] computes: a Step, or (RFC 0009
+/// `<Service>` item 5) a Service.
+struct Target<'j> {
+    /// `Step 'X'` or `Service 'X'` (with its document for an external one).
+    who: String,
+    /// The index its errors are filed under in the staged errors.
+    index: usize,
+    /// Its full path, starting with its document.
+    path: Vec<PathElement>,
+    /// Its effective Environment parameter values.
+    values: Option<&'j [job::EnvironmentParameterValues]>,
+    /// Whether its Sessions enter each Environment, index for index.
+    entered: &'j [bool],
+}
+
 /// The last stage of §7.4.1 Job creation with `ENV_PARAMS`: give every Step
-/// of `job` its combined host requirements (§3.3.3).
+/// of `job`, and every Service whose scope is not empty (`used`, index for
+/// index with `job.services`; RFC 0009 `<Service>` item 5), its combined
+/// host requirements (§3.3.3).
 ///
 /// `environments` describes `job.job_environments`, index for index.
-/// `entered[s][e]` says whether Step `s`'s Sessions enter Environment `e`.
-/// `default_symtab` holds the Job Parameters (merged), and may hold
-/// `Job.Name`;
-/// `job_name` and `env_names` are `Job.Name` and `Job.EnvNames`.
+/// `entered[s][e]` says whether Step `s`'s Sessions enter Environment `e`,
+/// and `service_entered[k][e]` whether Service `k`'s do; `service_paths`
+/// is each Service's path. `default_symtab` holds the Job Parameters
+/// (merged), and may hold `Job.Name`; `job_name` and `env_names` are
+/// `Job.Name` and `Job.EnvNames`.
 ///
 /// Each Environment with `hostRequirements` is resolved once for each
-/// distinct set of effective values among the Steps that enter it (Steps
-/// whose values have the same transport form get equal requirements),
-/// skipping a Step whose values for an Environment that declares
-/// parameters were rejected (already reported), in the scope §7.3.2 gives, and
-/// checked as a Step's own are (§3.3.1, §3.3.2, and unique names within the
-/// source). The combined set of a Step is the
-/// Step's own requirements followed by each entered Environment's, in Job
-/// order, normalized by [`combine`]. A Step none of whose entered
-/// Environments has requirements keeps its own, unchanged.
+/// distinct set of effective values among the entities that enter it
+/// (entities whose values have the same transport form get equal
+/// requirements), skipping one whose values for an Environment that
+/// declares parameters were rejected (already reported), in the scope §7.3.2
+/// gives, and checked as a Step's own are (§3.3.1, §3.3.2, and
+/// unique names within the source). The combined set of an entity is its
+/// own requirements followed by each entered Environment's, in Job order,
+/// normalized by [`combine`]. An entity none of whose entered Environments
+/// has requirements keeps its own, unchanged.
 ///
 /// A requirement of an Environment that resolves to nothing for a Step is
 /// discarded (§3.3) and added, with the Environment, to `discarded[s]` of
@@ -706,17 +737,25 @@ struct Source {
 ///
 /// Every failure is filed in `staged` under §7.4.1 step 8, with paths
 /// starting with the document when Environment Templates are attached: a
-/// resolution failure at the Environment's field, naming the Steps it was
-/// resolved for, filed under the first of them and the Environment's place
-/// in the Job's order; and a conflict at `steps[i]` (`JobTemplate ->
-/// steps[i]` with attachments), filed under Step `i` after its
-/// Environments' failures. A Step that enters no Environment, as
-/// `entered` says of a Step stopped after §7.4.1 step 4, is left alone.
+/// resolution failure at the Environment's field, naming the entities it
+/// was resolved for, filed under the first of them and the Environment's
+/// place in the Job's order; and a conflict at the entity (`steps[i]`, or
+/// `JobTemplate -> steps[i]` with attachments, or the Service's path),
+/// filed under the entity after its Environments' failures. Each entity is
+/// filed under its index: a Step's own, and for the Service at
+/// `job.services[k]`, `service_indices[k]`, which comes after every Step's
+/// (D1: a Service's errors follow the Steps' in each step). An entity that
+/// enters no Environment, as `entered` says of a Step stopped after §7.4.1
+/// step 4, is left alone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn combine_step_host_requirements(
     job: &mut job::Job,
     environments: &[EnvironmentSource<'_>],
     entered: &[Vec<bool>],
+    service_entered: &[Vec<bool>],
+    service_paths: &[Vec<PathElement>],
+    service_indices: &[usize],
+    used: &[bool],
     job_path: &[PathElement],
     default_symtab: &SymbolTable,
     env_names: &ExprValue,
@@ -725,10 +764,43 @@ pub(super) fn combine_step_host_requirements(
     staged: &mut super::staged::StagedErrors,
 ) {
     use super::staged::{Stage, ANY};
-    // resolved[s][e]: Environment e's requirements for Step s, when Step s
+    let no_env: &[bool] = &[];
+    let mut targets: Vec<Target<'_>> = job
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(s, step)| Target {
+            who: format!("Step '{}'", step.name),
+            index: s,
+            path: path_index(&path_field(job_path, "steps"), s),
+            values: step.environment_parameters.as_deref(),
+            entered: entered.get(s).map_or(no_env, Vec::as_slice),
+        })
+        .collect();
+    let n_steps = targets.len();
+    for (k, svc) in job.services.iter().flatten().enumerate() {
+        targets.push(Target {
+            who: if svc.document.is_job_template() {
+                format!("Service '{}'", svc.name)
+            } else {
+                format!("Service '{}' ({})", svc.name, svc.document)
+            },
+            index: service_indices.get(k).copied().unwrap_or(ANY),
+            path: service_paths.get(k).cloned().unwrap_or_default(),
+            values: svc.environment_parameters.as_deref(),
+            // A Service nothing uses is never started, so its Sessions
+            // enter nothing.
+            entered: if used.get(k).copied().unwrap_or(false) {
+                service_entered.get(k).map_or(no_env, Vec::as_slice)
+            } else {
+                no_env
+            },
+        });
+    }
+    // resolved[t][e]: Environment e's requirements for target t, when t
     // enters it, it has requirements, and they resolved.
     let mut resolved: Vec<Vec<Option<job::HostRequirements>>> =
-        vec![vec![None; environments.len()]; job.steps.len()];
+        vec![vec![None; environments.len()]; targets.len()];
     for (e, source) in environments.iter().enumerate() {
         let Some(hr) = &source.environment.host_requirements else {
             continue;
@@ -738,65 +810,56 @@ pub(super) fn combine_step_host_requirements(
             .env_parameter_definitions
             .as_ref()
             .is_some_and(|d| !d.is_empty());
-        // The entering Steps, grouped by their values for this
-        // Environment, in Step order. Values group by their exact
-        // transport form. For the values job creation makes, that is
-        // §3.2.2 equality: a FLOAT keeps its text and a RANGE_EXPR is
-        // stored in canonical form, so equal values have one transport form.
+        // The entering entities, grouped by their values for this
+        // Environment, in order. Values group by their exact transport
+        // form. For the values job creation makes, that is §3.2.2 equality:
+        // a FLOAT keeps its text and a RANGE_EXPR is stored in canonical
+        // form, so equal values have one transport form.
         let mut groups: Vec<(Option<&job::EnvironmentParameterValues>, Vec<usize>)> = Vec::new();
         let mut group_of: HashMap<Option<String>, usize> = HashMap::new();
-        for (s, step) in job.steps.iter().enumerate() {
-            if !entered
-                .get(s)
-                .and_then(|v| v.get(e))
-                .copied()
-                .unwrap_or(false)
-            {
+        for (t, target) in targets.iter().enumerate() {
+            if !target.entered.get(e).copied().unwrap_or(false) {
                 continue;
             }
-            let values = step.environment_parameters.iter().flatten().find(|v| {
+            let values = target.values.into_iter().flatten().find(|v| {
                 &v.document == source.document && v.environment == source.environment.name
             });
             // An Environment that declares parameters but has no values for
-            // this Step had them rejected (a failed or missing value, or an
-            // ambiguous entry), which is already reported; resolving without
-            // them would only add an "Undefined variable" error.
+            // this entity had them rejected (a failed or missing value, or
+            // an ambiguous entry), which is already reported; resolving
+            // without them would only add an "Undefined variable" error.
             if declares && values.is_none() {
                 continue;
             }
             let key = values.map(|v| v.values.as_value().to_string());
             match group_of.get(&key) {
-                Some(g) => groups[*g].1.push(s),
+                Some(g) => groups[*g].1.push(t),
                 None => {
                     group_of.insert(key, groups.len());
-                    groups.push((values, vec![s]));
+                    groups.push((values, vec![t]));
                 }
             }
         }
         let hr_path = path_field(&source.path, "hostRequirements");
-        for (values, steps) in groups {
-            let step_names: Vec<String> = steps
-                .iter()
-                .map(|s| format!("'{}'", job.steps[*s].name))
-                .collect();
-            let noun = if steps.len() == 1 { "Step" } else { "Steps" };
+        for (values, members) in groups {
+            let labels: Vec<&str> = members.iter().map(|t| targets[*t].who.as_str()).collect();
             let site = Site::environment(
                 hr_path.clone(),
                 &source.environment.name,
-                format!(
-                    "Resolved for {noun} {}.",
-                    name_list(&step_names.iter().map(String::as_str).collect::<Vec<_>>())
-                ),
+                format!("Resolved for {}.", entity_list(&labels)),
             );
             let result = environment_symtab(source, values, default_symtab, &job.name, env_names)
                 .and_then(|symtab| {
                     resolve_host_requirements(hr, &symtab, source.ctx, &site, budgets, true)
                 });
+            // §7.4.1 step 8, filed under the first entity it was resolved
+            // for, at the Environment's place in the Job's order.
+            let first = targets[members[0]].index;
             match result {
                 Ok(result) => {
-                    for s in steps {
-                        resolved[s][e] = result.requirements.clone();
-                        if let Some(d) = discarded.get_mut(s) {
+                    for t in members {
+                        resolved[t][e] = result.requirements.clone();
+                        if let Some(d) = discarded.get_mut(t) {
                             d.extend(result.discarded.iter().map(|(kind, name)| {
                                 super::DiscardedHostRequirement {
                                     environment: Some(job::EnvironmentRef {
@@ -810,39 +873,57 @@ pub(super) fn combine_step_host_requirements(
                         }
                     }
                 }
-                // §7.4.1 step 8, filed under the first Step it was resolved
-                // for, at the Environment's place in the Job's order.
-                Err(ModelError::ModelValidation(ve)) => staged
-                    .at(Stage::Step8, steps[0], e)
-                    .errors
-                    .extend(ve.errors),
+                Err(ModelError::ModelValidation(ve)) => {
+                    staged.at(Stage::Step8, first, e).errors.extend(ve.errors)
+                }
                 Err(other) => staged
-                    .at(Stage::Step8, steps[0], e)
+                    .at(Stage::Step8, first, e)
                     .add(&hr_path, format!("{other} {}", site_note(&site))),
             }
         }
     }
 
-    for (s, step) in job.steps.iter_mut().enumerate() {
-        let mut sources = Vec::new();
-        for (e, requirements) in resolved[s].iter_mut().enumerate() {
-            if let Some(requirements) = requirements.take() {
-                sources.push(environment_source(&environments[e], requirements));
+    let combined: Vec<Option<job::HostRequirements>> = targets
+        .iter()
+        .enumerate()
+        .map(|(t, target)| {
+            let mut sources = Vec::new();
+            for (e, requirements) in resolved[t].iter_mut().enumerate() {
+                if let Some(requirements) = requirements.take() {
+                    sources.push(environment_source(&environments[e], requirements));
+                }
             }
-        }
-        if sources.is_empty() {
+            if sources.is_empty() {
+                return None;
+            }
+            let own = if t < n_steps {
+                job.steps[t].host_requirements.clone()
+            } else {
+                job.services
+                    .as_ref()
+                    .and_then(|s| s[t - n_steps].host_requirements.clone())
+            };
+            if let Some(own) = own {
+                sources.insert(0, step_source(&target.path, own));
+            }
+            Some(combine(
+                &target.who,
+                &target.path,
+                &sources,
+                staged.at(Stage::Step8, target.index, ANY),
+            ))
+        })
+        .collect();
+    drop(targets);
+    for (t, hr) in combined.into_iter().enumerate() {
+        let Some(hr) = hr else {
             continue;
+        };
+        if t < n_steps {
+            job.steps[t].host_requirements = Some(hr);
+        } else if let Some(services) = job.services.as_mut() {
+            services[t - n_steps].host_requirements = Some(hr);
         }
-        let step_path = path_index(&path_field(job_path, "steps"), s);
-        if let Some(own) = step.host_requirements.take() {
-            sources.insert(0, step_source(&step_path, own));
-        }
-        step.host_requirements = Some(combine(
-            &step.name,
-            &step_path,
-            &sources,
-            staged.at(Stage::Step8, s, ANY),
-        ));
     }
 }
 
@@ -858,7 +939,7 @@ fn environment_source(env: &EnvironmentSource<'_>, requirements: job::HostRequir
     }
 }
 
-/// A Step's own resolved requirements as a source of a combination.
+/// An entity's own resolved requirements as a source of a combination.
 fn step_source(step_path: &[PathElement], requirements: job::HostRequirements) -> Source {
     Source {
         label: format!("{} -> hostRequirements", path_to_string(step_path)),
@@ -902,23 +983,38 @@ fn literal_part(hr: &template::HostRequirements) -> Option<template::HostRequire
     })
 }
 
+/// One entity whose literal combination [`check_literal_combinations`]
+/// checks: a Step, or a Service (RFC 0009 `<Service>` item 5).
+pub(super) struct LiteralTarget<'t> {
+    /// `Step 'X'` or `Service 'X'`.
+    pub(super) who: &'t str,
+    /// Its full path, starting with `JobTemplate`.
+    pub(super) path: &'t [PathElement],
+    /// Its own `hostRequirements`.
+    pub(super) own: Option<&'t template::HostRequirements>,
+    /// Whether its Sessions certainly enter each Environment, index for
+    /// index with the `environments` of [`check_literal_combinations`].
+    pub(super) entered: &'t [bool],
+}
+
 /// The combination check of [`combine_step_host_requirements`] before the
 /// Job Parameter values are known, for `check_environment_templates`:
-/// for each Step, the literal requirements ([`literal_part`]) of its own
-/// `hostRequirements` and of each Environment in `environments` that
-/// `entered[s]` says its Sessions enter are combined (§3.3.3) and each
+/// for each Step and Service of `targets`, the literal requirements
+/// ([`literal_part`]) of its own `hostRequirements` and of each
+/// Environment in `environments` that its `entered` says its Sessions
+/// enter are combined (§3.3.3) and each
 /// conflict is added to `errors` in the form job creation gives (the same
 /// `combine`). Since only the literal requirements are combined, the
 /// sources a message names, or the bounds it quotes, may differ from job
 /// creation's when a non-literal requirement also takes part, and a
 /// conflict that needs a non-literal requirement is reported only at job
-/// creation. An Environment is combined even when the Step's values for
-/// it fail (reported separately, including an unreachable attachment's
-/// parameters without a `default`), which job creation skips until they
-/// are fixed, so check may then report one more conflict, or name that
-/// Environment where job creation names another source with the same
-/// bound; `entered` leaves out the attachments job creation computes no
-/// values for (an ambiguous name). A
+/// creation. `entered` leaves out the attachments job creation may compute
+/// no values for: one an ambiguous entry names, or an entry whose `enableIf`
+/// is an expression when its values are not certain both with the entry's
+/// values and with the `default`s; one whose values for the entity were rejected
+/// here (constraint 6 or 7, or a failed literal `default`); and one whose
+/// values are not all literals (a format-string value or a non-literal
+/// `default`), which only job creation resolves. A
 /// Step with no literal Environment requirement is skipped, as job
 /// creation keeps such a Step's own requirements.
 ///
@@ -928,14 +1024,11 @@ fn literal_part(hr: &template::HostRequirements) -> Option<template::HostRequire
 /// 2.1 attribute. Template validation has checked
 /// each literal requirement, so resolving one cannot fail; a source that
 /// did is skipped.
-/// `step_ctx` is the Job Template's context, for the Steps' own
+/// `step_ctx` is the Job Template's context, for the entities' own
 /// requirements.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn check_literal_combinations(
-    job_template: &template::JobTemplate,
+    targets: &[LiteralTarget<'_>],
     environments: &[EnvironmentSource<'_>],
-    entered: &[Vec<bool>],
-    job_path: &[PathElement],
     step_ctx: &ValidationContext,
     budgets: super::EvalBudgets,
     errors: &mut ValidationErrors,
@@ -956,37 +1049,38 @@ pub(super) fn check_literal_combinations(
                 .and_then(|r| r.requirements)
         })
         .collect();
-    for (s, step) in job_template.steps.iter().enumerate() {
+    for target in targets {
         let mut sources: Vec<Source> = environments
             .iter()
             .zip(&env_requirements)
             .enumerate()
-            .filter(|(e, _)| entered.get(s).and_then(|v| v.get(*e)).copied() == Some(true))
+            .filter(|(e, _)| target.entered.get(*e).copied() == Some(true))
             .filter_map(|(_, (env, hr))| hr.clone().map(|hr| environment_source(env, hr)))
             .collect();
         if sources.is_empty() {
             continue;
         }
-        let step_path = path_index(&path_field(job_path, "steps"), s);
-        if let Some(own) = step.host_requirements.as_ref().and_then(literal_part) {
-            let lists_env_params = job_template
-                .profile()
+        if let Some(own) = target.own.and_then(literal_part) {
+            // The site's path is relative to the Job Template.
+            let site = Site::owner(target.path.get(1..).unwrap_or_default(), target.who);
+            let lists_env_params = step_ctx
+                .profile
                 .has_extension(crate::types::ModelExtension::EnvParams);
             if let Some(own) = resolve_host_requirements(
                 &own,
                 &no_symbols,
                 step_ctx,
-                &Site::step(s, &step.name),
+                &site,
                 budgets,
                 lists_env_params,
             )
             .ok()
             .and_then(|r| r.requirements)
             {
-                sources.insert(0, step_source(&step_path, own));
+                sources.insert(0, step_source(target.path, own));
             }
         }
-        combine(&step.name, &step_path, &sources, errors);
+        combine(target.who, target.path, &sources, errors);
     }
 }
 
@@ -1044,6 +1138,33 @@ pub(super) fn environment_symtab(
         }
     }
     Ok(symtab)
+}
+
+/// Entity labels (`Step 'A'`, `Service 'C'`) for a message, grouped by
+/// kind in order of first appearance: `Step 'A'`, `Steps 'A' and 'B'`, or
+/// `Steps 'A' and 'B' and Service 'C'`, each group's names listed by
+/// [`name_list`]. A label without a kind word is listed as it is.
+pub(super) fn entity_list(labels: &[&str]) -> String {
+    let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+    for label in labels {
+        let (noun, name) = label.split_once(' ').unwrap_or(("", label));
+        match groups.iter_mut().find(|(n, _)| *n == noun) {
+            Some((_, names)) => names.push(name),
+            None => groups.push((noun, vec![name])),
+        }
+    }
+    groups
+        .iter()
+        .map(|(noun, names)| {
+            let plural = if names.len() == 1 { "" } else { "s" };
+            if noun.is_empty() {
+                name_list(names)
+            } else {
+                format!("{noun}{plural} {}", name_list(names))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// `labels` for a message: `a and b` for two, else a capped
@@ -1161,7 +1282,8 @@ fn multi_valued_conjunction(acc: &AttributeAcc<'_>) -> Vec<job::AttributeRequire
     combined
 }
 
-/// The combined host requirements of Step `step_name` (§3.3.3) from
+/// The combined host requirements of `who` (§3.3.3; `Step 'X'` or `Service
+/// 'X'`) from
 /// `sources`, in order: the conjunction of every source's requirements,
 /// normalized per capability (names compared ignoring case) over all the
 /// sources at once, so what a host must satisfy does not depend on their
@@ -1196,7 +1318,7 @@ fn multi_valued_conjunction(acc: &AttributeAcc<'_>) -> Vec<job::AttributeRequire
 /// [`name_list`] as the other job-creation lists are). Combining adds no other
 /// error.
 fn combine(
-    step_name: &str,
+    who: &str,
     step_path: &[PathElement],
     sources: &[Source],
     errors: &mut ValidationErrors,
@@ -1240,8 +1362,8 @@ fn combine(
                 errors.add(
                     step_path,
                     format!(
-                        "Step '{step_name}': no host can satisfy the combined host requirements \
-                         for amount '{}': {detail}. Template Schemas §3.3.3.",
+                        "{who}: no host can satisfy the combined host requirements for amount \
+                         '{}': {detail}. Template Schemas §3.3.3.",
                         acc.name
                     ),
                 );
@@ -1289,8 +1411,8 @@ fn combine(
                     errors.add(
                         step_path,
                         format!(
-                            "Step '{step_name}': no host can satisfy the combined host \
-                             requirements for attribute '{}', of which a host has exactly one \
+                            "{who}: no host can satisfy the combined host requirements for \
+                             attribute '{}', of which a host has exactly one \
                              value: the anyOf and allOf values of {} have no value in common. \
                              Template Schemas §3.3.3.",
                             acc.name,

@@ -23,6 +23,7 @@ fn make_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> En
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -30,6 +31,10 @@ fn make_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> En
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit,
             },
             embedded_files: None,
@@ -133,6 +138,7 @@ async fn test_env_no_script() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: None,
         variables: None,
         resolved_symtab: None,
@@ -157,6 +163,7 @@ async fn test_env_with_embedded_files() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -169,6 +176,10 @@ async fn test_env_with_embedded_files() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: Some(vec![EmbeddedFile {
@@ -198,6 +209,7 @@ async fn test_env_with_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -205,6 +217,10 @@ async fn test_env_with_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -227,6 +243,7 @@ async fn test_env_exit_removes_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
@@ -482,6 +499,7 @@ async fn test_env_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut session = Session::with_config(session_config).unwrap();
@@ -490,6 +508,7 @@ async fn test_env_with_resolved_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -497,6 +516,10 @@ async fn test_env_with_resolved_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -524,6 +547,7 @@ async fn test_env_let_bindings_respect_lowered_memory_budget() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: Some(vec!["x = 'a' * 100000".to_string()]),
             actions: EnvironmentActions {
@@ -536,6 +560,10 @@ async fn test_env_let_bindings_respect_lowered_memory_budget() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -563,6 +591,7 @@ async fn test_env_with_let_bindings_and_embedded_files() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: Some(vec!["configPath = Env.File.Config".to_string()]),
             actions: EnvironmentActions {
@@ -575,6 +604,10 @@ async fn test_env_with_let_bindings_and_embedded_files() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: Some(vec![EmbeddedFile {

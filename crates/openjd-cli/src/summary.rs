@@ -102,12 +102,19 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     // listings stay those of the Job Template.
     let labels = crate::common::environment_labels(&args.environments);
     let attached = crate::common::attach(&env_templates, &labels);
-    let created = openjd_model::create_job_with_environment_templates(
-        &job_template,
-        &attached,
-        &param_values,
-        &ctx,
-    )?;
+    // Without `--environment` the Job Template alone is summarized: an
+    // `externalServices` entry (RFC 0009) is shown unsatisfied rather than
+    // rejected, as no submission attaches its provider.
+    let created = if attached.is_empty() {
+        openjd_model::create_job_details(&job_template, &param_values, &ctx)?
+    } else {
+        openjd_model::create_job_with_environment_templates(
+            &job_template,
+            &attached,
+            &param_values,
+            &ctx,
+        )?
+    };
     crate::common::print_submission_warnings(&created.warnings);
     let mut the_job = created.job;
     // With `ENV_PARAMS`, each Step's Environment set (Template Schemas §4
@@ -137,6 +144,43 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Vec::new()
     };
+    // Each Service's Environment set (RFC 0009 "Services run inside
+    // Environments"), index for index with `job.services`, likewise from
+    // the combined Job: a Service selects Environments exactly as a Step
+    // does, so its disabled, superseded and declined Environments and its
+    // optional entries that named nothing are listed as a Step's are, with
+    // its discarded host requirements (§3.3).
+    let no_statuses = openjd_model::StepEnvironmentStatuses::default();
+    let service_envs: Vec<StepEnvSets> = the_job
+        .services
+        .iter()
+        .flatten()
+        .enumerate()
+        .map(|(k, svc)| {
+            let statuses = created
+                .service_environment_statuses
+                .get(k)
+                .unwrap_or(&no_statuses);
+            (svc, statuses, k)
+        })
+        .map(|(svc, statuses, k)| StepEnvSets {
+            entered: service_session_env_infos(&the_job, &created.environment_documents, svc),
+            disabled: disabled_env_infos(statuses),
+            declined: declined_env_infos(statuses),
+            not_found: statuses
+                .not_found
+                .iter()
+                .map(|n| (n.dependency_index, n.environment.clone()))
+                .collect(),
+            discarded: created
+                .discarded_service_host_requirements
+                .get(k)
+                .into_iter()
+                .flatten()
+                .map(DiscardedInfo::from)
+                .collect(),
+        })
+        .collect();
     let own: Vec<_> = the_job
         .job_environments
         .take()
@@ -148,14 +192,28 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     the_job.job_environments = (!own.is_empty()).then_some(own);
 
+    // With `--environment`, the Services are summarized as `run` would see
+    // them: the attached Services, and each `externalServices` entry bound
+    // to the attachment that satisfies it (RFC 0009 §1.2.2; a requirement no
+    // attachment satisfies is the same error `run` reports). Without, the
+    // Job Template alone is summarized and a requirement is shown
+    // unsatisfied. The Environment listings stay the Job Template's (above).
+    let bindings: Vec<(String, String)> = created
+        .requirement_bindings
+        .iter()
+        .map(|b| (b.requirement.clone(), b.document.to_string()))
+        .collect();
+
     if let Some(step_name) = &args.step {
         output_step_summary(&the_job, &session_envs, step_name, &args.output)
     } else {
         output_job_summary(
             &the_job,
             &session_envs,
+            &service_envs,
             &param_order,
             &param_descriptions,
+            &bindings,
             &args.output,
         )
     }
@@ -181,8 +239,9 @@ fn lists_env_params(
         })
 }
 
-/// A Step's Environment set, and the Environments an `enableIf` or an
-/// `exclusiveGroup` took out of it.
+/// A Step's (or, with `SERVICE`, a Service's) Environment set, the
+/// Environments an `enableIf` or an `exclusiveGroup` took out of it, the
+/// ones it declined, and its discarded host requirements.
 struct StepEnvSets {
     /// The Environments its Sessions enter, in the order they enter them.
     entered: Vec<SessionEnvInfo>,
@@ -204,14 +263,15 @@ struct StepEnvSets {
     discarded: Vec<DiscardedInfo>,
 }
 
-/// One discarded host requirement of a Step (Template Schemas §3.3).
+/// One discarded host requirement of a Step or Service (Template Schemas
+/// §3.3).
 struct DiscardedInfo {
     /// `amount` or `attribute`.
     kind: &'static str,
     /// The resolved capability name.
     name: String,
     /// The Environment whose `hostRequirements` held it; `None` for the
-    /// Step's own.
+    /// Step's (or Service's) own.
     environment: Option<SessionEnvInfo>,
 }
 
@@ -330,6 +390,27 @@ fn session_env_infos(
         .collect()
 }
 
+/// The Job Environments `service`'s Sessions enter, in order (attached
+/// first, then the Job Template's; `documents` describes
+/// `job.job_environments` index for index). A Service enters no Step
+/// Environment.
+fn service_session_env_infos(
+    job: &job::Job,
+    documents: &[job::Document],
+    service: &job::Service,
+) -> Vec<SessionEnvInfo> {
+    job.job_environments
+        .iter()
+        .flatten()
+        .zip(documents)
+        .filter(|(env, doc)| service.enters_environment(doc, &env.name))
+        .map(|(env, doc)| SessionEnvInfo {
+            name: env.name.clone(),
+            source: doc.to_string(),
+        })
+        .collect()
+}
+
 fn task_param_type_name(tp: &job::TaskParameter) -> &'static str {
     match tp {
         job::TaskParameter::Int { .. } => "INT",
@@ -353,11 +434,114 @@ fn step_total_tasks(step: &job::Step) -> Result<u64, String> {
     }
 }
 
+/// A `dependencies` list as written, each entry a Step (`dependsOn`) or,
+/// with `SERVICE`, a Service (`service`).
+fn dependency_infos(deps: Option<&[job::StepDependency]>) -> Vec<DepInfo> {
+    deps.into_iter()
+        .flatten()
+        .filter_map(|d| match d.target()? {
+            job::DependencyTarget::Step(name, _) => Some(DepInfo {
+                name: name.to_string(),
+                is_service: false,
+            }),
+            job::DependencyTarget::Service(name) => Some(DepInfo {
+                name: name.to_string(),
+                is_service: true,
+            }),
+            // A Job's dependencies hold no `environment:` entry (job
+            // creation resolves those into the Step's Environments).
+            job::DependencyTarget::Environment(_) => None,
+        })
+        .collect()
+}
+
+/// `main (TCP), ingest (UDP)` / `main (TCP, port 6379)` — a Service's or a
+/// requirement's ports for display.
+fn describe_ports<'a>(
+    ports: impl Iterator<Item = (&'a str, job::ServicePortProtocol, Option<u16>)>,
+) -> Vec<PortInfo> {
+    ports
+        .map(|(name, protocol, port)| PortInfo {
+            name: name.to_string(),
+            protocol: protocol.to_string(),
+            port,
+        })
+        .collect()
+}
+
+/// The Job's Services (RFC 0009), each with its scope, ports, health check
+/// type, restart policy, the Job Environments its Sessions enter
+/// (`session_envs`, index for index), its combined host requirements
+/// (RFC 0009 `<Service>` item 5), and the ones discarded (§3.3), in
+/// `job.services` order.
+fn service_summaries<'a>(
+    job: &'a job::Job,
+    session_envs: &'a [StepEnvSets],
+) -> Vec<ServiceInfo<'a>> {
+    job.services
+        .iter()
+        .flatten()
+        .zip(session_envs)
+        .map(|(svc, envs)| ServiceInfo {
+            name: svc.name.clone(),
+            description: svc.description.clone(),
+            document: (!svc.document.is_job_template()).then(|| svc.document.to_string()),
+            scope: svc.scope.to_string(),
+            ports: describe_ports(
+                svc.ports
+                    .iter()
+                    .map(|p| (p.name.as_str(), p.protocol, p.port)),
+            ),
+            health_check: svc.health_check.type_name().to_string(),
+            max_restarts: svc.restart_policy.max_restarts,
+            completed_tasks: svc
+                .restart_policy
+                .completed_tasks
+                .map(|p| p.as_str().to_string()),
+            deps: dependency_infos(svc.dependencies.as_deref()),
+            env_params: env_param_infos_of(svc.environment_parameters.as_deref()),
+            env_params_details: EnvParamsDetails {
+                session_envs: &envs.entered,
+                disabled_envs: &envs.disabled,
+                declined_envs: &envs.declined,
+                not_found: &envs.not_found,
+                host_requirements: svc.host_requirements.as_ref(),
+                discarded: &envs.discarded,
+                owner: "Service",
+            },
+        })
+        .collect()
+}
+
+/// The Job Template's `externalServices` (RFC 0009 §9.8), each with its
+/// ports and, when an attached Environment Template (`--environment`)
+/// declares the Service, the document that satisfies it.
+fn requirement_summaries(job: &job::Job, bindings: &[(String, String)]) -> Vec<RequirementInfo> {
+    job.external_services
+        .iter()
+        .flatten()
+        .map(|req| RequirementInfo {
+            name: req.name.clone(),
+            ports: describe_ports(
+                req.ports
+                    .iter()
+                    .map(|p| (p.name.as_str(), p.protocol, None)),
+            ),
+            satisfied_by: bindings
+                .iter()
+                .find(|(name, _)| *name == req.name)
+                .map(|(_, doc)| doc.clone()),
+        })
+        .collect()
+}
+
 fn output_job_summary(
     job: &job::Job,
     session_envs: &[StepEnvSets],
+    service_envs: &[StepEnvSets],
     param_order: &[String],
     param_descriptions: &std::collections::HashMap<&str, &str>,
+    bindings: &[(String, String)],
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect step summaries
@@ -395,18 +579,13 @@ fn output_job_summary(
                     });
                 }
             }
-            let deps: Vec<String> = s
-                .dependencies
-                .as_ref()
-                .map(|deps| deps.iter().map(|d| d.depends_on.clone()).collect())
-                .unwrap_or_default();
             Ok(StepInfo {
                 name: s.name.clone(),
                 description: s.description.clone(),
                 total_tasks,
                 task_params,
                 envs,
-                deps,
+                deps: dependency_infos(s.dependencies.as_deref()),
                 env_params: env_param_infos(s),
                 env_params_details: session_envs.next().map(|envs| EnvParamsDetails {
                     session_envs: &envs.entered,
@@ -415,6 +594,7 @@ fn output_job_summary(
                     not_found: &envs.not_found,
                     host_requirements: s.host_requirements.as_ref(),
                     discarded: &envs.discarded,
+                    owner: "Step",
                 }),
             })
         })
@@ -469,6 +649,8 @@ fn output_job_summary(
         step_envs: step_envs_info,
         total_tasks,
         total_envs,
+        services: service_summaries(job, service_envs),
+        requirements: requirement_summaries(job, bindings),
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -514,11 +696,16 @@ fn output_step_summary(
                 .collect()
         })
         .unwrap_or_default();
-    let deps: Vec<String> = step
-        .dependencies
-        .as_ref()
-        .map(|deps| deps.iter().map(|d| d.depends_on.clone()).collect())
-        .unwrap_or_default();
+    let deps = dependency_infos(step.dependencies.as_deref());
+    // The Services whose scope includes this Step: those it lists, those
+    // reached through them, and every Job-wide one (RFC 0009 §9.1).
+    let services: Vec<String> = job
+        .services
+        .iter()
+        .flatten()
+        .filter(|svc| svc.scope.contains(step_name))
+        .map(|svc| svc.name.clone())
+        .collect();
 
     let result = StepSummaryResult {
         job_name: job.name.clone(),
@@ -535,7 +722,9 @@ fn output_step_summary(
             not_found: &envs.not_found,
             host_requirements: step.host_requirements.as_ref(),
             discarded: &envs.discarded,
+            owner: "Step",
         }),
+        services,
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -554,6 +743,63 @@ struct JobSummaryResult<'a> {
     step_envs: Vec<EnvInfo>,
     total_tasks: u64,
     total_envs: usize,
+    services: Vec<ServiceInfo<'a>>,
+    requirements: Vec<RequirementInfo>,
+}
+
+impl DepInfo {
+    /// `{"step_name": …}` or `{"service_name": …}`.
+    fn to_json(&self) -> serde_json::Value {
+        if self.is_service {
+            serde_json::json!({"service_name": self.name})
+        } else {
+            serde_json::json!({"step_name": self.name})
+        }
+    }
+
+    /// `'Prepare'` / `Service 'Cache'`, for human-readable lists.
+    fn display(&self) -> String {
+        if self.is_service {
+            format!("Service '{}'", self.name)
+        } else {
+            format!("'{}'", self.name)
+        }
+    }
+}
+
+impl PortInfo {
+    fn to_json(&self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), self.name.clone().into());
+        m.insert("protocol".into(), self.protocol.clone().into());
+        if let Some(port) = self.port {
+            m.insert("port".into(), port.into());
+        }
+        serde_json::Value::Object(m)
+    }
+
+    /// `main (TCP)` / `main (TCP, port 6379)`.
+    fn display(&self) -> String {
+        match self.port {
+            Some(port) => format!("{} ({}, port {port})", self.name, self.protocol),
+            None => format!("{} ({})", self.name, self.protocol),
+        }
+    }
+}
+
+/// `n dependencies`, and — when any names a Service — `(k Step, m
+/// Service)` or `(all Services)`, for a Step's line in the Job summary.
+fn describe_dependency_counts(deps: &[DepInfo]) -> String {
+    let services = deps.iter().filter(|d| d.is_service).count();
+    let steps = deps.len() - services;
+    match (steps, services) {
+        (_, 0) => format!("{} dependencies", deps.len()),
+        (0, _) => format!("{} dependencies (all Services)", deps.len()),
+        _ => format!(
+            "{} dependencies ({steps} Step, {services} Service)",
+            deps.len()
+        ),
+    }
 }
 
 impl CliResult for JobSummaryResult<'_> {
@@ -627,6 +873,15 @@ impl CliResult for JobSummaryResult<'_> {
                 }
                 if !s.deps.is_empty() {
                     m.insert("dependencies".into(), s.deps.len().into());
+                    let services: Vec<&str> = s
+                        .deps
+                        .iter()
+                        .filter(|d| d.is_service)
+                        .map(|d| d.name.as_str())
+                        .collect();
+                    if !services.is_empty() {
+                        m.insert("service_dependencies".into(), serde_json::json!(services));
+                    }
                 }
                 if !s.env_params.is_empty() {
                     m.insert(
@@ -641,7 +896,124 @@ impl CliResult for JobSummaryResult<'_> {
             })
             .collect();
         obj.insert("steps".into(), steps_json.into());
+        if !self.services.is_empty() {
+            obj.insert(
+                "services".into(),
+                serde_json::json!(self
+                    .services
+                    .iter()
+                    .map(ServiceInfo::to_json)
+                    .collect::<Vec<_>>()),
+            );
+        }
+        if !self.requirements.is_empty() {
+            obj.insert(
+                "external_services".into(),
+                serde_json::json!(self
+                    .requirements
+                    .iter()
+                    .map(|r| {
+                        let mut m = serde_json::Map::new();
+                        m.insert("name".into(), r.name.clone().into());
+                        m.insert(
+                            "ports".into(),
+                            serde_json::json!(r
+                                .ports
+                                .iter()
+                                .map(PortInfo::to_json)
+                                .collect::<Vec<_>>()),
+                        );
+                        if let Some(doc) = &r.satisfied_by {
+                            m.insert("satisfied_by".into(), doc.clone().into());
+                        }
+                        serde_json::Value::Object(m)
+                    })
+                    .collect::<Vec<_>>()),
+            );
+        }
         serde_json::Value::Object(obj)
+    }
+}
+
+impl ServiceInfo<'_> {
+    fn to_json(&self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), self.name.clone().into());
+        if let Some(d) = &self.description {
+            m.insert("description".into(), d.clone().into());
+        }
+        if let Some(doc) = &self.document {
+            m.insert("document".into(), doc.clone().into());
+        }
+        m.insert("scope".into(), self.scope.clone().into());
+        m.insert(
+            "ports".into(),
+            serde_json::json!(self.ports.iter().map(PortInfo::to_json).collect::<Vec<_>>()),
+        );
+        m.insert("health_check".into(), self.health_check.clone().into());
+        m.insert(
+            "restart_policy".into(),
+            serde_json::json!({
+                "max_restarts": self.max_restarts,
+                "completed_tasks": self.completed_tasks,
+            }),
+        );
+        if !self.deps.is_empty() {
+            m.insert(
+                "dependencies".into(),
+                serde_json::json!(self.deps.iter().map(DepInfo::to_json).collect::<Vec<_>>()),
+            );
+        }
+        self.env_params_details.insert_json(&mut m);
+        if !self.env_params.is_empty() {
+            m.insert(
+                "environment_parameters".into(),
+                env_params_json(&self.env_params),
+            );
+        }
+        serde_json::Value::Object(m)
+    }
+
+    /// The lines under `--- Services in '<job>' ---`.
+    fn write_human(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let origin = self
+            .document
+            .as_deref()
+            .map(|d| format!(" (from {d})"))
+            .unwrap_or_default();
+        writeln!(f, "  - {}{origin} (scope: {})", self.name, self.scope)?;
+        if let Some(d) = &self.description {
+            writeln!(f, "    {d}")?;
+        }
+        writeln!(
+            f,
+            "    Ports: {}",
+            self.ports
+                .iter()
+                .map(PortInfo::display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(f, "    Health check: {}", self.health_check)?;
+        writeln!(
+            f,
+            "    Restart policy: maxRestarts {}, completedTasks {}",
+            self.max_restarts,
+            self.completed_tasks.as_deref().unwrap_or("none")
+        )?;
+        if !self.deps.is_empty() {
+            writeln!(
+                f,
+                "    Dependencies: {}",
+                self.deps
+                    .iter()
+                    .map(DepInfo::display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+        }
+        self.env_params_details.write(f, "    ")?;
+        write_env_params(f, &self.env_params, "    ")
     }
 }
 
@@ -679,13 +1051,53 @@ impl fmt::Display for JobSummaryResult<'_> {
                 writeln!(f, "  {} environments", s.envs.len())?;
             }
             if !s.deps.is_empty() {
-                writeln!(f, "  {} dependencies", s.deps.len())?;
+                writeln!(f, "  {}", describe_dependency_counts(&s.deps))?;
+                let services: Vec<String> = s
+                    .deps
+                    .iter()
+                    .filter(|d| d.is_service)
+                    .map(|d| format!("'{}'", d.name))
+                    .collect();
+                if !services.is_empty() {
+                    writeln!(f, "    Services: {}", services.join(", "))?;
+                }
             }
             if let Some(d) = &s.env_params_details {
                 d.write(f, "  ")?;
             }
             write_env_params(f, &s.env_params, "  ")?;
             writeln!(f)?;
+        }
+        if !self.services.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "--- Services in '{}' ---", self.name)?;
+            for svc in &self.services {
+                svc.write_human(f)?;
+            }
+        }
+        if !self.requirements.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "--- Required Services in '{}' ---", self.name)?;
+            for req in &self.requirements {
+                write!(
+                    f,
+                    "  - {} (ports: {})",
+                    req.name,
+                    req.ports
+                        .iter()
+                        .map(PortInfo::display)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+                match &req.satisfied_by {
+                    Some(doc) => writeln!(f, " — satisfied by {doc}")?,
+                    None => writeln!(
+                        f,
+                        " — not satisfied: attach an Environment Template that declares it \
+                         with --environment"
+                    )?,
+                }
+            }
         }
         if self.total_envs > 0 {
             writeln!(f)?;
@@ -715,9 +1127,11 @@ struct StepSummaryResult<'a> {
     total_tasks: u64,
     task_params: Vec<(String, String)>,
     envs: Vec<EnvInfo>,
-    deps: Vec<String>,
+    deps: Vec<DepInfo>,
     env_params: Vec<EnvParamInfo>,
     env_params_details: Option<EnvParamsDetails<'a>>,
+    /// The Services whose scope includes the Step (RFC 0009 §9.1).
+    services: Vec<String>,
 }
 
 impl CliResult for StepSummaryResult<'_> {
@@ -740,12 +1154,11 @@ impl CliResult for StepSummaryResult<'_> {
         if !self.deps.is_empty() {
             obj.insert(
                 "dependencies".into(),
-                serde_json::json!(self
-                    .deps
-                    .iter()
-                    .map(|d| serde_json::json!({"step_name": d}))
-                    .collect::<Vec<_>>()),
+                serde_json::json!(self.deps.iter().map(DepInfo::to_json).collect::<Vec<_>>()),
             );
+        }
+        if !self.services.is_empty() {
+            obj.insert("services".into(), serde_json::json!(self.services));
         }
         if !self.task_params.is_empty() {
             obj.insert(
@@ -786,7 +1199,14 @@ impl fmt::Display for StepSummaryResult<'_> {
             writeln!(f)?;
             writeln!(f, "Dependencies ({}):", self.deps.len())?;
             for d in &self.deps {
-                writeln!(f, "- '{d}'")?;
+                writeln!(f, "- {}", d.display())?;
+            }
+        }
+        if !self.services.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Services in scope ({}):", self.services.len())?;
+            for s in &self.services {
+                writeln!(f, "- '{s}'")?;
             }
         }
         if !self.task_params.is_empty() {
@@ -827,7 +1247,7 @@ struct StepInfo<'a> {
     total_tasks: u64,
     task_params: Vec<(String, String)>,
     envs: Vec<String>,
-    deps: Vec<String>,
+    deps: Vec<DepInfo>,
     env_params: Vec<EnvParamInfo>,
     /// `Some` when the Job Template or an attached Environment Template
     /// lists `ENV_PARAMS`.
@@ -848,6 +1268,9 @@ struct EnvParamsDetails<'a> {
     not_found: &'a [(usize, String)],
     host_requirements: Option<&'a job::HostRequirements>,
     discarded: &'a [DiscardedInfo],
+    /// `Step` or `Service`: what the text form calls the entity whose own
+    /// requirement was discarded.
+    owner: &'static str,
 }
 
 impl EnvParamsDetails<'_> {
@@ -933,8 +1356,8 @@ impl EnvParamsDetails<'_> {
     /// found:` with one `- dependencies[i]: Name` line each, then `Host
     /// requirements:` with one line per requirement,
     /// then, when there are any, `Discarded host requirements:` with one
-    /// `- kind name (Step)` or `- kind name (Environment Name, source)` line
-    /// each, indented by `indent`.
+    /// `- kind name (Step)` (or `(Service)`, by `owner`) or `- kind name
+    /// (Environment Name, source)` line each, indented by `indent`.
     fn write(&self, f: &mut fmt::Formatter<'_>, indent: &str) -> fmt::Result {
         writeln!(f, "{indent}Session environments:")?;
         if self.session_envs.is_empty() {
@@ -979,7 +1402,7 @@ impl EnvParamsDetails<'_> {
             writeln!(f, "{indent}Discarded host requirements:")?;
             for d in self.discarded {
                 match &d.environment {
-                    None => writeln!(f, "{indent}  - {} {} (Step)", d.kind, d.name)?,
+                    None => writeln!(f, "{indent}  - {} {} ({})", d.kind, d.name, self.owner)?,
                     Some(e) => writeln!(
                         f,
                         "{indent}  - {} {} (Environment {}, {})",
@@ -1070,8 +1493,15 @@ struct EnvParamInfo {
 /// A Step's effective Environment parameter values, in the order its
 /// Sessions enter the Environments.
 fn env_param_infos(step: &job::Step) -> Vec<EnvParamInfo> {
-    step.environment_parameters
-        .iter()
+    env_param_infos_of(step.environment_parameters.as_deref())
+}
+
+/// The effective Environment parameter values `values` of a Step or (RFC
+/// 0009 `<Service>` item 4) a Service, in the order its Sessions enter the
+/// Environments.
+fn env_param_infos_of(values: Option<&[job::EnvironmentParameterValues]>) -> Vec<EnvParamInfo> {
+    values
+        .into_iter()
         .flatten()
         .map(|v| EnvParamInfo {
             environment: v.environment.clone(),
@@ -1114,6 +1544,54 @@ fn write_env_params(
         }
     }
     Ok(())
+}
+
+/// One `dependencies` entry: a Step, or (RFC 0009) a Service.
+struct DepInfo {
+    name: String,
+    is_service: bool,
+}
+
+/// One port of a Service or a requirement.
+struct PortInfo {
+    name: String,
+    protocol: String,
+    /// The pinned number, when the template gives one.
+    port: Option<u16>,
+}
+
+/// One Service of the Job (RFC 0009 §9).
+struct ServiceInfo<'a> {
+    name: String,
+    description: Option<String>,
+    /// `Some(<document>)` for an external Service from an attached
+    /// Environment Template.
+    document: Option<String>,
+    scope: String,
+    ports: Vec<PortInfo>,
+    health_check: String,
+    max_restarts: u64,
+    /// `KEEP` / `RERUN`, or `None` when the template gave none (allowed
+    /// only with `maxRestarts` 0).
+    completed_tasks: Option<String>,
+    deps: Vec<DepInfo>,
+    /// Its effective Environment parameter values (RFC 0009 `<Service>`
+    /// item 4), shown as for a Step.
+    env_params: Vec<EnvParamInfo>,
+    /// The Job Environments its Sessions enter, the ones disabled,
+    /// superseded or declined for it, its optional entries that named
+    /// nothing, its combined host requirements (RFC 0009 `<Service>` item
+    /// 5), and the ones discarded (§3.3), shown as for a Step.
+    env_params_details: EnvParamsDetails<'a>,
+}
+
+/// One `externalServices` entry (RFC 0009 §9.8).
+struct RequirementInfo {
+    name: String,
+    ports: Vec<PortInfo>,
+    /// The attached Environment Template whose Service satisfies it, when
+    /// `--environment` attached one.
+    satisfied_by: Option<String>,
 }
 
 struct ParamInfo {

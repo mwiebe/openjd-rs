@@ -1,0 +1,92 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "Tiled Render With Coordinator"
+parameterDefinitions:
+  - name: SceneDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: INOUT  # PrepareScene writes the scene here; the coordinator and workers read it.
+    default: scene
+  - name: TileCount
+    type: INT
+    default: 256
+  - name: WorkerCount
+    type: INT
+    default: 16
+
+services:
+  - name: Coordinator
+    dependencies:
+      - step: PrepareScene  # Not started until the scene it hands out exists.
+    ports:
+      - name: api
+      - name: metrics
+    healthCheck:
+      # Each probe is one run of onHealthCheck: every 5 seconds until READY, then every 30.
+      type: COMMAND
+      readinessTimeoutSeconds: 120
+    restartPolicy:
+      maxRestarts: 1
+      completedTasks: RERUN  # In-memory state is lost on relaunch; prior results cannot be trusted.
+    script:
+      actions:
+        # One-time initialization survives a relaunch of onRun.
+        onEnter:
+          command: coordinator
+          args:
+            - "init-db"
+            - "--data-dir"
+            - "{{ Session.WorkingDirectory }}/db"
+            - "--scene"
+            - "{{ Param.SceneDir }}"
+            - "--tiles"
+            - "{{ Param.TileCount }}"
+        onRun:
+          command: coordinator
+          args:
+            - "serve"
+            - "--data-dir"
+            - "{{ Session.WorkingDirectory }}/db"
+            - "--listen"
+            - "{{ join_host_port(Service.Coordinator.api.bindAddress, Service.Coordinator.api.port) }}"
+            - "--metrics"
+            - "{{ join_host_port(Service.Coordinator.metrics.bindAddress, Service.Coordinator.metrics.port) }}"
+        onHealthCheck:
+          command: python
+          args:
+            - "-c"
+            - |
+              import urllib.request
+              urllib.request.urlopen("http://{{ join_host_port(Service.Coordinator.api.connectAddress, Service.Coordinator.api.port) }}/healthz", timeout=5)
+        onExit:
+          command: coordinator
+          args: ["export-report", "--data-dir", "{{ Session.WorkingDirectory }}/db"]
+
+steps:
+  - name: PrepareScene
+    script:
+      actions:
+        onRun:
+          command: prepare-scene
+          args: ["--out", "{{ Param.SceneDir }}"]
+  - name: RenderTiles
+    dependencies:
+      - step: PrepareScene  # Must complete first.
+      - service: Coordinator     # Must be READY first.
+    parameterSpace:
+      taskParameterDefinitions:
+        # One Task per worker; each pulls tiles from the coordinator until none remain.
+        - name: WorkerId
+          type: INT
+          range: "1-{{ Param.WorkerCount }}"
+    script:
+      actions:
+        onRun:
+          command: render-worker
+          args:
+            - "--coordinator"
+            - "http://{{ join_host_port(Service.Coordinator.api.connectAddress, Service.Coordinator.api.port) }}"
+            - "--scene"
+            - "{{ Param.SceneDir }}"
+            - "--worker-id"
+            - "{{ Task.Param.WorkerId }}"

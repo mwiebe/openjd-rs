@@ -560,10 +560,17 @@ fn below_minimum_default(name: &str) -> EnvironmentTemplate {
     let mut x = env_ok(&env(&format!(
         "name: {name}, envParameterDefinitions: [{{name: N, type: INT, minValue: 5, default: 5}}]"
     )));
-    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = env_ok(&env(
+    x.environment
+        .as_mut()
+        .unwrap()
+        .env_parameter_definitions
+        .as_mut()
+        .unwrap()[0]
+        .default = env_ok(&env(
         "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
     ))
     .environment
+    .unwrap()
     .env_parameter_definitions
     .unwrap()[0]
         .default
@@ -913,6 +920,7 @@ fn order_literal_defaults_of_edited_templates() {
         "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
     ))
     .environment
+    .unwrap()
     .env_parameter_definitions
     .unwrap()[0]
         .default
@@ -922,7 +930,13 @@ fn order_literal_defaults_of_edited_templates() {
         .as_mut()
         .unwrap()[0]
         .default = one.clone();
-    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = one;
+    x.environment
+        .as_mut()
+        .unwrap()
+        .env_parameter_definitions
+        .as_mut()
+        .unwrap()[0]
+        .default = one;
     let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
     let attached = [AttachedEnvironmentTemplate::new(&x)];
     let err = create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
@@ -1021,10 +1035,17 @@ fn order_the_validation_and_step_2_stages() {
     let mut x = env_ok(&env(
         "name: X, envParameterDefinitions: [{name: N, type: INT, minValue: 5, default: 5}]",
     ));
-    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = env_ok(&env(
+    x.environment
+        .as_mut()
+        .unwrap()
+        .env_parameter_definitions
+        .as_mut()
+        .unwrap()[0]
+        .default = env_ok(&env(
         "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
     ))
     .environment
+    .unwrap()
     .env_parameter_definitions
     .unwrap()[0]
         .default
@@ -1608,10 +1629,17 @@ fn a_job_template_without_env_params_does_not_stop_a_step_on_an_attachments_defi
     let mut x = env_ok(&env(
         "name: X, envParameterDefinitions: [{name: N, type: INT, minValue: 5, default: 5}]",
     ));
-    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = env_ok(&env(
+    x.environment
+        .as_mut()
+        .unwrap()
+        .env_parameter_definitions
+        .as_mut()
+        .unwrap()[0]
+        .default = env_ok(&env(
         "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
     ))
     .environment
+    .unwrap()
     .env_parameter_definitions
     .unwrap()[0]
         .default

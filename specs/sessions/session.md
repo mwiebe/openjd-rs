@@ -83,6 +83,11 @@ without checking `ending_only` themselves.
 This design reflects the worker agent's pattern: after a task fails, the agent exits all
 environments in reverse order and cleans up.
 
+A Service Session (RFC 0009) wraps a `Session` and follows the same rule for its
+Environment actions, but runs the Service's own actions on runners of its own, so their
+failures do not make the inner Session ending-only; see
+[service-session.md § Two action slots](service-session.md#two-action-slots).
+
 The only way back to `Ready` is an explicit call to the public method
 `clear_ending_only()`:
 
@@ -122,6 +127,10 @@ pub struct SessionConfig {
     pub user: Option<Arc<dyn SessionUser>>,
     pub revision_extensions: Option<ValidationContext>,
     pub cancel_token: Option<CancellationToken>,
+    /// A label for a runner that merges several Sessions' logs, as
+    /// `openjd run` does for each Service Session (`Service <name>`); see
+    /// [logging.md § LogTag](logging.md).
+    pub log_tag: Option<String>,
     /// Whether to accumulate subprocess stdout into result strings.
     /// Intended for debugging only. Default is `false`.
     pub debug_collect_stdout: bool,
@@ -355,6 +364,45 @@ at each use with the Session's current rules, as for `Param.*`, so after
 scheduler can check, with `EnvironmentParameterValues::values_equal`, that a Step's
 values equal them before running its Tasks in this Session; the Session does not
 enforce that rule itself, since it does not know which Step a Task belongs to.
+
+#### Per-document extension profile
+
+`enter_environment_with_profile(env, resolved_symtab, identifier, os_env_vars, profile)`
+is the same entry with one more input: the `ModelProfile` of the document the
+environment comes from. An extension applies to the document that lists it
+(Template Schemas §1.2 item 3; RFC 0009 "Environment Template": "a Job Template does
+not need to list the extensions used by the Environment Templates a scheduler applies
+to it, and vice versa"). A session has one `profile` — the Job Template's — and one
+library derived from it, so without this an attached Environment Template declaring
+`SERVICE` could not call `join_host_port` under a Job Template that declares nothing
+(the exploratory report's bug B1: `Failed to resolve env var 'KV_ADDR': Unknown
+function: 'join_host_port'`).
+
+With `profile: Some(p)` the session records a `DocumentProfile { profile, library }`
+for the environment's identifier, the library derived exactly as the session's own —
+`p.to_expr_profile(HostContext::WithRules(path_mapping_rules))` — and rebuilt with it
+whenever the path-mapping rules change (`with_path_mapping`,
+`extend_path_mapping_rules`). For the lifetime of the environment that library
+resolves:
+
+- its `variables` (step 3) and its `onEnter` / `onExit` command, args, timeout and
+  cancelation (the `EnvironmentScriptRunner` is handed it instead of the session's);
+- its own `let` bindings and embedded files when it is the *wrapped* environment of a
+  wrap hook (`build_wrapped_inner_scope`, `WrappedAction.*`);
+- its own `let` bindings, embedded files, and hook command/args when it is the
+  *wrapping* environment (`onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit` and the
+  `onWrapService*` hooks a Service Session dispatches). `seed_wrapped_action_symbols`
+  therefore takes two libraries (`WrapLibraries { inner, hook }`): the wrapped entity's
+  document's for `WrappedAction.*`, the wrapping environment's document's for the
+  wrapper's scope. They coincide unless one of the two came from another document.
+
+The redaction gate follows the same rule: `openjd_redacted_env` from this environment's
+actions is honored iff `p` enables it (`REDACTED_ENV_VARS`, or a revision newer than
+2023-09), not iff the session's profile does — both for the runner's own redaction and
+for `apply_message`'s env-var effect. The record is dropped when the environment is
+exited (its `onExit` still uses it). `profile: None`, and `enter_environment` /
+`enter_environment_with_output`, use the session's profile and library as before; a
+Task's `onRun` always does (a Task belongs to the Job Template).
 
 ### Exit
 
@@ -619,6 +667,14 @@ Every action installs fresh cancel state, so a cancel never poisons later action
 (contrast with `SessionConfig::cancel_token`, whose cancellation is permanent) and
 the same handle works for the life of the session.
 
+The per-action cancel state is one `ActionCancelSlot` (crate-internal), owned by the
+Session's `CancelFields` alongside the optional parent token. A `Session` has exactly
+one slot because it runs one action at a time. The slot type exists on its own so a
+Service Session (RFC 0009) can own a *second* slot for the `onHealthCheck`
+invocation that runs concurrently with `onRun`; `ActionCancelSlot::handle(..)` builds a
+`SessionCancelHandle` for any slot, routed to whichever cross-user helper runs that
+slot's actions. See [service-session.md](service-session.md) "Two action slots".
+
 ## Cleanup
 
 See [Session Lifecycle Contract](#session-lifecycle-contract) for the full cleanup
@@ -668,8 +724,11 @@ to prevent leaked temp directories during development and debugging.
 ### retain_working_dir
 
 When `SessionConfig.retain_working_dir` is `true`, both `cleanup()` and `Drop` skip
-directory removal. The session still transitions to `Ended` state. This is used for
-debugging — the operator can inspect the working directory contents after the session.
+directory removal, and the `TempDir`s the Session owns for its working and embedded
+files directories are marked kept (`TempDir::keep`) when they are created, so their own
+`Drop` does not remove them either. The session still transitions to `Ended` state. This
+is used for debugging — the operator can inspect the working directory contents after
+the session.
 
 ## drive_action
 
@@ -703,7 +762,7 @@ Handles each `ActionMessage` variant:
 | `Fail(s)` | Updates `action_status.fail_message` |
 | `SetEnv { name, value }` | Adds to current environment's change set |
 | `UnsetEnv { name }` | Adds unset to current environment's change set |
-| `RedactedEnv { name, value }` | Same as SetEnv + adds value to redaction set |
+| `RedactedEnv { name, value }` | Adds value to redaction set; same as SetEnv iff `env_redactions_enabled(identifier)` (the running action's document declares `REDACTED_ENV_VARS`), else dropped silently here — the `ActionFilter` has already logged the WARN that announces the drop ([action-filter.md](action-filter.md#when-the-document-does-not-declare-redacted_env_vars)) |
 | `CancelMarkFailed` | Sets `action_status.fail_message` (replacing any earlier `Fail` text), triggers cancelation with `mark_action_failed = true` |
 
 After each message, the user callback is invoked with the updated `ActionStatus`.

@@ -170,7 +170,7 @@ steps:
         .dependencies
         .iter()
         .flatten()
-        .map(|d| d.depends_on.as_str())
+        .map(|d| d.depends_on.as_deref().unwrap())
         .collect();
     assert_eq!(deps, ["A"]);
     assert_eq!(job.steps[2].dependencies, None);

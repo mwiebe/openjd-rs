@@ -42,6 +42,7 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -49,6 +50,10 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -62,6 +67,7 @@ fn env_with_vars(name: &str, vars: HashMap<String, FormatString>) -> Environment
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
@@ -128,6 +134,7 @@ async fn test_relative_session_root_is_absolutized() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).expect("relative root should be accepted");
@@ -158,6 +165,7 @@ async fn test_root_dir_permissions_posix() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -197,6 +205,7 @@ fn config_in_root(root: &std::path::Path, session_id: &str) -> SessionConfig {
         debug_collect_stdout: true,
         echo_openjd_directives: true,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+        log_tag: None,
     }
 }
 
@@ -336,6 +345,7 @@ async fn test_sticky_bit_policy_strict_rejects_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let result = Session::with_config(config);
@@ -370,6 +380,7 @@ async fn test_sticky_bit_policy_strict_allows_safe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let session = Session::with_config(config).unwrap();
@@ -403,6 +414,7 @@ async fn test_sticky_bit_policy_warn_allows_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Warn,
     };
     let session = Session::with_config(config).unwrap();
@@ -446,6 +458,7 @@ async fn test_sticky_bit_policy_disabled_skips_check() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -479,6 +492,63 @@ async fn test_session_drop_without_cleanup_warns() {
             "Expected a warning about session dropped without cleanup"
         );
     });
+}
+
+/// `retain_working_dir: true` keeps the working directory past the
+/// Session's end, whether the Session is cleaned up or merely dropped.
+#[tokio::test]
+async fn test_retain_working_dir_survives_cleanup_and_drop() {
+    let tmp = TempDir::new().unwrap();
+    let config = |id: &str| SessionConfig {
+        limits: Default::default(),
+        session_id: id.into(),
+        job_parameter_values: Default::default(),
+        session_root_directory: Some(tmp.path().to_path_buf()),
+        path_mapping_rules: None,
+        retain_working_dir: true,
+        callback: None,
+        os_env_vars: None,
+        user: None,
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        log_tag: None,
+        sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+    };
+    let (cleaned, cleaned_files) = {
+        let mut session = Session::with_config(config("retain-cleanup")).unwrap();
+        let dirs = (
+            session.working_directory().to_path_buf(),
+            session.files_directory().to_path_buf(),
+        );
+        session.cleanup();
+        dirs
+    };
+    let (dropped, dropped_files) = {
+        let session = Session::with_config(config("retain-drop")).unwrap();
+        (
+            session.working_directory().to_path_buf(),
+            session.files_directory().to_path_buf(),
+        )
+    };
+    assert!(
+        cleaned.is_dir(),
+        "{} removed after cleanup()",
+        cleaned.display()
+    );
+    assert!(dropped.is_dir(), "{} removed on drop", dropped.display());
+    // The embedded files directory is its own TempDir and is kept too.
+    assert!(
+        cleaned_files.is_dir(),
+        "{} removed",
+        cleaned_files.display()
+    );
+    assert!(
+        dropped_files.is_dir(),
+        "{} removed",
+        dropped_files.display()
+    );
 }
 
 // === TestSessionRunTask_2023_09 ===
@@ -611,6 +681,7 @@ async fn test_enter_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -618,6 +689,10 @@ async fn test_enter_environment_with_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -690,6 +765,7 @@ async fn test_enter_no_action() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -697,6 +773,10 @@ async fn test_enter_no_action() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -733,6 +813,7 @@ async fn test_enter_environment_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(session_config).unwrap();
@@ -741,6 +822,7 @@ async fn test_enter_environment_with_resolved_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -748,6 +830,10 @@ async fn test_enter_environment_with_resolved_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -802,6 +888,7 @@ async fn test_exit_environment_basic() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -809,6 +896,10 @@ async fn test_exit_environment_basic() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo exited"])),
             },
             embedded_files: None,
@@ -830,6 +921,7 @@ async fn test_exit_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -837,6 +929,10 @@ async fn test_exit_environment_with_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo EXIT_VAR=$EXIT_VAR"])),
             },
             embedded_files: None,
@@ -880,6 +976,7 @@ async fn test_exit_environment_fail_run() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -887,6 +984,10 @@ async fn test_exit_environment_fail_run() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "exit 1"])),
             },
             embedded_files: None,
@@ -1005,6 +1106,7 @@ async fn test_def_via_stdout_overrides_direct() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -1015,6 +1117,10 @@ async fn test_def_via_stdout_overrides_direct() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -1253,6 +1359,7 @@ async fn test_def_via_redacted_env_with_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(openjd_model::job::EnvironmentScript {
             let_bindings: None,
             actions: openjd_model::job::EnvironmentActions {
@@ -1263,6 +1370,10 @@ async fn test_def_via_redacted_env_with_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -1348,6 +1459,7 @@ async fn test_run_subprocess_basic() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1384,6 +1496,7 @@ async fn test_run_subprocess_ignores_entered_environments() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1426,6 +1539,7 @@ async fn test_run_subprocess_with_os_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1465,6 +1579,7 @@ async fn test_run_subprocess_includes_constructor_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1499,6 +1614,7 @@ async fn test_run_subprocess_empty_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1525,6 +1641,7 @@ async fn test_run_subprocess_whitespace_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1663,6 +1780,7 @@ fn realtime_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -1800,6 +1918,7 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -1807,6 +1926,10 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo EXIT_VAR=$EXIT_VAR"])),
             },
             embedded_files: None,
@@ -1909,6 +2032,7 @@ async fn test_cancel_action_mark_failed() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -2134,6 +2258,7 @@ async fn test_enter_environment_action_timeout_enforced() {
     let env = Environment {
         name: "timeout_env".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2145,6 +2270,10 @@ async fn test_enter_environment_action_timeout_enforced() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -2176,6 +2305,7 @@ async fn test_exit_environment_action_timeout_enforced() {
     let env = Environment {
         name: "exit_timeout_env".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2183,6 +2313,10 @@ async fn test_exit_environment_action_timeout_enforced() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action_with_timeout(
                     "sh",
                     vec!["-c", "echo exiting; sleep 30"],
@@ -2251,6 +2385,7 @@ fn cb_test_config(tmp: &TempDir, id: &str, log: Arc<Mutex<CbLog>>) -> SessionCon
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -2298,6 +2433,7 @@ async fn test_callback_enter_env_no_script_no_vars() {
     let env = Environment {
         name: "empty".into(),
         description: None,
+        dependencies: None,
         script: None,
         variables: None,
         resolved_symtab: None,
@@ -2319,6 +2455,7 @@ async fn test_callback_exit_env_with_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2326,6 +2463,10 @@ async fn test_callback_exit_env_with_script() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo bye"])),
             },
             embedded_files: None,
@@ -2357,6 +2498,7 @@ async fn test_callback_exit_env_no_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        dependencies: None,
         script: None,
         variables: None,
         resolved_symtab: None,
@@ -2553,6 +2695,7 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
     let env2 = Environment {
         name: "env2".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2560,6 +2703,10 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "exit 1"])),
             },
             embedded_files: None,
@@ -3082,6 +3229,7 @@ async fn test_parent_cancel_token_cancels_running_action() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3144,6 +3292,7 @@ async fn test_cancel_action_with_mark_failed() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3255,6 +3404,7 @@ async fn test_redacted_env_sets_var_with_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3265,6 +3415,10 @@ async fn test_redacted_env_sets_var_with_extension() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -3295,6 +3449,7 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3305,6 +3460,10 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -3329,6 +3488,7 @@ async fn test_redactions_disabled_with_no_profile() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3339,6 +3499,10 @@ async fn test_redactions_disabled_with_no_profile() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -3711,6 +3875,7 @@ async fn test_parent_token_cancel_with_external_kill_reports_canceled() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3770,6 +3935,7 @@ async fn test_callback_reports_intermediate_progress() {
         cancel_token: None,
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3854,6 +4020,7 @@ fn echo_directives_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: echo,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -3970,6 +4137,7 @@ async fn test_echo_openjd_directives_true_redacts_redacted_env_in_log() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -4096,6 +4264,7 @@ async fn test_cancel_handle_reusable_across_actions() {
     let e1 = Environment {
         name: "E1".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -4104,6 +4273,10 @@ async fn test_cancel_handle_reusable_across_actions() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),
@@ -4176,6 +4349,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -4184,6 +4358,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let wrap_env = Environment {
         name: "WrapEnv".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -4192,6 +4367,10 @@ async fn test_wrap_seed_failure_reports_failed_action() {
                 on_wrap_env_enter: Some(action("sh", vec!["-c", "echo wrapped"])),
                 on_wrap_task_run: Some(action("sh", vec!["-c", "echo wrapped"])),
                 on_wrap_env_exit: Some(action("sh", vec!["-c", "echo wrapped"])),
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),
@@ -4207,6 +4386,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let inner = Environment {
         name: "Inner".into(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -4220,6 +4400,10 @@ async fn test_wrap_seed_failure_reports_failed_action() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_health_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),

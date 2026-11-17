@@ -24,6 +24,8 @@ mod test_embedded_files;
 mod test_env_params_portable;
 #[path = "integration/test_env_params_session.rs"]
 mod test_env_params_session;
+#[path = "integration/test_environment_profile.rs"]
+mod test_environment_profile;
 #[path = "integration/test_error_messages.rs"]
 mod test_error_messages;
 #[path = "integration/test_helper.rs"]
@@ -32,6 +34,8 @@ mod test_helper;
 mod test_path_mapping;
 #[path = "integration/test_path_mapping_materialize.rs"]
 mod test_path_mapping_materialize;
+#[path = "integration/test_service_session.rs"]
+mod test_service_session;
 #[path = "integration/test_session.rs"]
 mod test_session;
 #[path = "integration/test_session_env_step.rs"]

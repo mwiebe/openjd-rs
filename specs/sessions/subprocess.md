@@ -50,6 +50,18 @@ interior mutability. Instead, the subprocess sends `ActionMessage` values throug
 channel, and the `Session::drive_action()` method receives them with `&mut self`. This
 avoids shared mutable state entirely.
 
+### The future is `Send`
+
+`run_subprocess`'s future holds nothing non-`Send` across an await on any
+platform, so it can be `tokio::spawn`ed. The RFC 0009 Service Session relies
+on this to run a Service's `onRun` on a background task while the caller keeps
+using the `ServiceSession` ([service-session.md](service-session.md)). The
+Windows path previously held an always-`None` `Option<HANDLE>` (a vestige of a
+pre-helper cross-user wait) across the read loop; it was dead code and was
+removed to make the future `Send`. The `Session` methods still box their
+runner futures without a `+ Send` bound for the stack-size reason noted in
+`session.rs`; that is independent of spawnability.
+
 ### Windows executable resolution
 
 On Windows, `run_subprocess` resolves `args[0]` to an absolute path before

@@ -484,7 +484,8 @@ pub enum ModelExtension {
     FeatureBundle1,
     Expr,
     /// `WRAP_ACTIONS` — enables `onWrapEnvEnter`, `onWrapTaskRun`, and
-    /// `onWrapEnvExit` on `<EnvironmentActions>`. See RFC 0008.
+    /// `onWrapEnvExit` on `<EnvironmentActions>` (and, with `SERVICE`, the
+    /// four `onWrapService*` hooks). See RFC 0008.
     WrapActions,
     /// `ENV_PARAMS` — enables `envParameterDefinitions`, `activation`,
     /// `hostRequirements`, and `enableIf` on `<Environment>`, the `step:`
@@ -493,6 +494,12 @@ pub enum ModelExtension {
     /// that lists it must also list [`Expr`](Self::Expr) (Template Schemas
     /// §1.1 item 3). See the Environment Parameters RFC (RFC 0010, draft).
     EnvParams,
+    /// `SERVICE` — enables `services` and `externalServices` on the job
+    /// template, `services` on the environment template, `dependencies` on
+    /// `<Environment>`, the `service` key of a `<StepDependency>`, and the
+    /// `<Service>` entity. Requires `EXPR` and [`EnvParams`](Self::EnvParams).
+    /// See RFC 0009.
+    Service,
 }
 
 impl ModelExtension {
@@ -506,6 +513,7 @@ impl ModelExtension {
         Self::Expr,
         Self::WrapActions,
         Self::EnvParams,
+        Self::Service,
     ];
 
     #[allow(
@@ -520,6 +528,7 @@ impl ModelExtension {
             Self::Expr => "EXPR",
             Self::WrapActions => "WRAP_ACTIONS",
             Self::EnvParams => "ENV_PARAMS",
+            Self::Service => "SERVICE",
         }
     }
 }
@@ -534,6 +543,7 @@ impl std::str::FromStr for ModelExtension {
             "EXPR" => Ok(Self::Expr),
             "WRAP_ACTIONS" => Ok(Self::WrapActions),
             "ENV_PARAMS" => Ok(Self::EnvParams),
+            "SERVICE" => Ok(Self::Service),
             _ => Err(format!("Unknown extension: {s}")),
         }
     }
@@ -563,16 +573,21 @@ pub struct CallerLimits {
     /// in a job template.
     pub max_env_count: Option<usize>,
     /// Maximum number of `environment:` entries (`ENV_PARAMS`) in one
-    /// Step's `dependencies`. Template Schemas §3 sets no maximum on
+    /// Step's `dependencies`, and with `SERVICE` in one Service's (RFC 0009
+    /// `<StepDependency>` item 3: a Service's entries work exactly as a
+    /// Step's; this applies to the Services of Job Templates and of
+    /// Environment Templates alike). Template Schemas §3 sets no maximum on
     /// `dependencies` but lets an implementation constrain it.
     ///
     /// Every entry with a non-null `environment` counts as written,
     /// whatever its `enableIf` or `required`: a disabled entry counts
     /// (whether `enableIf` is `false` or an expression), and so does a
     /// `required: false` entry that names no Environment. `dependsOn` and
-    /// `step` entries do not count. Checked per Step at template
-    /// validation, where the count is literal, and reported at the Step's
-    /// `dependencies` path. Job creation and
+    /// `step` entries do not count, nor do a Service's `service` entries.
+    /// Checked per Step and per Service at template validation, where the
+    /// count is literal, and reported at the Step's or Service's
+    /// `dependencies` path (`steps[i] -> dependencies`, `services[k] ->
+    /// dependencies`). Job creation and
     /// [`check_environment_templates`](crate::check_environment_templates)
     /// do not check it again, since neither Job Parameter values nor
     /// attached Environment Templates change how many entries a Step has,
@@ -743,13 +758,16 @@ impl ModelProfile {
         let revision = match self.revision {
             SpecificationRevision::V2023_09 => openjd_expr::ExprRevision::V2026_02,
         };
-        // `ExprExtension` is empty today — no expression-level
-        // extensions exist yet. Model-side `ModelExtension` variants
-        // gate *where* expressions are permitted in templates (EXPR,
-        // FEATURE_BUNDLE_1, TASK_CHUNKING, REDACTED_ENV_VARS), not
-        // which functions are registered once they are permitted, so
-        // the expression-level extension set is always empty for now.
-        let extensions = std::collections::HashSet::new();
+        // Most model-side `ModelExtension` variants gate *where*
+        // expressions are permitted in templates (EXPR, FEATURE_BUNDLE_1,
+        // TASK_CHUNKING, REDACTED_ENV_VARS), not which functions are
+        // registered once they are permitted. SERVICE is the exception:
+        // it adds the host and port functions (RFC 0009), so it maps to
+        // an expression-level extension.
+        let mut extensions = std::collections::HashSet::new();
+        if self.has_extension(ModelExtension::Service) {
+            extensions.insert(openjd_expr::ExprExtension::Service);
+        }
         openjd_expr::ExprProfile::new(revision)
             .with_extensions(extensions)
             .with_host_context(host_context)

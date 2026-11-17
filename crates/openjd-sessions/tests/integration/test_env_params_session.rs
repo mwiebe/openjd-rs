@@ -502,6 +502,7 @@ fn env(name: &str, actions: EnvironmentActions) -> Environment {
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions,
@@ -518,6 +519,10 @@ fn on_enter(action: Action) -> EnvironmentActions {
         on_wrap_env_enter: None,
         on_wrap_task_run: None,
         on_wrap_env_exit: None,
+        on_wrap_service_enter: None,
+        on_wrap_service_run: None,
+        on_wrap_service_health_check: None,
+        on_wrap_service_exit: None,
         on_exit: None,
     }
 }
@@ -647,6 +652,10 @@ fn wrap_env_enter_hook(action: Action) -> EnvironmentActions {
         on_wrap_env_enter: Some(action),
         on_wrap_task_run: None,
         on_wrap_env_exit: None,
+        on_wrap_service_enter: None,
+        on_wrap_service_run: None,
+        on_wrap_service_health_check: None,
+        on_wrap_service_exit: None,
         on_exit: None,
     }
 }
@@ -906,6 +915,10 @@ fn wrap_hooks(task: Option<Action>, exit: Option<Action>) -> EnvironmentActions 
         on_wrap_env_enter: None,
         on_wrap_task_run: task,
         on_wrap_env_exit: exit,
+        on_wrap_service_enter: None,
+        on_wrap_service_run: None,
+        on_wrap_service_health_check: None,
+        on_wrap_service_exit: None,
         on_exit: None,
     }
 }
@@ -1182,6 +1195,10 @@ fn actions(
         on_wrap_env_enter,
         on_wrap_task_run,
         on_wrap_env_exit,
+        on_wrap_service_enter: None,
+        on_wrap_service_run: None,
+        on_wrap_service_health_check: None,
+        on_wrap_service_exit: None,
         on_exit,
     }
 }

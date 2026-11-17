@@ -294,7 +294,9 @@ impl StepTemplate {
 
 /// What a `<StepDependency>` names (§3.2): a Step of the same Job Template
 /// (the `dependsOn` key or, with the `ENV_PARAMS` extension, its synonym
-/// `step`) or, with `ENV_PARAMS`, an Environment that the Step's Sessions
+/// `step`), with the `SERVICE` extension a Service the Job Template
+/// declares in `services` or requires in `externalServices` (the `service`
+/// key), or, with `ENV_PARAMS`, an Environment that the Step's Sessions
 /// enter (the `environment` key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyTarget<'a> {
@@ -303,6 +305,8 @@ pub enum DependencyTarget<'a> {
     /// (§3.2 item 2): the key is kept only so that messages can name what
     /// was written.
     Step(&'a str, StepKey),
+    /// A Service, by name; satisfied when the Service is READY.
+    Service(&'a str),
     /// An Environment, by name: a `jobEnvironments` entry of the same Job
     /// Template or an external Environment. It does not delay scheduling.
     Environment(&'a str),
@@ -337,7 +341,16 @@ impl<'a> DependencyTarget<'a> {
     pub fn step(self) -> Option<&'a str> {
         match self {
             Self::Step(name, _) => Some(name),
-            Self::Environment(_) => None,
+            Self::Service(_) | Self::Environment(_) => None,
+        }
+    }
+
+    /// The Service name, for a Service target.
+    #[must_use]
+    pub fn service(self) -> Option<&'a str> {
+        match self {
+            Self::Service(name) => Some(name),
+            Self::Step(..) | Self::Environment(_) => None,
         }
     }
 
@@ -345,32 +358,36 @@ impl<'a> DependencyTarget<'a> {
     #[must_use]
     pub fn environment(self) -> Option<&'a str> {
         match self {
-            Self::Step(..) => None,
             Self::Environment(name) => Some(name),
+            Self::Step(..) | Self::Service(_) => None,
         }
     }
 }
 
-/// `dependsOn: X`, `step: X`, or `environment: X`, the entry as a template
-/// writes it.
+/// `dependsOn: X`, `step: X`, `service: X`, or `environment: X`, the entry
+/// as a template writes it.
 impl std::fmt::Display for DependencyTarget<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Step(name, key) => write!(f, "{}: {name}", key.as_str()),
+            Self::Service(name) => write!(f, "service: {name}"),
             Self::Environment(name) => write!(f, "environment: {name}"),
         }
     }
 }
 
-/// §3.2 StepDependency: one entry of a Step's `dependencies`.
+/// §3.2 StepDependency: one entry of a Step's, a Service's, or a Job
+/// Environment's `dependencies`.
 ///
 /// It is one of `dependsOn: <StepName>` or, with the `ENV_PARAMS`
-/// extension, its synonym `step: <StepName>`, or `environment:
-/// <EnvironmentName>` with optional `required`, `enableIf`, and
-/// `parameters`. Every key is optional here so that an entry with more
+/// extension, its synonym `step: <StepName>`; with the `SERVICE`
+/// extension, `service: <ServiceName>`; or, with `ENV_PARAMS`,
+/// `environment: <EnvironmentName>` with optional `required`, `enableIf`,
+/// and `parameters`. Every key is optional here so that an entry with more
 /// than one form, or none, decodes and template validation reports it at
-/// the entry's path (§3.2 constraint 1). Use [`target`](Self::target) to
-/// read which form an entry has.
+/// the entry's path (§3.2 constraint 1). Without `SERVICE` the `service`
+/// key is gated like every other `SERVICE` property. Use
+/// [`target`](Self::target) to read which form an entry has.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(
@@ -385,6 +402,10 @@ pub struct StepDependency {
     /// synonym of [`depends_on`](Self::depends_on) (§3.2 item 2).
     #[serde(default)]
     pub step: Option<String>,
+    /// The name of a Service the Job Template declares in `services` or
+    /// requires in `externalServices` (`SERVICE` extension).
+    #[serde(default)]
+    pub service: Option<String>,
     /// The name of an Environment (`ENV_PARAMS`).
     #[serde(default)]
     pub environment: Option<String>,
@@ -415,11 +436,16 @@ impl StepDependency {
     pub fn on_step(name: impl Into<String>) -> Self {
         Self {
             depends_on: Some(name.into()),
-            step: None,
-            environment: None,
-            required: None,
-            enable_if: None,
-            parameters: None,
+            ..Self::empty()
+        }
+    }
+
+    /// An entry naming the Service `name`.
+    #[must_use]
+    pub fn on_service(name: impl Into<String>) -> Self {
+        Self {
+            service: Some(name.into()),
+            ..Self::empty()
         }
     }
 
@@ -428,9 +454,19 @@ impl StepDependency {
     #[must_use]
     pub fn on_environment(name: impl Into<String>) -> Self {
         Self {
+            environment: Some(name.into()),
+            ..Self::empty()
+        }
+    }
+
+    /// An entry with no keys at all (malformed; the base for the
+    /// constructors above).
+    fn empty() -> Self {
+        Self {
             depends_on: None,
             step: None,
-            environment: Some(name.into()),
+            service: None,
+            environment: None,
             required: None,
             enable_if: None,
             parameters: None,
@@ -438,14 +474,22 @@ impl StepDependency {
     }
 
     /// What this entry names, or `None` for an entry with more than one of
-    /// `dependsOn`, `step`, and `environment` or with none, which template
-    /// validation rejects (§3.2 constraint 1).
+    /// `dependsOn`, `step`, `service`, and `environment` or with none,
+    /// which template validation rejects (§3.2 constraint 1).
     #[must_use]
     pub fn target(&self) -> Option<DependencyTarget<'_>> {
-        match (&self.depends_on, &self.step, &self.environment) {
-            (Some(name), None, None) => Some(DependencyTarget::Step(name, StepKey::DependsOn)),
-            (None, Some(name), None) => Some(DependencyTarget::Step(name, StepKey::Step)),
-            (None, None, Some(env)) => Some(DependencyTarget::Environment(env)),
+        match (
+            &self.depends_on,
+            &self.step,
+            &self.service,
+            &self.environment,
+        ) {
+            (Some(name), None, None, None) => {
+                Some(DependencyTarget::Step(name, StepKey::DependsOn))
+            }
+            (None, Some(name), None, None) => Some(DependencyTarget::Step(name, StepKey::Step)),
+            (None, None, Some(name), None) => Some(DependencyTarget::Service(name)),
+            (None, None, None, Some(env)) => Some(DependencyTarget::Environment(env)),
             _ => None,
         }
     }
@@ -459,6 +503,12 @@ impl StepDependency {
         self.target().and_then(DependencyTarget::step)
     }
 
+    /// The Service this entry names, if it is a well-formed `service` entry.
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::service)
+    }
+
     /// The Environment this entry names, if it is a well-formed
     /// `environment` entry. (The `environment` field holds the name as
     /// written, whether or not the entry is well-formed.)
@@ -468,10 +518,34 @@ impl StepDependency {
     }
 
     /// True when the entry is well-formed: exactly one of `dependsOn`,
-    /// `step`, and `environment`.
+    /// `step`, `service`, and `environment`.
     #[must_use]
     pub fn is_well_formed(&self) -> bool {
         self.target().is_some()
+    }
+
+    /// The entry as written (`dependsOn: X`, `step: X`, `service: X`,
+    /// `environment: X`), or a description of a malformed one listing
+    /// every naming key it gives, for messages.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        if let Some(target) = self.target() {
+            return target.to_string();
+        }
+        let keys: Vec<String> = [
+            ("dependsOn", &self.depends_on),
+            ("step", &self.step),
+            ("service", &self.service),
+            ("environment", &self.environment),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.as_ref().map(|v| format!("{key}: {v}")))
+        .collect();
+        if keys.is_empty() {
+            "{}".to_string()
+        } else {
+            keys.join(", ")
+        }
     }
 
     /// Whether the entry is enabled, as written, when `enableIf` is a
@@ -497,6 +571,35 @@ impl StepDependency {
     }
 }
 
+/// True when `dependencies` lists Service `name` with the `service` key.
+#[must_use]
+pub fn lists_service(dependencies: Option<&[StepDependency]>, name: &str) -> bool {
+    dependencies
+        .into_iter()
+        .flatten()
+        .any(|d| d.service() == Some(name))
+}
+
+/// The Service names `dependencies` lists with the `service` key, in list
+/// order.
+pub fn listed_service_names(
+    dependencies: Option<&[StepDependency]>,
+) -> impl Iterator<Item = &str> + '_ {
+    dependencies
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.service())
+}
+
+/// The Step names `dependencies` lists with the `dependsOn` key or its
+/// `ENV_PARAMS` synonym `step`, in list order (`service` and `environment`
+/// entries and malformed entries skipped).
+pub fn listed_step_names(
+    dependencies: Option<&[StepDependency]>,
+) -> impl Iterator<Item = &str> + '_ {
+    dependencies.into_iter().flatten().filter_map(|d| d.step())
+}
+
 /// §3.5 StepScript
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -513,11 +616,121 @@ pub struct StepScript {
 
 #[cfg(test)]
 mod tests {
-    use super::{SimpleActionKind, StepTemplate};
+    use super::{
+        listed_service_names, listed_step_names, lists_service, DependencyTarget, SimpleActionKind,
+        StepDependency, StepKey, StepTemplate,
+    };
     use crate::error::PathElement::{Field, Index};
 
     fn f(s: &str) -> crate::error::PathElement {
         Field(s.to_string())
+    }
+
+    #[test]
+    fn dependency_target_accessors_and_display() {
+        assert_eq!(DependencyTarget::Service("C").service(), Some("C"));
+        assert_eq!(DependencyTarget::Service("C").step(), None);
+        assert_eq!(DependencyTarget::Service("C").environment(), None);
+        let dep = DependencyTarget::Step("S", StepKey::DependsOn);
+        assert_eq!(dep.step(), Some("S"));
+        assert_eq!(dep.service(), None);
+        assert_eq!(dep.environment(), None);
+        assert_eq!(dep.to_string(), "dependsOn: S");
+        let step = DependencyTarget::Step("S", StepKey::Step);
+        assert_eq!(step.step(), Some("S"));
+        assert_eq!(step.to_string(), "step: S");
+        let env = DependencyTarget::Environment("E");
+        assert_eq!(env.environment(), Some("E"));
+        assert_eq!(env.step(), None);
+        assert_eq!(env.service(), None);
+        assert_eq!(env.to_string(), "environment: E");
+        assert_eq!(DependencyTarget::Service("C").to_string(), "service: C");
+    }
+
+    #[test]
+    fn step_dependency_is_one_of_two_keys() {
+        let step = StepDependency::on_step("Render");
+        assert_eq!(
+            step.target(),
+            Some(DependencyTarget::Step("Render", StepKey::DependsOn))
+        );
+        assert_eq!(step.step(), Some("Render"));
+        assert_eq!(step.service(), None);
+        assert!(step.is_well_formed());
+        assert_eq!(step.describe(), "dependsOn: Render");
+        let svc = StepDependency::on_service("Cache");
+        assert_eq!(svc.target(), Some(DependencyTarget::Service("Cache")));
+        assert_eq!(svc.service(), Some("Cache"));
+        assert_eq!(svc.step(), None);
+        assert_eq!(svc.describe(), "service: Cache");
+        // Both keys, or neither: no target.
+        let both = StepDependency {
+            depends_on: Some("Render".into()),
+            ..StepDependency::on_service("Cache")
+        };
+        assert_eq!(both.target(), None);
+        assert!(!both.is_well_formed());
+        assert_eq!(both.describe(), "dependsOn: Render, service: Cache");
+        let neither: StepDependency = serde_saphyr::from_str("{}").unwrap();
+        assert_eq!(neither.target(), None);
+        assert_eq!(neither.describe(), "{}");
+        // The `ENV_PARAMS` keys take part in the one-key rule too.
+        let step_and_service = StepDependency {
+            step: Some("Render".into()),
+            ..StepDependency::on_service("Cache")
+        };
+        assert_eq!(step_and_service.target(), None);
+        assert_eq!(step_and_service.describe(), "step: Render, service: Cache");
+        let env_and_service = StepDependency {
+            environment: Some("Env".into()),
+            ..StepDependency::on_service("Cache")
+        };
+        assert_eq!(env_and_service.target(), None);
+        assert_eq!(
+            env_and_service.describe(),
+            "service: Cache, environment: Env"
+        );
+        assert_eq!(
+            StepDependency::on_environment("Env").describe(),
+            "environment: Env"
+        );
+        // Decoding: each key is optional; an unknown key is rejected.
+        let decoded: StepDependency = serde_saphyr::from_str("service: Cache").unwrap();
+        assert_eq!(decoded, StepDependency::on_service("Cache"));
+        let decoded: StepDependency = serde_saphyr::from_str("{}").unwrap();
+        assert_eq!(decoded.target(), None);
+        assert!(serde_saphyr::from_str::<StepDependency>("dependsOnService: X").is_err());
+    }
+
+    #[test]
+    fn listed_names_split_by_kind() {
+        let deps = vec![
+            StepDependency::on_step("A"),
+            StepDependency::on_service("X"),
+            StepDependency::on_step("B"),
+            StepDependency::on_service("Y"),
+            StepDependency {
+                depends_on: Some("C".into()),
+                ..StepDependency::on_service("Z")
+            },
+            serde_saphyr::from_str::<StepDependency>("step: D").unwrap(),
+            StepDependency::on_environment("E"),
+        ];
+        assert!(lists_service(Some(&deps), "X"));
+        assert!(!lists_service(Some(&deps), "A"));
+        assert!(!lists_service(Some(&deps), "Z"));
+        assert!(!lists_service(None, "X"));
+        assert_eq!(
+            listed_service_names(Some(&deps)).collect::<Vec<_>>(),
+            vec!["X", "Y"]
+        );
+        // `step:` is read the same as `dependsOn:`; an `environment:`
+        // entry names neither a Step nor a Service.
+        assert_eq!(
+            listed_step_names(Some(&deps)).collect::<Vec<_>>(),
+            vec!["A", "B", "D"]
+        );
+        assert_eq!(deps[1].target(), Some(DependencyTarget::Service("X")));
     }
 
     #[test]

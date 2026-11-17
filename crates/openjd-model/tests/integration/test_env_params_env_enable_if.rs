@@ -1354,6 +1354,7 @@ fn literal_enabled_is_known_only_for_an_absent_field_or_a_boolean_scalar() {
              environment:\n  name: E\n{enable_if}  variables: {{V: x}}\n"
         ))
         .environment
+        .expect("the template defines an Environment")
         .literal_enabled()
     };
     assert_eq!(env(""), Some(true));

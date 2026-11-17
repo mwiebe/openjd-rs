@@ -23,10 +23,11 @@ pub const STANDARD_AMOUNT_CAPABILITIES: &[&str] = &[
 pub const STANDARD_ATTRIBUTE_CAPABILITIES: &[(&str, &[&str])] = &[
     ("attr.worker.os.family", &["linux", "windows", "macos"]),
     ("attr.worker.cpu.arch", &["x86_64", "arm64"]),
+    ("attr.worker.preemptible", &["true", "false"]),  // RFC 0009; not gated by SERVICE
 ];
 
 pub const STANDARD_ATTRIBUTE_CAPABILITY_NAMES: &[&str] =
-    &["attr.worker.os.family", "attr.worker.cpu.arch"];
+    &["attr.worker.os.family", "attr.worker.cpu.arch", "attr.worker.preemptible"];
 ```
 
 ## Validation Functions

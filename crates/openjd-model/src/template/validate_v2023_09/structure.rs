@@ -173,6 +173,21 @@ pub fn validate_structure(
     let env_params_active = ctx
         .profile
         .has_extension(crate::types::ModelExtension::EnvParams);
+    let service_active = ctx
+        .profile
+        .has_extension(crate::types::ModelExtension::Service);
+    // RFC 0009: a `service` entry names a Service; those entries are
+    // resolved by the SERVICE pass against `services` and
+    // `externalServices` (and gated when SERVICE is not declared), and the
+    // combined Step/Service graph is checked for cycles there. The Services
+    // a `dependsOn` could have meant, for the hint on one that names no
+    // Step (§3.2).
+    let service_names: Vec<&str> = jt
+        .services()
+        .iter()
+        .map(|s| s.name.as_str())
+        .chain(jt.external_services().iter().map(|r| r.name.as_str()))
+        .collect();
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
@@ -199,16 +214,7 @@ pub fn validate_structure(
             );
         }
         if let Some(desc) = &step.description {
-            let dp = path_field(&step_path, "description");
-            if desc.0.chars().count() > limits.max_description_len {
-                errors.add(
-                    &dp,
-                    format!("exceeds {} characters.", limits.max_description_len),
-                );
-            }
-            if has_control_chars(&desc.0) {
-                errors.add(&dp, "contains control characters.");
-            }
+            validate_description(desc, &path_field(&step_path, "description"), limits, errors);
         }
         // Must have script or SimpleAction
         if step.script.is_none()
@@ -221,31 +227,46 @@ pub fn validate_structure(
             errors.add(&step_path, "must have 'script' or a simple action field.");
         }
 
-        // Dependencies
+        // Dependencies (§3.2). Each entry is exactly one of `dependsOn`
+        // (or its `ENV_PARAMS` synonym `step`), `service` (`SERVICE`), or
+        // `environment` (`ENV_PARAMS`). Step entries resolve here, `service`
+        // entries in the SERVICE pass, and `environment` entries in the
+        // ENV_PARAMS pass. Self-dependency is checked for Step entries;
+        // duplicates for Step and Service entries, with `step` and
+        // `dependsOn` naming one Step counting as duplicates.
         if let Some(deps) = &step.dependencies {
             let deps_path = path_field(&step_path, "dependencies");
             if deps.is_empty() {
                 errors.add(&deps_path, "must not be empty.");
             }
-            let mut dep_names = HashSet::new();
+            let mut seen: HashSet<DependencyTarget<'_>> = HashSet::new();
             for (j, dep) in deps.iter().enumerate() {
                 let dep_path = path_index(&deps_path, j);
-                validate_dependency_form(dep, &dep_path, env_params_active, errors);
-                // The Step checks apply to `dependsOn` and `step` entries
-                // alike (§3.2 item 2), so a `step` and a `dependsOn` entry
-                // naming one Step are duplicates. The
-                // `environment:` form (ENV_PARAMS) is checked in pass 11.
-                let Some(depends_on) = dep.step() else {
+                validate_dependency_form(dep, &dep_path, env_params_active, service_active, errors);
+                let Some(target) = dep.target() else {
                     continue;
                 };
-                if depends_on == step.name {
-                    errors.add(&dep_path, "cannot depend on itself.");
-                }
-                if !step_names.contains(depends_on) && !all_step_names.contains(depends_on) {
-                    errors.add(&dep_path, format!("dependency '{depends_on}' not found."));
-                }
-                if !dep_names.insert(depends_on) {
-                    errors.add(&dep_path, format!("duplicate dependency '{depends_on}'."));
+                let key = match target {
+                    DependencyTarget::Step(name, _) => {
+                        if name == step.name {
+                            errors.add(&dep_path, "cannot depend on itself.");
+                        }
+                        if !step_names.contains(name) && !all_step_names.contains(name) {
+                            errors.add(
+                                &dep_path,
+                                super::service::unknown_step_dependency(
+                                    name,
+                                    service_names.iter().copied(),
+                                ),
+                            );
+                        }
+                        DependencyTarget::Step(name, StepKey::DependsOn)
+                    }
+                    DependencyTarget::Service(_) => target,
+                    DependencyTarget::Environment(_) => continue,
+                };
+                if !seen.insert(key) {
+                    errors.add(&dep_path, super::service::duplicate_dependency(dep));
                 }
             }
             // Caller-imposed limit on the Step's `environment:` entries,
@@ -266,8 +287,13 @@ pub fn validate_structure(
 
         // Host requirements
         if let Some(hr) = &step.host_requirements {
-            let hr_path = path_field(&step_path, "hostRequirements");
-            validate_host_requirements_in_profile(hr, &hr_path, rules, ctx, errors);
+            validate_host_requirements_in_context(
+                hr,
+                &path_field(&step_path, "hostRequirements"),
+                rules,
+                ctx,
+                errors,
+            );
         }
 
         // Parameter space
@@ -328,8 +354,12 @@ pub fn validate_structure(
         }
     }
 
-    // Cycle detection
-    detect_dependency_cycles(&jt.steps, errors);
+    // Cycle detection. With SERVICE the Steps', Services' and Job
+    // Environments' `dependencies` form one graph, which pass 12 checks
+    // (naming the cycle); without it only Step-to-Step edges exist.
+    if !ctx.profile.has_extension(ModelExtension::Service) {
+        detect_dependency_cycles(&jt.steps, errors);
+    }
 
     // Environments
     if let Some(envs) = &jt.job_environments {
@@ -342,7 +372,7 @@ pub fn validate_structure(
             // rejects them without the extension.
             if let Some(hr) = env.host_requirements.as_ref().filter(|_| env_params_active) {
                 let hr_path = path_field(&env_path, "hostRequirements");
-                validate_host_requirements_in_profile(hr, &hr_path, rules, ctx, errors);
+                validate_host_requirements_in_context(hr, &hr_path, rules, ctx, errors);
             }
         }
     }
@@ -384,26 +414,7 @@ pub fn validate_single_environment(
     }
 
     if let Some(vars) = &env.variables {
-        let vars_path = path_field(path, "variables");
-        if vars.is_empty() {
-            errors.add(&vars_path, "if provided, must not be empty.");
-        }
-        for (name, value) in vars {
-            let var_path = path_field(&vars_path, name);
-            validate_env_var_name(name, &var_path, errors);
-            if value.raw().contains('\0') {
-                errors.add(
-                    &var_path,
-                    "value contains a NUL byte, which cannot be represented in a process environment.",
-                );
-            }
-            if value.raw().chars().count() > limits.max_env_var_value_len {
-                errors.add(
-                    &var_path,
-                    format!("value exceeds {} characters.", limits.max_env_var_value_len),
-                );
-            }
-        }
+        validate_variables(vars, &path_field(path, "variables"), limits, errors);
     }
 
     if let Some(script) = &env.script {
@@ -503,7 +514,101 @@ fn validate_step_script(
     }
 }
 
-fn validate_action(
+/// Check a `<Description>` (§7.2) against the effective limits: length and
+/// control characters. `path` is the description field's path.
+pub(super) fn validate_description(
+    desc: &Description,
+    path: &[PathElement],
+    limits: &super::EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    if desc.0.chars().count() > limits.max_description_len {
+        errors.add(
+            path,
+            format!("exceeds {} characters.", limits.max_description_len),
+        );
+    }
+    if has_control_chars(&desc.0) {
+        errors.add(path, "contains control characters.");
+    }
+}
+
+/// Check an `<EnvironmentVariables>` map (§4.4): non-empty if provided,
+/// valid variable names, no NUL bytes, and the §4.4.2 value length. Shared by
+/// `<Environment>.variables` and `<Service>.variables`, which have the same
+/// schema. `path` is the `variables` field's path.
+pub(super) fn validate_variables(
+    vars: &HashMap<String, openjd_expr::FormatString>,
+    path: &[PathElement],
+    limits: &super::EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    if vars.is_empty() {
+        errors.add(path, "if provided, must not be empty.");
+    }
+    for (name, value) in vars {
+        let var_path = path_field(path, name);
+        validate_env_var_name(name, &var_path, errors);
+        if value.raw().contains('\0') {
+            errors.add(
+                &var_path,
+                "value contains a NUL byte, which cannot be represented in a process environment.",
+            );
+        }
+        if value.raw().chars().count() > limits.max_env_var_value_len {
+            errors.add(
+                &var_path,
+                format!("value exceeds {} characters.", limits.max_env_var_value_len),
+            );
+        }
+    }
+}
+
+/// Validate a `<HostRequirements>` object (§3.3) using the standard
+/// capability names for the context's revision and extensions. Shared by
+/// `<StepTemplate>.hostRequirements`, `<Service>.hostRequirements`, and,
+/// with `ENV_PARAMS`, an Environment's `hostRequirements` (§4 item 5),
+/// each checked on its own (§3.3.3).
+pub(super) fn validate_host_requirements_in_context(
+    hr: &HostRequirements,
+    hr_path: &[PathElement],
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    match (
+        capabilities::standard_amount_capability_names(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+        capabilities::standard_attribute_capabilities(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+    ) {
+        (Ok(std_amounts), Ok(std_attrs)) => {
+            validate_host_requirements(hr, hr_path, rules, std_amounts, std_attrs, errors);
+        }
+        _ => {
+            let ext_list: Vec<_> = ctx
+                .profile
+                .extensions()
+                .iter()
+                .map(|e| e.as_str())
+                .collect();
+            errors.add(
+                hr_path,
+                format!(
+                    "cannot validate: no capability definitions for revision {} with extensions {:?}.",
+                    ctx.profile.revision(),
+                    ext_list
+                ),
+            );
+        }
+    }
+}
+
+pub(super) fn validate_action(
     action: &Action,
     path: &[PathElement],
     limits: &super::EffectiveLimits,
@@ -593,56 +698,15 @@ fn validate_action(
     }
 }
 
-/// §3.3 checks of one `hostRequirements` object at `hr_path` against the
-/// standard capability tables of `ctx`'s profile: a Step's, or with
-/// `ENV_PARAMS` an Environment's (§4 item 5), each checked on its own
-/// (§3.3.3).
-pub(super) fn validate_host_requirements_in_profile(
-    hr: &HostRequirements,
-    hr_path: &[PathElement],
-    rules: &EffectiveRules,
-    ctx: &ValidationContext,
-    errors: &mut ValidationErrors,
-) {
-    match (
-        capabilities::standard_amount_capability_names(
-            ctx.profile.revision(),
-            ctx.profile.extensions(),
-        ),
-        capabilities::standard_attribute_capability_names(
-            ctx.profile.revision(),
-            ctx.profile.extensions(),
-        ),
-    ) {
-        (Ok(std_amounts), Ok(std_attrs)) => {
-            validate_host_requirements(hr, hr_path, rules, std_amounts, &std_attrs, errors);
-        }
-        _ => {
-            let ext_list: Vec<_> = ctx
-                .profile
-                .extensions()
-                .iter()
-                .map(|e| e.as_str())
-                .collect();
-            errors.add(
-                hr_path,
-                format!(
-                    "cannot validate: no capability definitions for revision {} with extensions {:?}.",
-                    ctx.profile.revision(), ext_list
-                ),
-            );
-        }
-    }
-}
-
 fn validate_host_requirements(
     hr: &HostRequirements,
     path: &[PathElement],
     rules: &EffectiveRules,
     standard_amounts: &[&str],
-    standard_attrs: &[&str],
+    standard_attrs: &[(&str, &[&str])],
     errors: &mut ValidationErrors,
 ) {
+    let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
     // §3.3 constraint 1 does not apply in a document that lists
     // ENV_PARAMS: there an empty object, or empty lists, mean no
     // requirements.
@@ -756,7 +820,7 @@ fn validate_host_requirements(
                 check_capability_name(
                     name,
                     CapabilityKind::Attribute,
-                    standard_attrs,
+                    &standard_attr_names,
                     &attr_path,
                     errors,
                 );
@@ -822,8 +886,12 @@ fn validate_host_requirements(
                 &attr_path,
                 errors,
             );
-            if attr_lower == "attr.worker.os.family" {
-                let valid = ["linux", "windows", "macos"];
+            // Each standard attribute constrains its literal values to its
+            // allowed set (§3.3.2.1), compared case-insensitively.
+            if let Some((std_name, valid)) = standard_attrs
+                .iter()
+                .find(|(std_name, _)| *std_name == attr_lower)
+            {
                 for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
                     if let Some(vals) = vals.as_ref().and_then(AttributeValues::as_list) {
                         for v in vals {
@@ -832,30 +900,7 @@ fn validate_host_requirements(
                             {
                                 errors.add(
                                     &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.os.family.",
-                                        v.raw()
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            if attr_lower == "attr.worker.cpu.arch" {
-                let valid = ["x86_64", "arm64"];
-                for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals.as_ref().and_then(AttributeValues::as_list) {
-                        for v in vals {
-                            if v.is_literal()
-                                && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
-                            {
-                                errors.add(
-                                    &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.cpu.arch.",
-                                        v.raw()
-                                    ),
+                                    format!("value '{}' is not valid for {std_name}.", v.raw()),
                                 );
                             }
                         }
@@ -1094,7 +1139,7 @@ fn validate_combination_expr(
     }
 }
 
-fn validate_embedded_files(
+pub(super) fn validate_embedded_files(
     files: &[EmbeddedFile],
     path: &[PathElement],
     errors: &mut ValidationErrors,
@@ -1159,42 +1204,64 @@ fn validate_embedded_files(
     }
 }
 
-/// §3.2 constraint 1: an entry has exactly one of `dependsOn`, `step`, and
-/// `environment`, and `required`, `enableIf`, and `parameters` only with
-/// `environment`.
+/// §3.2 constraint 1: an entry has exactly one of `dependsOn`, `step`,
+/// `service`, and `environment`, and `required`, `enableIf`, and
+/// `parameters` only with `environment`.
 ///
+/// The messages name the forms the document's extensions make available.
 /// Without `ENV_PARAMS` neither the `step` nor the `environment` form
-/// exists, so an entry with none of the keys is reported as missing
-/// `dependsOn`, and an entry with more than one names only the keys it has.
-/// With it, the messages name all three forms. A `required`, `enableIf`, or
-/// `parameters` key without `environment` is reported here with or without
-/// the extension; a `step` or `environment` key without the extension is
-/// reported by the gates in pass 11.
+/// exists: with `SERVICE` (or when the entry gives a `service` key) the
+/// message is the SERVICE one naming `dependsOn` and `service`
+/// ([`super::service::malformed_dependency`]); otherwise an entry with none
+/// of the keys is reported as missing `dependsOn`, and an entry with more
+/// than one names only the keys it has. With `ENV_PARAMS` the messages name
+/// every available form. A `required`, `enableIf`, or `parameters` key
+/// without `environment` is reported here with or without the extension; a
+/// `step`, `service`, or `environment` key without its extension is
+/// reported by the extension gates.
 fn validate_dependency_form(
     dep: &StepDependency,
     dep_path: &[PathElement],
     env_params_active: bool,
+    service_active: bool,
     errors: &mut ValidationErrors,
 ) {
     let present: Vec<&str> = [
         ("dependsOn", dep.depends_on.is_some()),
         ("step", dep.step.is_some()),
+        ("service", dep.service.is_some()),
         ("environment", dep.environment.is_some()),
     ]
     .into_iter()
     .filter_map(|(key, is)| is.then_some(key))
     .collect();
-    const ALL_FORMS: &str = "must have exactly one of 'dependsOn', 'step', or 'environment'";
-    match (present.as_slice(), env_params_active) {
-        ([], true) => errors.add(dep_path, format!("{ALL_FORMS}.")),
-        ([], false) => errors.add(dep_path, "must have 'dependsOn'."),
-        ([_], _) => {}
-        ([a, b], true) => errors.add(dep_path, format!("{ALL_FORMS}, not both '{a}' and '{b}'.")),
-        ([a, b], false) => errors.add(
-            dep_path,
-            format!("must have exactly one of '{a}' or '{b}', not both."),
-        ),
-        (_, _) => errors.add(dep_path, format!("{ALL_FORMS}, not all three.")),
+    let env_params_keys = dep.step.is_some() || dep.environment.is_some();
+    if present.len() != 1
+        && !env_params_active
+        && !env_params_keys
+        && (service_active || dep.service.is_some())
+    {
+        errors.add(dep_path, super::service::malformed_dependency(dep));
+    } else {
+        let all_forms = if service_active {
+            "must have exactly one of 'dependsOn', 'step', 'service', or 'environment'"
+        } else {
+            "must have exactly one of 'dependsOn', 'step', or 'environment'"
+        };
+        match (present.as_slice(), env_params_active) {
+            ([], true) => errors.add(dep_path, format!("{all_forms}.")),
+            ([], false) => errors.add(dep_path, "must have 'dependsOn'."),
+            ([_], _) => {}
+            ([a, b], true) => {
+                errors.add(dep_path, format!("{all_forms}, not both '{a}' and '{b}'."))
+            }
+            ([a, b], false) => errors.add(
+                dep_path,
+                format!("must have exactly one of '{a}' or '{b}', not both."),
+            ),
+            ([_, _, _], _) => errors.add(dep_path, format!("{all_forms}, not all three.")),
+            (_, _) => errors.add(dep_path, format!("{all_forms}, not all four.")),
+        }
     }
     if dep.environment.is_none() {
         for (key, present) in [

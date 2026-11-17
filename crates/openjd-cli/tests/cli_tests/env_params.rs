@@ -821,8 +821,8 @@ fn write_file(dir: &tempfile::TempDir, name: &str, contents: &str) -> String {
 
 #[test]
 fn check_reports_the_new_template_validation_errors() {
-    // An unknown activation is a decode error, which, as for every enum
-    // field, names the value but not the field.
+    // An unknown activation is a decode error, reported at the field's path
+    // (the SERVICE prototype's typed-decode error form).
     let dir = tempfile::tempdir().unwrap();
     let unknown = write_file(
         &dir,
@@ -835,8 +835,9 @@ fn check_reports_the_new_template_validation_errors() {
     assert_ne!(code, 0);
     assert_eq!(
         stderr,
-        "ERROR: Validation error: 'jobtemplate-2023-09' failed checks: unknown variant `all`, \
-         expected one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`\n"
+        "ERROR: Model validation error: 1 validation error for JobTemplate\n\
+         jobEnvironments[0] -> activation:\n\tunknown variant `all`, expected one of \
+         `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`\n"
     );
     // activation and hostRequirements on a Step Environment, each at the
     // field it names (Template Schemas §4, after item 10).

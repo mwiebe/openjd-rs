@@ -98,9 +98,12 @@ impl<'a> core::marker::Copy for openjd_model::AttachedEnvironmentTemplate<'a>
 pub struct openjd_model::create_job::CreatedJob
 pub openjd_model::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::create_job::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
+pub openjd_model::create_job::CreatedJob::discarded_service_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
 pub openjd_model::create_job::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::create_job::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::create_job::CreatedJob::requirement_bindings: alloc::vec::Vec<openjd_model::RequirementBinding>
+pub openjd_model::create_job::CreatedJob::service_environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
 pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
@@ -156,6 +159,24 @@ pub openjd_model::create_job::PathParameterOptions::job_template_dir: &'a str
 pub openjd_model::create_job::PathParameterOptions::path_format: openjd_expr::path_mapping::PathFormat
 impl<'a> openjd_model::job::create_job::parameters::PathParameterOptions<'a>
 pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(&'a str, &'a str) -> Self
+pub struct openjd_model::create_job::RequirementBinding
+pub openjd_model::create_job::RequirementBinding::document: openjd_model::job::Document
+pub openjd_model::create_job::RequirementBinding::requirement: alloc::string::String
+pub openjd_model::create_job::RequirementBinding::service: alloc::string::String
+impl core::clone::Clone for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::clone(&self) -> openjd_model::RequirementBinding
+impl core::cmp::Eq for openjd_model::RequirementBinding
+impl core::cmp::PartialEq for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::eq(&self, &openjd_model::RequirementBinding) -> bool
+impl core::fmt::Debug for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::RequirementBinding
+impl serde_core::ser::Serialize for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::create_job::StepDisabledEnvironments
 pub openjd_model::create_job::StepDisabledEnvironments::environments: alloc::vec::Vec<openjd_model::job::EnvironmentRef>
 pub openjd_model::create_job::StepDisabledEnvironments::step_environments: alloc::vec::Vec<alloc::string::String>
@@ -231,6 +252,7 @@ pub fn openjd_model::create_job::check_environment_templates(&openjd_model::temp
 pub fn openjd_model::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::create_job::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::create_job::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::create_job::create_job_details(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::evaluate_let_bindings(&[alloc::string::String], &openjd_expr::symbol_table::SymbolTable, core::option::Option<&openjd_expr::function_library::FunctionLibrary>, openjd_expr::path_mapping::PathFormat, core::option::Option<usize>, core::option::Option<usize>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
@@ -401,9 +423,12 @@ impl<'a> core::marker::Copy for openjd_model::AttachedEnvironmentTemplate<'a>
 pub struct openjd_model::job::create_job::CreatedJob
 pub openjd_model::job::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::job::create_job::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
+pub openjd_model::job::create_job::CreatedJob::discarded_service_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::job::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
 pub openjd_model::job::create_job::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::job::create_job::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::job::create_job::CreatedJob::requirement_bindings: alloc::vec::Vec<openjd_model::RequirementBinding>
+pub openjd_model::job::create_job::CreatedJob::service_environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::job::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
 pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
@@ -459,6 +484,24 @@ pub openjd_model::job::create_job::PathParameterOptions::job_template_dir: &'a s
 pub openjd_model::job::create_job::PathParameterOptions::path_format: openjd_expr::path_mapping::PathFormat
 impl<'a> openjd_model::job::create_job::parameters::PathParameterOptions<'a>
 pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(&'a str, &'a str) -> Self
+pub struct openjd_model::job::create_job::RequirementBinding
+pub openjd_model::job::create_job::RequirementBinding::document: openjd_model::job::Document
+pub openjd_model::job::create_job::RequirementBinding::requirement: alloc::string::String
+pub openjd_model::job::create_job::RequirementBinding::service: alloc::string::String
+impl core::clone::Clone for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::clone(&self) -> openjd_model::RequirementBinding
+impl core::cmp::Eq for openjd_model::RequirementBinding
+impl core::cmp::PartialEq for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::eq(&self, &openjd_model::RequirementBinding) -> bool
+impl core::fmt::Debug for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::RequirementBinding
+impl serde_core::ser::Serialize for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::job::create_job::StepDisabledEnvironments
 pub openjd_model::job::create_job::StepDisabledEnvironments::environments: alloc::vec::Vec<openjd_model::job::EnvironmentRef>
 pub openjd_model::job::create_job::StepDisabledEnvironments::step_environments: alloc::vec::Vec<alloc::string::String>
@@ -534,10 +577,60 @@ pub fn openjd_model::job::create_job::check_environment_templates(&openjd_model:
 pub fn openjd_model::job::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::job::create_job::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::job::create_job::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::job::create_job::create_job_details(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::evaluate_let_bindings(&[alloc::string::String], &openjd_expr::symbol_table::SymbolTable, core::option::Option<&openjd_expr::function_library::FunctionLibrary>, openjd_expr::path_mapping::PathFormat, core::option::Option<usize>, core::option::Option<usize>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
+pub mod openjd_model::job::service_symbols
+pub struct openjd_model::job::service_symbols::ServiceEndpoint
+pub openjd_model::job::service_symbols::ServiceEndpoint::bind_address: alloc::string::String
+pub openjd_model::job::service_symbols::ServiceEndpoint::connect_address: alloc::string::String
+pub openjd_model::job::service_symbols::ServiceEndpoint::port: u16
+pub openjd_model::job::service_symbols::ServiceEndpoint::protocol: openjd_model::job::ServicePortProtocol
+impl core::clone::Clone for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::clone(&self) -> openjd_model::job::service_symbols::ServiceEndpoint
+impl core::cmp::Eq for openjd_model::job::service_symbols::ServiceEndpoint
+impl core::cmp::PartialEq for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::eq(&self, &openjd_model::job::service_symbols::ServiceEndpoint) -> bool
+impl core::fmt::Debug for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::service_symbols::ServiceEndpoint
+impl serde_core::ser::Serialize for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::service_symbols::ServiceEndpoint
+pub fn openjd_model::job::service_symbols::ServiceEndpoint::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::service_symbols::ServiceEndpoints
+pub openjd_model::job::service_symbols::ServiceEndpoints::name: alloc::string::String
+pub openjd_model::job::service_symbols::ServiceEndpoints::ports: alloc::vec::Vec<(alloc::string::String, openjd_model::job::service_symbols::ServiceEndpoint)>
+impl openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::new(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, openjd_model::job::service_symbols::ServiceEndpoint)>) -> Self
+impl core::clone::Clone for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::clone(&self) -> openjd_model::job::service_symbols::ServiceEndpoints
+impl core::cmp::Eq for openjd_model::job::service_symbols::ServiceEndpoints
+impl core::cmp::PartialEq for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::eq(&self, &openjd_model::job::service_symbols::ServiceEndpoints) -> bool
+impl core::fmt::Debug for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::service_symbols::ServiceEndpoints
+impl serde_core::ser::Serialize for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::service_symbols::ServiceEndpoints
+pub fn openjd_model::job::service_symbols::ServiceEndpoints::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const openjd_model::job::service_symbols::SERVICE_FILE_PREFIX: &str
+pub const openjd_model::job::service_symbols::SERVICE_SCOPE: &str
+pub const openjd_model::job::service_symbols::WRAPPED_SERVICE_SCOPE: &str
+pub fn openjd_model::job::service_symbols::add_service_symbols(&mut openjd_expr::symbol_table::SymbolTable, &openjd_model::job::service_symbols::ServiceEndpoints, bool) -> core::result::Result<(), openjd_model::error::ModelError>
+pub fn openjd_model::job::service_symbols::add_wrapped_service_symbols(&mut openjd_expr::symbol_table::SymbolTable, &openjd_model::job::service_symbols::ServiceEndpoints) -> core::result::Result<(), openjd_model::error::ModelError>
+pub fn openjd_model::job::service_symbols::build_service_symbol_table(&[openjd_model::job::service_symbols::ServiceEndpoints], core::option::Option<&openjd_model::job::service_symbols::ServiceEndpoints>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
+pub fn openjd_model::job::service_symbols::service_bind_address_key(&str, &str) -> alloc::string::String
+pub fn openjd_model::job::service_symbols::service_connect_address_key(&str, &str) -> alloc::string::String
+pub fn openjd_model::job::service_symbols::service_file_key(&str) -> alloc::string::String
+pub fn openjd_model::job::service_symbols::service_port_key(&str, &str) -> alloc::string::String
 pub mod openjd_model::job::step_dependency_graph
 pub struct openjd_model::job::step_dependency_graph::StepDependencyEdge
 pub openjd_model::job::step_dependency_graph::StepDependencyEdge::dependent: usize
@@ -605,6 +698,47 @@ impl serde_core::ser::Serialize for openjd_model::job::CancelationMode
 pub fn openjd_model::job::CancelationMode::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::CancelationMode
 pub fn openjd_model::job::CancelationMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::job::CompletedTasksPolicy
+pub openjd_model::job::CompletedTasksPolicy::Keep
+pub openjd_model::job::CompletedTasksPolicy::Rerun
+impl openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::as_str(&self) -> &'static str
+impl core::clone::Clone for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::clone(&self) -> openjd_model::job::CompletedTasksPolicy
+impl core::cmp::Eq for openjd_model::job::CompletedTasksPolicy
+impl core::cmp::PartialEq for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::eq(&self, &openjd_model::job::CompletedTasksPolicy) -> bool
+impl core::fmt::Debug for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::CompletedTasksPolicy
+impl core::marker::StructuralPartialEq for openjd_model::job::CompletedTasksPolicy
+impl serde_core::ser::Serialize for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::job::DependencyTarget<'a>
+pub openjd_model::job::DependencyTarget::Environment(&'a str)
+pub openjd_model::job::DependencyTarget::Service(&'a str)
+pub openjd_model::job::DependencyTarget::Step(&'a str, openjd_model::job::StepKey)
+impl<'a> openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::environment(self) -> core::option::Option<&'a str>
+pub fn openjd_model::job::DependencyTarget<'a>::service(self) -> core::option::Option<&'a str>
+pub fn openjd_model::job::DependencyTarget<'a>::step(self) -> core::option::Option<&'a str>
+impl core::fmt::Display for openjd_model::job::DependencyTarget<'_>
+pub fn openjd_model::job::DependencyTarget<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::clone(&self) -> openjd_model::job::DependencyTarget<'a>
+impl<'a> core::cmp::Eq for openjd_model::job::DependencyTarget<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::eq(&self, &openjd_model::job::DependencyTarget<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for openjd_model::job::DependencyTarget<'a>
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::DependencyTarget<'a>
 pub enum openjd_model::job::Document
 pub openjd_model::job::Document::EnvironmentTemplate
 pub openjd_model::job::Document::EnvironmentTemplate::index: usize
@@ -635,6 +769,114 @@ impl serde_core::ser::Serialize for openjd_model::job::Document
 pub fn openjd_model::job::Document::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::Document
 pub fn openjd_model::job::Document::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::job::ServiceHealthCheck
+pub openjd_model::job::ServiceHealthCheck::Command
+pub openjd_model::job::ServiceHealthCheck::Command::failure_threshold: u64
+pub openjd_model::job::ServiceHealthCheck::Command::health_interval_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::Command::readiness_interval_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::Command::readiness_timeout_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::Stdout
+pub openjd_model::job::ServiceHealthCheck::Stdout::failure_threshold: u64
+pub openjd_model::job::ServiceHealthCheck::Stdout::health_interval_seconds: core::option::Option<u64>
+pub openjd_model::job::ServiceHealthCheck::Stdout::readiness_timeout_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::TcpConnect
+pub openjd_model::job::ServiceHealthCheck::TcpConnect::failure_threshold: u64
+pub openjd_model::job::ServiceHealthCheck::TcpConnect::health_interval_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::TcpConnect::ports: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::job::ServiceHealthCheck::TcpConnect::readiness_interval_seconds: u64
+pub openjd_model::job::ServiceHealthCheck::TcpConnect::readiness_timeout_seconds: u64
+impl openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::failure_threshold(&self) -> u64
+pub fn openjd_model::job::ServiceHealthCheck::health_interval_seconds(&self) -> core::option::Option<u64>
+pub fn openjd_model::job::ServiceHealthCheck::monitors_health(&self) -> bool
+pub fn openjd_model::job::ServiceHealthCheck::readiness_interval_seconds(&self) -> core::option::Option<u64>
+pub fn openjd_model::job::ServiceHealthCheck::readiness_timeout_seconds(&self) -> u64
+pub fn openjd_model::job::ServiceHealthCheck::type_name(&self) -> &'static str
+impl core::clone::Clone for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::clone(&self) -> openjd_model::job::ServiceHealthCheck
+impl core::cmp::Eq for openjd_model::job::ServiceHealthCheck
+impl core::cmp::PartialEq for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::eq(&self, &openjd_model::job::ServiceHealthCheck) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceHealthCheck
+impl serde_core::ser::Serialize for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceHealthCheck
+pub fn openjd_model::job::ServiceHealthCheck::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::job::ServicePortProtocol
+pub openjd_model::job::ServicePortProtocol::Tcp
+pub openjd_model::job::ServicePortProtocol::Udp
+impl openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::as_str(&self) -> &'static str
+pub fn openjd_model::job::ServicePortProtocol::is_default(&self) -> bool
+impl core::clone::Clone for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::clone(&self) -> openjd_model::job::ServicePortProtocol
+impl core::cmp::Eq for openjd_model::job::ServicePortProtocol
+impl core::cmp::Ord for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::cmp(&self, &openjd_model::job::ServicePortProtocol) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::eq(&self, &openjd_model::job::ServicePortProtocol) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::partial_cmp(&self, &openjd_model::job::ServicePortProtocol) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::default() -> openjd_model::job::ServicePortProtocol
+impl core::fmt::Debug for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::ServicePortProtocol
+impl core::marker::StructuralPartialEq for openjd_model::job::ServicePortProtocol
+impl serde_core::ser::Serialize for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::job::ServiceScope
+pub openjd_model::job::ServiceScope::AllSteps
+pub openjd_model::job::ServiceScope::Steps
+pub openjd_model::job::ServiceScope::Steps::steps: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+impl openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::all_steps_default() -> Self
+pub fn openjd_model::template::service_scope::ServiceScope::contains(&self, &str) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::is_all_steps(&self) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::step_names(&self) -> core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>
+pub fn openjd_model::template::service_scope::ServiceScope::steps<I, S>(I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::Into<alloc::string::String>
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::clone(&self) -> openjd_model::template::service_scope::ServiceScope
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceScope
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::eq(&self, &openjd_model::template::service_scope::ServiceScope) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceScope
+impl serde_core::ser::Serialize for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::job::StepKey
+pub openjd_model::job::StepKey::DependsOn
+pub openjd_model::job::StepKey::Step
+impl openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::as_str(self) -> &'static str
+impl core::clone::Clone for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::clone(&self) -> openjd_model::job::StepKey
+impl core::cmp::Eq for openjd_model::job::StepKey
+impl core::cmp::PartialEq for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::eq(&self, &openjd_model::job::StepKey) -> bool
+impl core::fmt::Debug for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::StepKey
+impl core::marker::StructuralPartialEq for openjd_model::job::StepKey
 pub enum openjd_model::job::TaskParamRange<T: serde_core::ser::Serialize>
 pub openjd_model::job::TaskParamRange::List(alloc::vec::Vec<T>)
 pub openjd_model::job::TaskParamRange::RangeExpr(openjd_expr::range_expr::RangeExpr)
@@ -754,11 +996,15 @@ pub fn openjd_model::job::EmbeddedFile::serialize<__S>(&self, __S) -> core::resu
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::EmbeddedFile
 pub fn openjd_model::job::EmbeddedFile::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::job::Environment
+pub openjd_model::job::Environment::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::job::StepDependency>>
 pub openjd_model::job::Environment::description: core::option::Option<alloc::string::String>
 pub openjd_model::job::Environment::name: alloc::string::String
 pub openjd_model::job::Environment::resolved_symtab: core::option::Option<openjd_expr::symbol_table::SerializedSymbolTable>
 pub openjd_model::job::Environment::script: core::option::Option<openjd_model::job::EnvironmentScript>
 pub openjd_model::job::Environment::variables: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, openjd_expr::format_string::FormatString>>
+impl openjd_model::job::Environment
+pub fn openjd_model::job::Environment::depends_on_service(&self, &str) -> bool
+pub fn openjd_model::job::Environment::depends_on_services(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
 impl core::clone::Clone for openjd_model::job::Environment
 pub fn openjd_model::job::Environment::clone(&self) -> openjd_model::job::Environment
 impl core::cmp::Eq for openjd_model::job::Environment
@@ -778,14 +1024,21 @@ pub openjd_model::job::EnvironmentActions::on_enter: core::option::Option<openjd
 pub openjd_model::job::EnvironmentActions::on_exit: core::option::Option<openjd_model::job::Action>
 pub openjd_model::job::EnvironmentActions::on_wrap_env_enter: core::option::Option<openjd_model::job::Action>
 pub openjd_model::job::EnvironmentActions::on_wrap_env_exit: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::EnvironmentActions::on_wrap_service_enter: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::EnvironmentActions::on_wrap_service_exit: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::EnvironmentActions::on_wrap_service_health_check: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::EnvironmentActions::on_wrap_service_run: core::option::Option<openjd_model::job::Action>
 pub openjd_model::job::EnvironmentActions::on_wrap_task_run: core::option::Option<openjd_model::job::Action>
 impl openjd_model::job::EnvironmentActions
 pub fn openjd_model::job::EnvironmentActions::has_any_action(&self) -> bool
 pub fn openjd_model::job::EnvironmentActions::has_any_wrap_hook(&self) -> bool
 pub fn openjd_model::job::EnvironmentActions::iter_actions(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::job::Action>
 pub fn openjd_model::job::EnvironmentActions::iter_named(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &openjd_model::job::Action)>
-pub fn openjd_model::job::EnvironmentActions::named_slots(&self) -> [(&'static str, &core::option::Option<openjd_model::job::Action>); 5]
-pub fn openjd_model::job::EnvironmentActions::wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::job::Action>, openjd_model::template::WrapHookScope); 3]
+pub fn openjd_model::job::EnvironmentActions::named_slots(&self) -> [(&'static str, &core::option::Option<openjd_model::job::Action>); 9]
+pub fn openjd_model::job::EnvironmentActions::wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::job::Action>, openjd_model::template::WrapHookScope); 7]
+impl openjd_model::job::EnvironmentActions
+pub fn openjd_model::job::EnvironmentActions::has_any_service_wrap_hook(&self) -> bool
+pub fn openjd_model::job::EnvironmentActions::service_wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::job::Action>); 4]
 impl core::clone::Clone for openjd_model::job::EnvironmentActions
 pub fn openjd_model::job::EnvironmentActions::clone(&self) -> openjd_model::job::EnvironmentActions
 impl core::cmp::Eq for openjd_model::job::EnvironmentActions
@@ -874,10 +1127,15 @@ pub fn openjd_model::job::HostRequirements::deserialize<__D>(__D) -> core::resul
 pub struct openjd_model::job::Job
 pub openjd_model::job::Job::description: core::option::Option<alloc::string::String>
 pub openjd_model::job::Job::extensions: core::option::Option<alloc::vec::Vec<openjd_model::types::ModelExtension>>
+pub openjd_model::job::Job::external_services: core::option::Option<alloc::vec::Vec<openjd_model::job::ServiceRequirement>>
 pub openjd_model::job::Job::job_environments: core::option::Option<alloc::vec::Vec<openjd_model::job::Environment>>
 pub openjd_model::job::Job::name: alloc::string::String
 pub openjd_model::job::Job::parameters: indexmap::map::IndexMap<alloc::string::String, openjd_model::job::JobParameter>
+pub openjd_model::job::Job::services: core::option::Option<alloc::vec::Vec<openjd_model::job::Service>>
 pub openjd_model::job::Job::steps: alloc::vec::Vec<openjd_model::job::Step>
+impl openjd_model::job::Job
+pub fn openjd_model::job::Job::has_extension(&self, openjd_model::types::ModelExtension) -> bool
+pub fn openjd_model::job::Job::service_active(&self) -> bool
 impl core::clone::Clone for openjd_model::job::Job
 pub fn openjd_model::job::Job::clone(&self) -> openjd_model::job::Job
 impl core::cmp::PartialEq for openjd_model::job::Job
@@ -923,6 +1181,157 @@ impl serde_core::ser::Serialize for openjd_model::job::ResolvedChunks
 pub fn openjd_model::job::ResolvedChunks::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ResolvedChunks
 pub fn openjd_model::job::ResolvedChunks::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::Service
+pub openjd_model::job::Service::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::job::StepDependency>>
+pub openjd_model::job::Service::description: core::option::Option<alloc::string::String>
+pub openjd_model::job::Service::document: openjd_model::job::Document
+pub openjd_model::job::Service::environment_parameters: core::option::Option<alloc::vec::Vec<openjd_model::job::EnvironmentParameterValues>>
+pub openjd_model::job::Service::environments: core::option::Option<alloc::vec::Vec<openjd_model::job::EnvironmentRef>>
+pub openjd_model::job::Service::health_check: openjd_model::job::ServiceHealthCheck
+pub openjd_model::job::Service::host_requirements: core::option::Option<openjd_model::job::HostRequirements>
+pub openjd_model::job::Service::name: alloc::string::String
+pub openjd_model::job::Service::ports: alloc::vec::Vec<openjd_model::job::ServicePort>
+pub openjd_model::job::Service::resolved_symtab: core::option::Option<openjd_expr::symbol_table::SerializedSymbolTable>
+pub openjd_model::job::Service::restart_policy: openjd_model::job::ServiceRestartPolicy
+pub openjd_model::job::Service::scope: openjd_model::template::service_scope::ServiceScope
+pub openjd_model::job::Service::script: openjd_model::job::ServiceScript
+pub openjd_model::job::Service::variables: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, openjd_expr::format_string::FormatString>>
+impl openjd_model::job::Service
+pub fn openjd_model::job::Service::depends_on_service(&self, &str) -> bool
+pub fn openjd_model::job::Service::depends_on_services(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn openjd_model::job::Service::depends_on_steps(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn openjd_model::job::Service::enters_environment(&self, &openjd_model::job::Document, &str) -> bool
+pub fn openjd_model::job::Service::port(&self, &str) -> core::option::Option<&openjd_model::job::ServicePort>
+pub fn openjd_model::job::Service::port_names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+impl core::clone::Clone for openjd_model::job::Service
+pub fn openjd_model::job::Service::clone(&self) -> openjd_model::job::Service
+impl core::cmp::PartialEq for openjd_model::job::Service
+pub fn openjd_model::job::Service::eq(&self, &openjd_model::job::Service) -> bool
+impl core::fmt::Debug for openjd_model::job::Service
+pub fn openjd_model::job::Service::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::Service
+pub fn openjd_model::job::Service::hash<H: core::hash::Hasher>(&self, &mut H)
+impl core::marker::StructuralPartialEq for openjd_model::job::Service
+impl serde_core::ser::Serialize for openjd_model::job::Service
+pub fn openjd_model::job::Service::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::Service
+pub fn openjd_model::job::Service::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServiceActions
+pub openjd_model::job::ServiceActions::on_enter: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::ServiceActions::on_exit: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::ServiceActions::on_health_check: core::option::Option<openjd_model::job::Action>
+pub openjd_model::job::ServiceActions::on_run: openjd_model::job::Action
+impl openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::iter_actions(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::job::Action>
+pub fn openjd_model::job::ServiceActions::iter_named(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &openjd_model::job::Action)>
+pub fn openjd_model::job::ServiceActions::named_slots(&self) -> [(&'static str, core::option::Option<&openjd_model::job::Action>); 4]
+impl core::clone::Clone for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::clone(&self) -> openjd_model::job::ServiceActions
+impl core::cmp::Eq for openjd_model::job::ServiceActions
+impl core::cmp::PartialEq for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::eq(&self, &openjd_model::job::ServiceActions) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceActions
+impl serde_core::ser::Serialize for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceActions
+pub fn openjd_model::job::ServiceActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServicePort
+pub openjd_model::job::ServicePort::name: alloc::string::String
+pub openjd_model::job::ServicePort::port: core::option::Option<u16>
+pub openjd_model::job::ServicePort::protocol: openjd_model::job::ServicePortProtocol
+impl core::clone::Clone for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::clone(&self) -> openjd_model::job::ServicePort
+impl core::cmp::Eq for openjd_model::job::ServicePort
+impl core::cmp::PartialEq for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::eq(&self, &openjd_model::job::ServicePort) -> bool
+impl core::fmt::Debug for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServicePort
+impl serde_core::ser::Serialize for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServicePort
+pub fn openjd_model::job::ServicePort::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServiceRequirement
+pub openjd_model::job::ServiceRequirement::name: alloc::string::String
+pub openjd_model::job::ServiceRequirement::ports: alloc::vec::Vec<openjd_model::job::ServiceRequirementPort>
+impl openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::port_names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+impl core::clone::Clone for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::clone(&self) -> openjd_model::job::ServiceRequirement
+impl core::cmp::Eq for openjd_model::job::ServiceRequirement
+impl core::cmp::PartialEq for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::eq(&self, &openjd_model::job::ServiceRequirement) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceRequirement
+impl serde_core::ser::Serialize for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceRequirement
+pub fn openjd_model::job::ServiceRequirement::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServiceRequirementPort
+pub openjd_model::job::ServiceRequirementPort::name: alloc::string::String
+pub openjd_model::job::ServiceRequirementPort::protocol: openjd_model::job::ServicePortProtocol
+impl core::clone::Clone for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::clone(&self) -> openjd_model::job::ServiceRequirementPort
+impl core::cmp::Eq for openjd_model::job::ServiceRequirementPort
+impl core::cmp::PartialEq for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::eq(&self, &openjd_model::job::ServiceRequirementPort) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceRequirementPort
+impl serde_core::ser::Serialize for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceRequirementPort
+pub fn openjd_model::job::ServiceRequirementPort::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServiceRestartPolicy
+pub openjd_model::job::ServiceRestartPolicy::completed_tasks: core::option::Option<openjd_model::job::CompletedTasksPolicy>
+pub openjd_model::job::ServiceRestartPolicy::max_restarts: u64
+impl openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::completed_tasks_on_dependent_restart(&self) -> openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::completed_tasks_on_relaunch(&self) -> core::option::Option<openjd_model::job::CompletedTasksPolicy>
+pub fn openjd_model::job::ServiceRestartPolicy::may_be_suspended(&self) -> bool
+impl core::clone::Clone for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::clone(&self) -> openjd_model::job::ServiceRestartPolicy
+impl core::cmp::Eq for openjd_model::job::ServiceRestartPolicy
+impl core::cmp::PartialEq for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::eq(&self, &openjd_model::job::ServiceRestartPolicy) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceRestartPolicy
+impl serde_core::ser::Serialize for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceRestartPolicy
+pub fn openjd_model::job::ServiceRestartPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::ServiceScript
+pub openjd_model::job::ServiceScript::actions: openjd_model::job::ServiceActions
+pub openjd_model::job::ServiceScript::embedded_files: core::option::Option<alloc::vec::Vec<openjd_model::job::EmbeddedFile>>
+pub openjd_model::job::ServiceScript::let_bindings: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+impl core::clone::Clone for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::clone(&self) -> openjd_model::job::ServiceScript
+impl core::cmp::Eq for openjd_model::job::ServiceScript
+impl core::cmp::PartialEq for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::eq(&self, &openjd_model::job::ServiceScript) -> bool
+impl core::fmt::Debug for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::ServiceScript
+impl serde_core::ser::Serialize for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServiceScript
+pub fn openjd_model::job::ServiceScript::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::job::Step
 pub openjd_model::job::Step::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::job::StepDependency>>
 pub openjd_model::job::Step::description: core::option::Option<alloc::string::String>
@@ -968,12 +1377,21 @@ pub fn openjd_model::job::StepActions::serialize<__S>(&self, __S) -> core::resul
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::StepActions
 pub fn openjd_model::job::StepActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::job::StepDependency
-pub openjd_model::job::StepDependency::depends_on: alloc::string::String
+pub openjd_model::job::StepDependency::depends_on: core::option::Option<alloc::string::String>
+pub openjd_model::job::StepDependency::service: core::option::Option<alloc::string::String>
+impl openjd_model::job::StepDependency
+pub fn openjd_model::job::StepDependency::on_service(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::job::StepDependency::on_step(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::job::StepDependency::service(&self) -> core::option::Option<&str>
+pub fn openjd_model::job::StepDependency::step(&self) -> core::option::Option<&str>
+pub fn openjd_model::job::StepDependency::target(&self) -> core::option::Option<openjd_model::job::DependencyTarget<'_>>
 impl core::clone::Clone for openjd_model::job::StepDependency
 pub fn openjd_model::job::StepDependency::clone(&self) -> openjd_model::job::StepDependency
 impl core::cmp::Eq for openjd_model::job::StepDependency
 impl core::cmp::PartialEq for openjd_model::job::StepDependency
 pub fn openjd_model::job::StepDependency::eq(&self, &openjd_model::job::StepDependency) -> bool
+impl core::convert::From<&openjd_model::template::StepDependency> for openjd_model::job::StepDependency
+pub fn openjd_model::job::StepDependency::from(&openjd_model::template::StepDependency) -> Self
 impl core::fmt::Debug for openjd_model::job::StepDependency
 pub fn openjd_model::job::StepDependency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for openjd_model::job::StepDependency
@@ -1087,6 +1505,133 @@ pub fn openjd_model::template::parse::decode_environment_template(serde_json::va
 pub fn openjd_model::template::parse::decode_job_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::JobTemplate, openjd_model::error::ModelError>
 pub fn openjd_model::template::parse::decode_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::parse::DecodedTemplate, openjd_model::error::ModelError>
 pub fn openjd_model::template::parse::document_string_to_object(&str, openjd_model::template::parse::DocumentType, &openjd_model::types::CallerLimits) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
+pub mod openjd_model::template::service_scope
+pub enum openjd_model::template::service_scope::Entrance
+pub openjd_model::template::service_scope::Entrance::DoesNotEnter
+pub openjd_model::template::service_scope::Entrance::Enters
+pub openjd_model::template::service_scope::Entrance::Undetermined
+impl openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::may_enter(self) -> bool
+impl core::clone::Clone for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::clone(&self) -> openjd_model::template::service_scope::Entrance
+impl core::cmp::Eq for openjd_model::template::service_scope::Entrance
+impl core::cmp::PartialEq for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::eq(&self, &openjd_model::template::service_scope::Entrance) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::template::service_scope::Entrance
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::Entrance
+pub enum openjd_model::template::service_scope::ServiceScope
+pub openjd_model::template::service_scope::ServiceScope::AllSteps
+pub openjd_model::template::service_scope::ServiceScope::Steps
+pub openjd_model::template::service_scope::ServiceScope::Steps::steps: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+impl openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::all_steps_default() -> Self
+pub fn openjd_model::template::service_scope::ServiceScope::contains(&self, &str) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::is_all_steps(&self) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::step_names(&self) -> core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>
+pub fn openjd_model::template::service_scope::ServiceScope::steps<I, S>(I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::Into<alloc::string::String>
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::clone(&self) -> openjd_model::template::service_scope::ServiceScope
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceScope
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::eq(&self, &openjd_model::template::service_scope::ServiceScope) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceScope
+impl serde_core::ser::Serialize for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::service_scope::ComputedServiceScope
+pub openjd_model::template::service_scope::ComputedServiceScope::dependent_services: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::service_scope::ComputedServiceScope::dependent_steps: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::service_scope::ComputedServiceScope::depends_on_services: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub openjd_model::template::service_scope::ComputedServiceScope::depends_on_steps: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::service_scope::ComputedServiceScope::listed_by_job_environment: bool
+pub openjd_model::template::service_scope::ComputedServiceScope::listing_environments: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::service_scope::ComputedServiceScope::name: alloc::string::String
+pub openjd_model::template::service_scope::ComputedServiceScope::possibly_used: bool
+pub openjd_model::template::service_scope::ComputedServiceScope::scope: openjd_model::template::service_scope::ServiceScope
+impl openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::is_unused(&self) -> bool
+impl core::clone::Clone for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::clone(&self) -> openjd_model::template::service_scope::ComputedServiceScope
+impl core::cmp::Eq for openjd_model::template::service_scope::ComputedServiceScope
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::eq(&self, &openjd_model::template::service_scope::ComputedServiceScope) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ComputedServiceScope
+pub struct openjd_model::template::service_scope::CycleViaEnvironment
+pub openjd_model::template::service_scope::CycleViaEnvironment::environment: alloc::string::String
+pub openjd_model::template::service_scope::CycleViaEnvironment::from: alloc::string::String
+pub openjd_model::template::service_scope::CycleViaEnvironment::service: alloc::string::String
+impl core::clone::Clone for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::clone(&self) -> openjd_model::template::service_scope::CycleViaEnvironment
+impl core::cmp::Eq for openjd_model::template::service_scope::CycleViaEnvironment
+impl core::cmp::PartialEq for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::eq(&self, &openjd_model::template::service_scope::CycleViaEnvironment) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::CycleViaEnvironment
+pub struct openjd_model::template::service_scope::Entrances
+pub openjd_model::template::service_scope::Entrances::services: alloc::vec::Vec<alloc::vec::Vec<openjd_model::template::service_scope::Entrance>>
+pub openjd_model::template::service_scope::Entrances::steps: alloc::vec::Vec<alloc::vec::Vec<openjd_model::template::service_scope::Entrance>>
+impl openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::of(&openjd_model::template::JobTemplate) -> Self
+impl core::clone::Clone for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::clone(&self) -> openjd_model::template::service_scope::Entrances
+impl core::cmp::Eq for openjd_model::template::service_scope::Entrances
+impl core::cmp::PartialEq for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::eq(&self, &openjd_model::template::service_scope::Entrances) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::Entrances
+pub struct openjd_model::template::service_scope::ServiceDependencyCycle
+pub openjd_model::template::service_scope::ServiceDependencyCycle::path: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::service_scope::ServiceDependencyCycle::via_environment: core::option::Option<openjd_model::template::service_scope::CycleViaEnvironment>
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::clone(&self) -> openjd_model::template::service_scope::ServiceDependencyCycle
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceDependencyCycle
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::eq(&self, &openjd_model::template::service_scope::ServiceDependencyCycle) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceDependencyCycle
+pub struct openjd_model::template::service_scope::ServiceScopes
+impl openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::get(&self, &str) -> core::option::Option<&openjd_model::template::service_scope::ComputedServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::template::service_scope::ComputedServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::required_service_scopes(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, openjd_model::template::service_scope::ServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::requirement_possibly_used(&self, &str) -> bool
+pub fn openjd_model::template::service_scope::ServiceScopes::scope_of(&self, &str) -> openjd_model::template::service_scope::ServiceScope
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::clone(&self) -> openjd_model::template::service_scope::ServiceScopes
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceScopes
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::eq(&self, &openjd_model::template::service_scope::ServiceScopes) -> bool
+impl core::default::Default for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::default() -> openjd_model::template::service_scope::ServiceScopes
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::compute_service_scopes(&openjd_model::template::JobTemplate) -> core::result::Result<openjd_model::template::service_scope::ServiceScopes, openjd_model::template::service_scope::ServiceDependencyCycle>
+pub fn openjd_model::template::service_scope::environment_references(&openjd_model::template::Environment) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub fn openjd_model::template::service_scope::environment_references_service(&openjd_model::template::Environment) -> bool
+pub fn openjd_model::template::service_scope::environment_template_service_cycle(&openjd_model::template::EnvironmentTemplate) -> core::option::Option<openjd_model::template::service_scope::ServiceDependencyCycle>
+pub fn openjd_model::template::service_scope::listed_requirements<'a>(core::option::Option<&'a [openjd_model::template::StepDependency]>, &'a [openjd_model::template::ServiceRequirement]) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::template::ServiceRequirement> + core::clone::Clone + 'a
+pub fn openjd_model::template::service_scope::listed_services<'a>(core::option::Option<&'a [openjd_model::template::StepDependency]>, &'a [openjd_model::template::Service]) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::template::Service> + core::clone::Clone + 'a
+pub fn openjd_model::template::service_scope::service_references(&openjd_model::template::Service) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub fn openjd_model::template::service_scope::step_references(&openjd_model::template::StepTemplate) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub enum openjd_model::template::AttributeValues
 pub openjd_model::template::AttributeValues::Expression(openjd_expr::format_string::FormatString)
 pub openjd_model::template::AttributeValues::List(alloc::vec::Vec<openjd_expr::format_string::FormatString>)
@@ -1112,25 +1657,64 @@ impl core::fmt::Debug for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::template::CompletedTasksPolicy
+pub openjd_model::template::CompletedTasksPolicy::Keep
+pub openjd_model::template::CompletedTasksPolicy::Rerun
+impl openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::as_str(&self) -> &'static str
+impl core::clone::Clone for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::clone(&self) -> openjd_model::job::CompletedTasksPolicy
+impl core::cmp::Eq for openjd_model::job::CompletedTasksPolicy
+impl core::cmp::PartialEq for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::eq(&self, &openjd_model::job::CompletedTasksPolicy) -> bool
+impl core::fmt::Debug for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::CompletedTasksPolicy
+impl core::marker::StructuralPartialEq for openjd_model::job::CompletedTasksPolicy
+impl serde_core::ser::Serialize for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::CompletedTasksPolicy
+pub fn openjd_model::job::CompletedTasksPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum openjd_model::template::DependencyTarget<'a>
 pub openjd_model::template::DependencyTarget::Environment(&'a str)
-pub openjd_model::template::DependencyTarget::Step(&'a str, openjd_model::template::StepKey)
-impl<'a> openjd_model::template::DependencyTarget<'a>
-pub fn openjd_model::template::DependencyTarget<'a>::environment(self) -> core::option::Option<&'a str>
-pub fn openjd_model::template::DependencyTarget<'a>::step(self) -> core::option::Option<&'a str>
-impl core::fmt::Display for openjd_model::template::DependencyTarget<'_>
-pub fn openjd_model::template::DependencyTarget<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'a> core::clone::Clone for openjd_model::template::DependencyTarget<'a>
-pub fn openjd_model::template::DependencyTarget<'a>::clone(&self) -> openjd_model::template::DependencyTarget<'a>
-impl<'a> core::cmp::Eq for openjd_model::template::DependencyTarget<'a>
-impl<'a> core::cmp::PartialEq for openjd_model::template::DependencyTarget<'a>
-pub fn openjd_model::template::DependencyTarget<'a>::eq(&self, &openjd_model::template::DependencyTarget<'a>) -> bool
-impl<'a> core::fmt::Debug for openjd_model::template::DependencyTarget<'a>
-pub fn openjd_model::template::DependencyTarget<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'a> core::hash::Hash for openjd_model::template::DependencyTarget<'a>
-pub fn openjd_model::template::DependencyTarget<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl<'a> core::marker::Copy for openjd_model::template::DependencyTarget<'a>
-impl<'a> core::marker::StructuralPartialEq for openjd_model::template::DependencyTarget<'a>
+pub openjd_model::template::DependencyTarget::Service(&'a str)
+pub openjd_model::template::DependencyTarget::Step(&'a str, openjd_model::job::StepKey)
+impl<'a> openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::environment(self) -> core::option::Option<&'a str>
+pub fn openjd_model::job::DependencyTarget<'a>::service(self) -> core::option::Option<&'a str>
+pub fn openjd_model::job::DependencyTarget<'a>::step(self) -> core::option::Option<&'a str>
+impl core::fmt::Display for openjd_model::job::DependencyTarget<'_>
+pub fn openjd_model::job::DependencyTarget<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::clone(&self) -> openjd_model::job::DependencyTarget<'a>
+impl<'a> core::cmp::Eq for openjd_model::job::DependencyTarget<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::eq(&self, &openjd_model::job::DependencyTarget<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for openjd_model::job::DependencyTarget<'a>
+pub fn openjd_model::job::DependencyTarget<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for openjd_model::job::DependencyTarget<'a>
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::DependencyTarget<'a>
+pub enum openjd_model::template::Entrance
+pub openjd_model::template::Entrance::DoesNotEnter
+pub openjd_model::template::Entrance::Enters
+pub openjd_model::template::Entrance::Undetermined
+impl openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::may_enter(self) -> bool
+impl core::clone::Clone for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::clone(&self) -> openjd_model::template::service_scope::Entrance
+impl core::cmp::Eq for openjd_model::template::service_scope::Entrance
+impl core::cmp::PartialEq for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::eq(&self, &openjd_model::template::service_scope::Entrance) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::service_scope::Entrance
+pub fn openjd_model::template::service_scope::Entrance::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::template::service_scope::Entrance
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::Entrance
 pub enum openjd_model::template::EnvironmentActivation
 pub openjd_model::template::EnvironmentActivation::Always
 pub openjd_model::template::EnvironmentActivation::ByDefault
@@ -1307,6 +1891,97 @@ impl core::hash::Hash for openjd_model::template::RangeExprLengthCheck
 pub fn openjd_model::template::RangeExprLengthCheck::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for openjd_model::template::RangeExprLengthCheck
 impl core::marker::StructuralPartialEq for openjd_model::template::RangeExprLengthCheck
+pub enum openjd_model::template::ServiceHealthCheck
+pub openjd_model::template::ServiceHealthCheck::Command
+pub openjd_model::template::ServiceHealthCheck::Command::failure_threshold: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Command::health_interval_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Command::readiness_interval_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Command::readiness_timeout_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Stdout
+pub openjd_model::template::ServiceHealthCheck::Stdout::failure_threshold: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Stdout::health_interval_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::Stdout::readiness_timeout_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::TcpConnect
+pub openjd_model::template::ServiceHealthCheck::TcpConnect::failure_threshold: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::TcpConnect::health_interval_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::TcpConnect::ports: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub openjd_model::template::ServiceHealthCheck::TcpConnect::readiness_interval_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServiceHealthCheck::TcpConnect::readiness_timeout_seconds: core::option::Option<openjd_expr::format_string::FormatString>
+impl openjd_model::template::ServiceHealthCheck
+pub const openjd_model::template::ServiceHealthCheck::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64
+pub const openjd_model::template::ServiceHealthCheck::DEFAULT_FAILURE_THRESHOLD: u64
+pub const openjd_model::template::ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS: u64
+pub const openjd_model::template::ServiceHealthCheck::DEFAULT_READY_TIMEOUT_SECONDS: u64
+pub const openjd_model::template::ServiceHealthCheck::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64
+pub fn openjd_model::template::ServiceHealthCheck::failure_threshold(&self) -> core::option::Option<&openjd_expr::format_string::FormatString>
+pub fn openjd_model::template::ServiceHealthCheck::health_interval_seconds(&self) -> core::option::Option<&openjd_expr::format_string::FormatString>
+pub fn openjd_model::template::ServiceHealthCheck::numeric_fields(&self) -> [(&'static str, core::option::Option<&openjd_expr::format_string::FormatString>); 4]
+pub fn openjd_model::template::ServiceHealthCheck::readiness_interval_seconds(&self) -> core::option::Option<&openjd_expr::format_string::FormatString>
+pub fn openjd_model::template::ServiceHealthCheck::readiness_timeout_seconds(&self) -> core::option::Option<&openjd_expr::format_string::FormatString>
+pub fn openjd_model::template::ServiceHealthCheck::type_name(&self) -> &'static str
+impl core::clone::Clone for openjd_model::template::ServiceHealthCheck
+pub fn openjd_model::template::ServiceHealthCheck::clone(&self) -> openjd_model::template::ServiceHealthCheck
+impl core::default::Default for openjd_model::template::ServiceHealthCheck
+pub fn openjd_model::template::ServiceHealthCheck::default() -> Self
+impl core::fmt::Debug for openjd_model::template::ServiceHealthCheck
+pub fn openjd_model::template::ServiceHealthCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceHealthCheck
+pub fn openjd_model::template::ServiceHealthCheck::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::template::ServicePortProtocol
+pub openjd_model::template::ServicePortProtocol::Tcp
+pub openjd_model::template::ServicePortProtocol::Udp
+impl openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::as_str(&self) -> &'static str
+pub fn openjd_model::job::ServicePortProtocol::is_default(&self) -> bool
+impl core::clone::Clone for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::clone(&self) -> openjd_model::job::ServicePortProtocol
+impl core::cmp::Eq for openjd_model::job::ServicePortProtocol
+impl core::cmp::Ord for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::cmp(&self, &openjd_model::job::ServicePortProtocol) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::eq(&self, &openjd_model::job::ServicePortProtocol) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::partial_cmp(&self, &openjd_model::job::ServicePortProtocol) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::default() -> openjd_model::job::ServicePortProtocol
+impl core::fmt::Debug for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::ServicePortProtocol
+impl core::marker::StructuralPartialEq for openjd_model::job::ServicePortProtocol
+impl serde_core::ser::Serialize for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::ServicePortProtocol
+pub fn openjd_model::job::ServicePortProtocol::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::template::ServiceScope
+pub openjd_model::template::ServiceScope::AllSteps
+pub openjd_model::template::ServiceScope::Steps
+pub openjd_model::template::ServiceScope::Steps::steps: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+impl openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::all_steps_default() -> Self
+pub fn openjd_model::template::service_scope::ServiceScope::contains(&self, &str) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::is_all_steps(&self) -> bool
+pub fn openjd_model::template::service_scope::ServiceScope::step_names(&self) -> core::option::Option<&alloc::collections::btree::set::BTreeSet<alloc::string::String>>
+pub fn openjd_model::template::service_scope::ServiceScope::steps<I, S>(I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::Into<alloc::string::String>
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::clone(&self) -> openjd_model::template::service_scope::ServiceScope
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceScope
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::eq(&self, &openjd_model::template::service_scope::ServiceScope) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceScope
+impl serde_core::ser::Serialize for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::service_scope::ServiceScope
+pub fn openjd_model::template::service_scope::ServiceScope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum openjd_model::template::SimpleActionKind
 pub openjd_model::template::SimpleActionKind::Bash
 pub openjd_model::template::SimpleActionKind::Cmd
@@ -1335,19 +2010,19 @@ impl core::marker::StructuralPartialEq for openjd_model::template::SimpleActionK
 pub enum openjd_model::template::StepKey
 pub openjd_model::template::StepKey::DependsOn
 pub openjd_model::template::StepKey::Step
-impl openjd_model::template::StepKey
-pub fn openjd_model::template::StepKey::as_str(self) -> &'static str
-impl core::clone::Clone for openjd_model::template::StepKey
-pub fn openjd_model::template::StepKey::clone(&self) -> openjd_model::template::StepKey
-impl core::cmp::Eq for openjd_model::template::StepKey
-impl core::cmp::PartialEq for openjd_model::template::StepKey
-pub fn openjd_model::template::StepKey::eq(&self, &openjd_model::template::StepKey) -> bool
-impl core::fmt::Debug for openjd_model::template::StepKey
-pub fn openjd_model::template::StepKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for openjd_model::template::StepKey
-pub fn openjd_model::template::StepKey::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::Copy for openjd_model::template::StepKey
-impl core::marker::StructuralPartialEq for openjd_model::template::StepKey
+impl openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::as_str(self) -> &'static str
+impl core::clone::Clone for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::clone(&self) -> openjd_model::job::StepKey
+impl core::cmp::Eq for openjd_model::job::StepKey
+impl core::cmp::PartialEq for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::eq(&self, &openjd_model::job::StepKey) -> bool
+impl core::fmt::Debug for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::StepKey
+pub fn openjd_model::job::StepKey::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::StepKey
+impl core::marker::StructuralPartialEq for openjd_model::job::StepKey
 pub enum openjd_model::template::StringRange
 pub openjd_model::template::StringRange::Expression(openjd_expr::format_string::FormatString)
 pub openjd_model::template::StringRange::List(alloc::vec::Vec<openjd_expr::format_string::FormatString>)
@@ -1374,6 +2049,7 @@ impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::TaskParam
 pub fn openjd_model::template::TaskParameterDefinition::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum openjd_model::template::WrapHookScope
 pub openjd_model::template::WrapHookScope::EnvName
+pub openjd_model::template::WrapHookScope::Service
 pub openjd_model::template::WrapHookScope::StepName
 impl core::clone::Clone for openjd_model::template::WrapHookScope
 pub fn openjd_model::template::WrapHookScope::clone(&self) -> openjd_model::template::WrapHookScope
@@ -1449,6 +2125,38 @@ impl core::fmt::Debug for openjd_model::template::ChunksDefinition
 pub fn openjd_model::template::ChunksDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ChunksDefinition
 pub fn openjd_model::template::ChunksDefinition::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ComputedServiceScope
+pub openjd_model::template::ComputedServiceScope::dependent_services: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::ComputedServiceScope::dependent_steps: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::ComputedServiceScope::depends_on_services: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub openjd_model::template::ComputedServiceScope::depends_on_steps: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::ComputedServiceScope::listed_by_job_environment: bool
+pub openjd_model::template::ComputedServiceScope::listing_environments: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::ComputedServiceScope::name: alloc::string::String
+pub openjd_model::template::ComputedServiceScope::possibly_used: bool
+pub openjd_model::template::ComputedServiceScope::scope: openjd_model::template::service_scope::ServiceScope
+impl openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::is_unused(&self) -> bool
+impl core::clone::Clone for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::clone(&self) -> openjd_model::template::service_scope::ComputedServiceScope
+impl core::cmp::Eq for openjd_model::template::service_scope::ComputedServiceScope
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::eq(&self, &openjd_model::template::service_scope::ComputedServiceScope) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ComputedServiceScope
+pub fn openjd_model::template::service_scope::ComputedServiceScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ComputedServiceScope
+pub struct openjd_model::template::CycleViaEnvironment
+pub openjd_model::template::CycleViaEnvironment::environment: alloc::string::String
+pub openjd_model::template::CycleViaEnvironment::from: alloc::string::String
+pub openjd_model::template::CycleViaEnvironment::service: alloc::string::String
+impl core::clone::Clone for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::clone(&self) -> openjd_model::template::service_scope::CycleViaEnvironment
+impl core::cmp::Eq for openjd_model::template::service_scope::CycleViaEnvironment
+impl core::cmp::PartialEq for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::eq(&self, &openjd_model::template::service_scope::CycleViaEnvironment) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::CycleViaEnvironment
+pub fn openjd_model::template::service_scope::CycleViaEnvironment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::CycleViaEnvironment
 pub struct openjd_model::template::Description(pub alloc::string::String)
 impl openjd_model::template::Description
 pub fn openjd_model::template::Description::new(&str) -> core::result::Result<Self, openjd_model::error::ModelError>
@@ -1477,8 +2185,22 @@ impl core::fmt::Debug for openjd_model::template::EmbeddedFile
 pub fn openjd_model::template::EmbeddedFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EmbeddedFile
 pub fn openjd_model::template::EmbeddedFile::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::Entrances
+pub openjd_model::template::Entrances::services: alloc::vec::Vec<alloc::vec::Vec<openjd_model::template::service_scope::Entrance>>
+pub openjd_model::template::Entrances::steps: alloc::vec::Vec<alloc::vec::Vec<openjd_model::template::service_scope::Entrance>>
+impl openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::of(&openjd_model::template::JobTemplate) -> Self
+impl core::clone::Clone for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::clone(&self) -> openjd_model::template::service_scope::Entrances
+impl core::cmp::Eq for openjd_model::template::service_scope::Entrances
+impl core::cmp::PartialEq for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::eq(&self, &openjd_model::template::service_scope::Entrances) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::Entrances
+pub fn openjd_model::template::service_scope::Entrances::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::Entrances
 pub struct openjd_model::template::Environment
 pub openjd_model::template::Environment::activation: core::option::Option<openjd_model::template::EnvironmentActivation>
+pub openjd_model::template::Environment::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::template::StepDependency>>
 pub openjd_model::template::Environment::description: core::option::Option<openjd_model::template::Description>
 pub openjd_model::template::Environment::enable_if: core::option::Option<openjd_model::template::ExprField>
 pub openjd_model::template::Environment::env_parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::EnvironmentParameterDefinition>>
@@ -1489,7 +2211,10 @@ pub openjd_model::template::Environment::script: core::option::Option<openjd_mod
 pub openjd_model::template::Environment::variables: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, openjd_expr::format_string::FormatString>>
 impl openjd_model::template::Environment
 pub fn openjd_model::template::Environment::activation(&self) -> openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::Environment::depends_on_service(&self) -> bool
+pub fn openjd_model::template::Environment::listed_services(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str> + '_
 pub fn openjd_model::template::Environment::literal_enabled(&self) -> core::option::Option<bool>
+pub fn openjd_model::template::Environment::references_service(&self) -> bool
 impl core::clone::Clone for openjd_model::template::Environment
 pub fn openjd_model::template::Environment::clone(&self) -> openjd_model::template::Environment
 impl core::fmt::Debug for openjd_model::template::Environment
@@ -1501,14 +2226,24 @@ pub openjd_model::template::EnvironmentActions::on_enter: core::option::Option<o
 pub openjd_model::template::EnvironmentActions::on_exit: core::option::Option<openjd_model::template::Action>
 pub openjd_model::template::EnvironmentActions::on_wrap_env_enter: core::option::Option<openjd_model::template::Action>
 pub openjd_model::template::EnvironmentActions::on_wrap_env_exit: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::EnvironmentActions::on_wrap_service_enter: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::EnvironmentActions::on_wrap_service_exit: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::EnvironmentActions::on_wrap_service_health_check: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::EnvironmentActions::on_wrap_service_run: core::option::Option<openjd_model::template::Action>
 pub openjd_model::template::EnvironmentActions::on_wrap_task_run: core::option::Option<openjd_model::template::Action>
+impl openjd_model::template::EnvironmentActions
+pub const openjd_model::template::EnvironmentActions::ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64
+pub const openjd_model::template::EnvironmentActions::ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64
+pub fn openjd_model::template::EnvironmentActions::default_timeout_seconds(&str) -> core::option::Option<u64>
+pub fn openjd_model::template::EnvironmentActions::has_any_service_wrap_hook(&self) -> bool
+pub fn openjd_model::template::EnvironmentActions::service_wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::template::Action>); 4]
 impl openjd_model::template::EnvironmentActions
 pub fn openjd_model::template::EnvironmentActions::has_any_action(&self) -> bool
 pub fn openjd_model::template::EnvironmentActions::has_any_wrap_hook(&self) -> bool
 pub fn openjd_model::template::EnvironmentActions::iter_actions(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::template::Action>
 pub fn openjd_model::template::EnvironmentActions::iter_named(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &openjd_model::template::Action)>
-pub fn openjd_model::template::EnvironmentActions::named_slots(&self) -> [(&'static str, &core::option::Option<openjd_model::template::Action>); 5]
-pub fn openjd_model::template::EnvironmentActions::wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::template::Action>, openjd_model::template::WrapHookScope); 3]
+pub fn openjd_model::template::EnvironmentActions::named_slots(&self) -> [(&'static str, &core::option::Option<openjd_model::template::Action>); 9]
+pub fn openjd_model::template::EnvironmentActions::wrap_hooks(&self) -> [(&'static str, &core::option::Option<openjd_model::template::Action>, openjd_model::template::WrapHookScope); 7]
 impl core::clone::Clone for openjd_model::template::EnvironmentActions
 pub fn openjd_model::template::EnvironmentActions::clone(&self) -> openjd_model::template::EnvironmentActions
 impl core::fmt::Debug for openjd_model::template::EnvironmentActions
@@ -1557,15 +2292,17 @@ pub fn openjd_model::template::EnvironmentScript::fmt(&self, &mut core::fmt::For
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentScript
 pub fn openjd_model::template::EnvironmentScript::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::EnvironmentTemplate
-pub openjd_model::template::EnvironmentTemplate::environment: openjd_model::template::Environment
+pub openjd_model::template::EnvironmentTemplate::environment: core::option::Option<openjd_model::template::Environment>
 pub openjd_model::template::EnvironmentTemplate::extensions: core::option::Option<alloc::vec::Vec<openjd_model::template::ExtensionName>>
 pub openjd_model::template::EnvironmentTemplate::parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::JobParameterDefinition>>
 pub openjd_model::template::EnvironmentTemplate::schema: core::option::Option<alloc::string::String>
+pub openjd_model::template::EnvironmentTemplate::services: core::option::Option<alloc::vec::Vec<openjd_model::template::Service>>
 pub openjd_model::template::EnvironmentTemplate::specification_version: alloc::string::String
 impl openjd_model::template::EnvironmentTemplate
 pub fn openjd_model::template::EnvironmentTemplate::default_validation_context(&self) -> openjd_model::types::ValidationContext
-pub fn openjd_model::template::EnvironmentTemplate::environment(&self) -> &openjd_model::template::Environment
+pub fn openjd_model::template::EnvironmentTemplate::environment(&self) -> core::option::Option<&openjd_model::template::Environment>
 pub fn openjd_model::template::EnvironmentTemplate::profile(&self) -> openjd_model::types::ModelProfile
+pub fn openjd_model::template::EnvironmentTemplate::services(&self) -> &[openjd_model::template::Service]
 impl core::clone::Clone for openjd_model::template::EnvironmentTemplate
 pub fn openjd_model::template::EnvironmentTemplate::clone(&self) -> openjd_model::template::EnvironmentTemplate
 impl core::fmt::Debug for openjd_model::template::EnvironmentTemplate
@@ -1885,18 +2622,22 @@ pub fn openjd_model::template::JobStringParameterDefinition::deserialize<__D>(__
 pub struct openjd_model::template::JobTemplate
 pub openjd_model::template::JobTemplate::description: core::option::Option<openjd_model::template::Description>
 pub openjd_model::template::JobTemplate::extensions: core::option::Option<alloc::vec::Vec<openjd_model::template::ExtensionName>>
+pub openjd_model::template::JobTemplate::external_services: core::option::Option<alloc::vec::Vec<openjd_model::template::ServiceRequirement>>
 pub openjd_model::template::JobTemplate::job_environments: core::option::Option<alloc::vec::Vec<openjd_model::template::Environment>>
 pub openjd_model::template::JobTemplate::name: openjd_expr::format_string::FormatString
 pub openjd_model::template::JobTemplate::parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::JobParameterDefinition>>
 pub openjd_model::template::JobTemplate::schema: core::option::Option<alloc::string::String>
+pub openjd_model::template::JobTemplate::services: core::option::Option<alloc::vec::Vec<openjd_model::template::Service>>
 pub openjd_model::template::JobTemplate::specification_version: alloc::string::String
 pub openjd_model::template::JobTemplate::steps: alloc::vec::Vec<openjd_model::template::StepTemplate>
 impl openjd_model::template::JobTemplate
 pub fn openjd_model::template::JobTemplate::default_validation_context(&self) -> openjd_model::types::ValidationContext
 pub fn openjd_model::template::JobTemplate::description(&self) -> core::option::Option<&str>
+pub fn openjd_model::template::JobTemplate::external_services(&self) -> &[openjd_model::template::ServiceRequirement]
 pub fn openjd_model::template::JobTemplate::name(&self) -> &openjd_expr::format_string::FormatString
 pub fn openjd_model::template::JobTemplate::parameter_definitions_list(&self) -> &[openjd_model::template::JobParameterDefinition]
 pub fn openjd_model::template::JobTemplate::profile(&self) -> openjd_model::types::ModelProfile
+pub fn openjd_model::template::JobTemplate::services(&self) -> &[openjd_model::template::Service]
 impl core::clone::Clone for openjd_model::template::JobTemplate
 pub fn openjd_model::template::JobTemplate::clone(&self) -> openjd_model::template::JobTemplate
 impl core::fmt::Debug for openjd_model::template::JobTemplate
@@ -1979,6 +2720,129 @@ impl core::fmt::Debug for openjd_model::template::RangeExprUserInterface
 pub fn openjd_model::template::RangeExprUserInterface::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::RangeExprUserInterface
 pub fn openjd_model::template::RangeExprUserInterface::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::Service
+pub openjd_model::template::Service::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::template::StepDependency>>
+pub openjd_model::template::Service::description: core::option::Option<openjd_model::template::Description>
+pub openjd_model::template::Service::health_check: core::option::Option<openjd_model::template::ServiceHealthCheck>
+pub openjd_model::template::Service::host_requirements: core::option::Option<openjd_model::template::HostRequirements>
+pub openjd_model::template::Service::let_bindings: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub openjd_model::template::Service::name: alloc::string::String
+pub openjd_model::template::Service::ports: alloc::vec::Vec<openjd_model::template::ServicePort>
+pub openjd_model::template::Service::restart_policy: core::option::Option<openjd_model::template::ServiceRestartPolicy>
+pub openjd_model::template::Service::script: openjd_model::template::ServiceScript
+pub openjd_model::template::Service::variables: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, openjd_expr::format_string::FormatString>>
+impl openjd_model::template::Service
+pub fn openjd_model::template::Service::health_check(&self) -> openjd_model::template::ServiceHealthCheck
+pub fn openjd_model::template::Service::port_names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub fn openjd_model::template::Service::restart_policy(&self) -> openjd_model::template::ServiceRestartPolicy
+pub fn openjd_model::template::Service::tcp_port_names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+impl core::clone::Clone for openjd_model::template::Service
+pub fn openjd_model::template::Service::clone(&self) -> openjd_model::template::Service
+impl core::fmt::Debug for openjd_model::template::Service
+pub fn openjd_model::template::Service::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::Service
+pub fn openjd_model::template::Service::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceActions
+pub openjd_model::template::ServiceActions::on_enter: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::ServiceActions::on_exit: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::ServiceActions::on_health_check: core::option::Option<openjd_model::template::Action>
+pub openjd_model::template::ServiceActions::on_run: openjd_model::template::Action
+impl openjd_model::template::ServiceActions
+pub const openjd_model::template::ServiceActions::ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64
+pub const openjd_model::template::ServiceActions::ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64
+pub fn openjd_model::template::ServiceActions::default_timeout_seconds(&str) -> core::option::Option<u64>
+pub fn openjd_model::template::ServiceActions::iter_actions(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::template::Action>
+pub fn openjd_model::template::ServiceActions::iter_named(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &openjd_model::template::Action)>
+pub fn openjd_model::template::ServiceActions::named_slots(&self) -> [(&'static str, core::option::Option<&openjd_model::template::Action>); 4]
+impl core::clone::Clone for openjd_model::template::ServiceActions
+pub fn openjd_model::template::ServiceActions::clone(&self) -> openjd_model::template::ServiceActions
+impl core::fmt::Debug for openjd_model::template::ServiceActions
+pub fn openjd_model::template::ServiceActions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceActions
+pub fn openjd_model::template::ServiceActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceDependencyCycle
+pub openjd_model::template::ServiceDependencyCycle::path: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::template::ServiceDependencyCycle::via_environment: core::option::Option<openjd_model::template::service_scope::CycleViaEnvironment>
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::clone(&self) -> openjd_model::template::service_scope::ServiceDependencyCycle
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceDependencyCycle
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::eq(&self, &openjd_model::template::service_scope::ServiceDependencyCycle) -> bool
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::template::service_scope::ServiceDependencyCycle
+pub fn openjd_model::template::service_scope::ServiceDependencyCycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceDependencyCycle
+pub struct openjd_model::template::ServicePort
+pub openjd_model::template::ServicePort::name: alloc::string::String
+pub openjd_model::template::ServicePort::port: core::option::Option<openjd_expr::format_string::FormatString>
+pub openjd_model::template::ServicePort::protocol: openjd_model::job::ServicePortProtocol
+impl core::clone::Clone for openjd_model::template::ServicePort
+pub fn openjd_model::template::ServicePort::clone(&self) -> openjd_model::template::ServicePort
+impl core::fmt::Debug for openjd_model::template::ServicePort
+pub fn openjd_model::template::ServicePort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServicePort
+pub fn openjd_model::template::ServicePort::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceRequirement
+pub openjd_model::template::ServiceRequirement::name: alloc::string::String
+pub openjd_model::template::ServiceRequirement::ports: alloc::vec::Vec<openjd_model::template::ServiceRequirementPort>
+impl openjd_model::template::ServiceRequirement
+pub fn openjd_model::template::ServiceRequirement::port_names(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+impl core::clone::Clone for openjd_model::template::ServiceRequirement
+pub fn openjd_model::template::ServiceRequirement::clone(&self) -> openjd_model::template::ServiceRequirement
+impl core::fmt::Debug for openjd_model::template::ServiceRequirement
+pub fn openjd_model::template::ServiceRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceRequirement
+pub fn openjd_model::template::ServiceRequirement::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceRequirementPort
+pub openjd_model::template::ServiceRequirementPort::name: alloc::string::String
+pub openjd_model::template::ServiceRequirementPort::protocol: openjd_model::job::ServicePortProtocol
+impl core::clone::Clone for openjd_model::template::ServiceRequirementPort
+pub fn openjd_model::template::ServiceRequirementPort::clone(&self) -> openjd_model::template::ServiceRequirementPort
+impl core::fmt::Debug for openjd_model::template::ServiceRequirementPort
+pub fn openjd_model::template::ServiceRequirementPort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceRequirementPort
+pub fn openjd_model::template::ServiceRequirementPort::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceRestartPolicy
+pub openjd_model::template::ServiceRestartPolicy::completed_tasks: core::option::Option<openjd_model::job::CompletedTasksPolicy>
+pub openjd_model::template::ServiceRestartPolicy::max_restarts: core::option::Option<openjd_expr::format_string::FormatString>
+impl openjd_model::template::ServiceRestartPolicy
+pub const openjd_model::template::ServiceRestartPolicy::DEFAULT_MAX_RESTARTS: i64
+impl core::clone::Clone for openjd_model::template::ServiceRestartPolicy
+pub fn openjd_model::template::ServiceRestartPolicy::clone(&self) -> openjd_model::template::ServiceRestartPolicy
+impl core::default::Default for openjd_model::template::ServiceRestartPolicy
+pub fn openjd_model::template::ServiceRestartPolicy::default() -> openjd_model::template::ServiceRestartPolicy
+impl core::fmt::Debug for openjd_model::template::ServiceRestartPolicy
+pub fn openjd_model::template::ServiceRestartPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceRestartPolicy
+pub fn openjd_model::template::ServiceRestartPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::ServiceScopes
+impl openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::get(&self, &str) -> core::option::Option<&openjd_model::template::service_scope::ComputedServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &openjd_model::template::service_scope::ComputedServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::required_service_scopes(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, openjd_model::template::service_scope::ServiceScope>
+pub fn openjd_model::template::service_scope::ServiceScopes::requirement_possibly_used(&self, &str) -> bool
+pub fn openjd_model::template::service_scope::ServiceScopes::scope_of(&self, &str) -> openjd_model::template::service_scope::ServiceScope
+impl core::clone::Clone for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::clone(&self) -> openjd_model::template::service_scope::ServiceScopes
+impl core::cmp::Eq for openjd_model::template::service_scope::ServiceScopes
+impl core::cmp::PartialEq for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::eq(&self, &openjd_model::template::service_scope::ServiceScopes) -> bool
+impl core::default::Default for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::default() -> openjd_model::template::service_scope::ServiceScopes
+impl core::fmt::Debug for openjd_model::template::service_scope::ServiceScopes
+pub fn openjd_model::template::service_scope::ServiceScopes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::service_scope::ServiceScopes
+pub struct openjd_model::template::ServiceScript
+pub openjd_model::template::ServiceScript::actions: openjd_model::template::ServiceActions
+pub openjd_model::template::ServiceScript::embedded_files: core::option::Option<alloc::vec::Vec<openjd_model::template::EmbeddedFile>>
+pub openjd_model::template::ServiceScript::let_bindings: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+impl core::clone::Clone for openjd_model::template::ServiceScript
+pub fn openjd_model::template::ServiceScript::clone(&self) -> openjd_model::template::ServiceScript
+impl core::fmt::Debug for openjd_model::template::ServiceScript
+pub fn openjd_model::template::ServiceScript::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ServiceScript
+pub fn openjd_model::template::ServiceScript::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::SimpleAction
 pub openjd_model::template::SimpleAction::args: core::option::Option<alloc::vec::Vec<openjd_expr::format_string::FormatString>>
 pub openjd_model::template::SimpleAction::cancelation: core::option::Option<openjd_model::template::CancelationMode>
@@ -2005,21 +2869,27 @@ pub openjd_model::template::StepDependency::enable_if: core::option::Option<open
 pub openjd_model::template::StepDependency::environment: core::option::Option<alloc::string::String>
 pub openjd_model::template::StepDependency::parameters: core::option::Option<openjd_model::template::EnvironmentParameterValueMap>
 pub openjd_model::template::StepDependency::required: core::option::Option<bool>
+pub openjd_model::template::StepDependency::service: core::option::Option<alloc::string::String>
 pub openjd_model::template::StepDependency::step: core::option::Option<alloc::string::String>
 impl openjd_model::template::StepDependency
+pub fn openjd_model::template::StepDependency::describe(&self) -> alloc::string::String
 pub fn openjd_model::template::StepDependency::environment(&self) -> core::option::Option<&str>
 pub fn openjd_model::template::StepDependency::is_required(&self) -> bool
 pub fn openjd_model::template::StepDependency::is_well_formed(&self) -> bool
 pub fn openjd_model::template::StepDependency::literal_enabled(&self) -> core::option::Option<bool>
 pub fn openjd_model::template::StepDependency::on_environment(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::template::StepDependency::on_service(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn openjd_model::template::StepDependency::on_step(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::template::StepDependency::service(&self) -> core::option::Option<&str>
 pub fn openjd_model::template::StepDependency::step(&self) -> core::option::Option<&str>
-pub fn openjd_model::template::StepDependency::target(&self) -> core::option::Option<openjd_model::template::DependencyTarget<'_>>
+pub fn openjd_model::template::StepDependency::target(&self) -> core::option::Option<openjd_model::job::DependencyTarget<'_>>
 impl core::clone::Clone for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::clone(&self) -> openjd_model::template::StepDependency
 impl core::cmp::Eq for openjd_model::template::StepDependency
 impl core::cmp::PartialEq for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::eq(&self, &openjd_model::template::StepDependency) -> bool
+impl core::convert::From<&openjd_model::template::StepDependency> for openjd_model::job::StepDependency
+pub fn openjd_model::job::StepDependency::from(&openjd_model::template::StepDependency) -> Self
 impl core::fmt::Debug for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::template::StepDependency
@@ -2087,6 +2957,14 @@ impl core::fmt::Debug for openjd_model::template::StringUserInterface
 pub fn openjd_model::template::StringUserInterface::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::StringUserInterface
 pub fn openjd_model::template::StringUserInterface::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const openjd_model::template::SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4]
+pub fn openjd_model::template::compute_service_scopes(&openjd_model::template::JobTemplate) -> core::result::Result<openjd_model::template::service_scope::ServiceScopes, openjd_model::template::service_scope::ServiceDependencyCycle>
+pub fn openjd_model::template::environment_template_service_cycle(&openjd_model::template::EnvironmentTemplate) -> core::option::Option<openjd_model::template::service_scope::ServiceDependencyCycle>
+pub fn openjd_model::template::listed_requirements<'a>(core::option::Option<&'a [openjd_model::template::StepDependency]>, &'a [openjd_model::template::ServiceRequirement]) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::template::ServiceRequirement> + core::clone::Clone + 'a
+pub fn openjd_model::template::listed_service_names(core::option::Option<&[openjd_model::template::StepDependency]>) -> impl core::iter::traits::iterator::Iterator<Item = &str> + '_
+pub fn openjd_model::template::listed_services<'a>(core::option::Option<&'a [openjd_model::template::StepDependency]>, &'a [openjd_model::template::Service]) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::template::Service> + core::clone::Clone + 'a
+pub fn openjd_model::template::listed_step_names(core::option::Option<&[openjd_model::template::StepDependency]>) -> impl core::iter::traits::iterator::Iterator<Item = &str> + '_
+pub fn openjd_model::template::lists_service(core::option::Option<&[openjd_model::template::StepDependency]>, &str) -> bool
 pub mod openjd_model::types
 pub enum openjd_model::types::DataFlow
 pub openjd_model::types::DataFlow::In
@@ -2185,6 +3063,7 @@ pub openjd_model::types::ModelExtension::EnvParams
 pub openjd_model::types::ModelExtension::Expr
 pub openjd_model::types::ModelExtension::FeatureBundle1
 pub openjd_model::types::ModelExtension::RedactedEnvVars
+pub openjd_model::types::ModelExtension::Service
 pub openjd_model::types::ModelExtension::TaskChunking
 pub openjd_model::types::ModelExtension::WrapActions
 impl openjd_model::types::ModelExtension
@@ -2537,6 +3416,7 @@ pub openjd_model::ModelExtension::EnvParams
 pub openjd_model::ModelExtension::Expr
 pub openjd_model::ModelExtension::FeatureBundle1
 pub openjd_model::ModelExtension::RedactedEnvVars
+pub openjd_model::ModelExtension::Service
 pub openjd_model::ModelExtension::TaskChunking
 pub openjd_model::ModelExtension::WrapActions
 impl openjd_model::types::ModelExtension
@@ -2689,9 +3569,12 @@ pub fn openjd_model::types::CallerLimits::fmt(&self, &mut core::fmt::Formatter<'
 pub struct openjd_model::CreatedJob
 pub openjd_model::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
+pub openjd_model::CreatedJob::discarded_service_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
 pub openjd_model::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::CreatedJob::requirement_bindings: alloc::vec::Vec<openjd_model::RequirementBinding>
+pub openjd_model::CreatedJob::service_environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
 pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
@@ -2787,6 +3670,24 @@ pub openjd_model::PathParameterOptions::job_template_dir: &'a str
 pub openjd_model::PathParameterOptions::path_format: openjd_expr::path_mapping::PathFormat
 impl<'a> openjd_model::job::create_job::parameters::PathParameterOptions<'a>
 pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(&'a str, &'a str) -> Self
+pub struct openjd_model::RequirementBinding
+pub openjd_model::RequirementBinding::document: openjd_model::job::Document
+pub openjd_model::RequirementBinding::requirement: alloc::string::String
+pub openjd_model::RequirementBinding::service: alloc::string::String
+impl core::clone::Clone for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::clone(&self) -> openjd_model::RequirementBinding
+impl core::cmp::Eq for openjd_model::RequirementBinding
+impl core::cmp::PartialEq for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::eq(&self, &openjd_model::RequirementBinding) -> bool
+impl core::fmt::Debug for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::RequirementBinding
+impl serde_core::ser::Serialize for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::RequirementBinding
+pub fn openjd_model::RequirementBinding::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::StepDependencyGraph
 impl openjd_model::job::step_dependency_graph::StepDependencyGraph
 pub fn openjd_model::job::step_dependency_graph::StepDependencyGraph::edge(&self, usize) -> core::option::Option<&openjd_model::job::step_dependency_graph::StepDependencyEdge>
@@ -2937,6 +3838,7 @@ pub fn openjd_model::check_environment_templates(&openjd_model::template::JobTem
 pub fn openjd_model::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::create_job_details(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::decode_environment_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::EnvironmentTemplate, openjd_model::error::ModelError>
 pub fn openjd_model::decode_job_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::JobTemplate, openjd_model::error::ModelError>

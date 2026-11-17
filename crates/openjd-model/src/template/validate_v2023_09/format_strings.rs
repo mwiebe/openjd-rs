@@ -20,6 +20,10 @@ use openjd_expr::value::ExprValue;
 use openjd_expr::FormatString;
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::job::service_symbols::{
+    add_unresolved_requirement_symbols, add_unresolved_service_file_symbols,
+    add_unresolved_service_symbols, add_unresolved_wrapped_service_symbols,
+};
 use crate::template::expr_field::{self, ExprFieldEval};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
@@ -136,14 +140,33 @@ fn build_env_param_default_symtab(params: Option<&[JobParameterDefinition]>) -> 
 /// When `is_step_env` is true, also includes Step.Name (EXPR only).
 /// Takes a parameter slice so it works for both job templates and standalone
 /// environment templates.
-fn build_session_scope_symtab(
+///
+/// `in_scope_services` are the inline Services the environment may reference
+/// (RFC 0009, Template Schemas §9 scope items 3–5): for a Step Environment,
+/// the Services its Step lists in `dependencies`; for a Job Environment and
+/// for an Environment Template's `environment`, the Services of the
+/// document it lists in its own `dependencies` (`listed_services`).
+/// `requirements` are the required Services (§9.8) the environment may
+/// reference under the same rule: the `externalServices` entries its Step
+/// (a Step Environment) or it (a Job Environment) lists in `dependencies`
+/// (`listed_requirements`); none for an Environment Template. Their
+/// `Service.<name>.<port>.port` / `.connectAddress` are added whatever kind
+/// of Session enters the Environment: every entity whose Sessions enter it
+/// depends on each Service it lists, so the endpoint is known before it is
+/// entered (§4 *dependencies*). `bindAddress` is never in scope in an
+/// environment.
+fn build_session_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
     env: &Environment,
     is_step_env: bool,
     expr_active: bool,
     env_names_active: bool,
+    in_scope_services: impl Iterator<Item = &'a Service>,
+    requirements: impl IntoIterator<Item = &'a ServiceRequirement>,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(params);
+    add_unresolved_service_symbols(&mut symtab, in_scope_services, None).expect("symtab");
+    add_unresolved_requirement_symbols(&mut symtab, requirements).expect("symtab");
     symtab
         .set(
             "Session.WorkingDirectory",
@@ -271,7 +294,10 @@ fn build_env_host_requirements_symtab(
 /// `Step.Name`, and `Env.Param.*` value as `unresolved[T]` of its type
 /// ([`expr_field::known_bool`]); `None` when it is not known. Every check
 /// before job creation that depends on whether an entry is enabled or an
-/// Environment is disabled reads these, so they all agree.
+/// Environment is disabled reads these, so they all agree. With `SERVICE`
+/// the `environment:` entries of the Job Template's Services are known the
+/// same way, in the Service's template scope (RFC 0009 `<Service>` item 4:
+/// no `Step.Name`, and the Service's own `let` bindings).
 #[derive(Debug, Default)]
 pub(crate) struct KnownEnableIfs {
     /// Per `jobEnvironments` entry, in order.
@@ -282,6 +308,9 @@ pub(crate) struct KnownEnableIfs {
     entries: Vec<Vec<Option<bool>>>,
     /// Per Step, per `stepEnvironments` entry.
     step_environments: Vec<Vec<Option<bool>>>,
+    /// Per Service of `services` (RFC 0009), per `dependencies` entry, as
+    /// for `entries`.
+    services: Vec<Vec<Option<bool>>>,
 }
 
 impl KnownEnableIfs {
@@ -311,14 +340,47 @@ impl KnownEnableIfs {
     /// What `steps[i]`'s first well-formed `environment:` entry naming
     /// `name` is known to be (a second one is a constraint 3 error).
     pub(crate) fn entry_in_step(&self, i: usize, step: &StepTemplate, name: &str) -> KnownEntry {
-        let found = step
-            .dependencies
-            .iter()
+        Self::first_entry(step.dependencies.as_deref(), name, |j| self.entry(i, j))
+    }
+
+    /// The `enableIf` of `services[k] -> dependencies[j]` (RFC 0009).
+    pub(crate) fn service_entry(&self, k: usize, j: usize) -> Option<bool> {
+        self.services
+            .get(k)
+            .and_then(|e| e.get(j))
+            .copied()
+            .unwrap_or(Some(true))
+    }
+
+    /// What `services[k]`'s first well-formed `environment:` entry naming
+    /// `name` is known to be (RFC 0009; a second one is a constraint 3
+    /// error).
+    pub(crate) fn entry_in_service(
+        &self,
+        k: usize,
+        svc: &crate::template::Service,
+        name: &str,
+    ) -> KnownEntry {
+        Self::first_entry(svc.dependencies.as_deref(), name, |j| {
+            self.service_entry(k, j)
+        })
+    }
+
+    /// What the first well-formed `environment:` entry naming `name` in
+    /// `dependencies` is known to be, with `known(j)` the `enableIf` of
+    /// entry `j`.
+    fn first_entry(
+        dependencies: Option<&[StepDependency]>,
+        name: &str,
+        known: impl Fn(usize) -> Option<bool>,
+    ) -> KnownEntry {
+        let found = dependencies
+            .into_iter()
             .flatten()
             .position(|d| d.environment() == Some(name));
         match found {
             None => KnownEntry::Absent,
-            Some(j) => KnownEntry::from_known(self.entry(i, j)),
+            Some(j) => KnownEntry::from_known(known(j)),
         }
     }
 }
@@ -414,10 +476,63 @@ pub(crate) fn known_enable_ifs(jt: &JobTemplate, ctx: &ValidationContext) -> Kno
                 .collect(),
         );
     }
+    // RFC 0009 `<Service>` item 4: a Service's entries resolve in its
+    // template scope, which has the Job symbols and its own `let` bindings
+    // but no `Step.Name`.
+    let services = jt
+        .services()
+        .iter()
+        .map(|svc| {
+            let has_expression = svc
+                .dependencies
+                .iter()
+                .flatten()
+                .any(|d| matches!(d.enable_if, Some(ExprField::Expression(_))));
+            let symtab = has_expression.then(|| {
+                let mut symtab = build_template_scope_symtab(params);
+                if expr_active {
+                    add_job_symbols(&mut symtab, env_names_active);
+                    let mut scratch = ValidationErrors::default();
+                    for binding in svc.let_bindings.iter().flatten() {
+                        if let Some(eq_pos) = binding.find('=') {
+                            evaluate_let_binding(
+                                binding,
+                                eq_pos,
+                                &[],
+                                false,
+                                &mut symtab,
+                                &ev,
+                                &profile,
+                                &mut scratch,
+                            );
+                        }
+                    }
+                }
+                symtab
+            });
+            let empty = SymbolTable::new();
+            svc.dependencies
+                .iter()
+                .flatten()
+                .map(|d| {
+                    if d.environment().is_some() {
+                        expr_field::known_bool(
+                            d.enable_if.as_ref(),
+                            symtab.as_ref().unwrap_or(&empty),
+                            &field_ev,
+                        )
+                    } else {
+                        Some(true)
+                    }
+                })
+                .collect()
+        })
+        .collect();
     KnownEnableIfs {
         job_environments,
         entries,
         step_environments,
+        services,
     }
 }
 
@@ -428,7 +543,10 @@ pub(crate) fn known_environment_template_enable_if(
     et: &crate::template::EnvironmentTemplate,
     ctx: &ValidationContext,
 ) -> Option<bool> {
-    let env = &et.environment;
+    // A services-only Environment Template (RFC 0009) has no Environment.
+    let Some(env) = &et.environment else {
+        return Some(true);
+    };
     let Some(field) = &env.enable_if else {
         return Some(true);
     };
@@ -501,8 +619,9 @@ fn job_env_param_types<'a>(jt: &'a JobTemplate, known: &KnownEnableIfs) -> JobEn
     out
 }
 
-/// Pass-8 checks of a Step's format-string `environment:` entry values
-/// (`ENV_PARAMS`, §3.2) against `symtab`, the Step's template scope.
+/// Pass-8 checks of a Step's (or, with `SERVICE`, a Job Template
+/// Service's) format-string `environment:` entry values (`ENV_PARAMS`,
+/// §3.2) against `symtab`, the entity's template scope.
 ///
 /// A value of an entry whose `enableIf` is known to be `true` (a disabled
 /// entry's parameters are not checked, §3.2 item 3.2, and one whose `enableIf`
@@ -518,16 +637,15 @@ fn job_env_param_types<'a>(jt: &'a JobTemplate, known: &KnownEnableIfs) -> JobEn
 #[allow(clippy::too_many_arguments)]
 fn validate_env_entry_values(
     job_env_types: &JobEnvParamTypes<'_>,
-    step: &StepTemplate,
-    step_index: usize,
-    known: &KnownEnableIfs,
+    dependencies: Option<&[StepDependency]>,
+    known_entry: impl Fn(usize) -> Option<bool>,
     symtab: &SymbolTable,
     ev: &FsEval<'_>,
     ctx: &ValidationContext,
     step_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let Some(deps) = &step.dependencies else {
+    let Some(deps) = dependencies else {
         return;
     };
     let deps_path = path_field(step_path, "dependencies");
@@ -543,7 +661,7 @@ fn validate_env_entry_values(
         // (§7.6 rule 5).
         let job_env = job_env_types
             .get(env_name)
-            .filter(|_| known.entry(step_index, j) == Some(true))
+            .filter(|_| known_entry(j) == Some(true))
             // A grouped one may be superseded (§4 item 7), which disables
             // it, so its values are typed at job creation. One whose
             // `enableIf` reads a literal of this entry's that does not
@@ -587,7 +705,7 @@ fn validate_env_entry_values(
 /// Job is created). An `enableIf` on an entry that is not a well-formed
 /// `environment:` entry is reported by pass 6 and not checked here.
 fn validate_enable_if(
-    step: &StepTemplate,
+    dependencies: Option<&[StepDependency]>,
     symtab: &SymbolTable,
     ev: &FsEval<'_>,
     profile: &openjd_expr::ExprProfile,
@@ -596,7 +714,7 @@ fn validate_enable_if(
 ) {
     let deps_path = path_field(step_path, "dependencies");
     let field_ev = ev.expr_field_eval(profile);
-    for (j, dep) in step.dependencies.iter().flatten().enumerate() {
+    for (j, dep) in dependencies.into_iter().flatten().enumerate() {
         let (Some(_), Some(enable_if)) = (dep.environment(), &dep.enable_if) else {
             continue;
         };
@@ -675,13 +793,34 @@ fn validate_env_param_defaults(
 /// Contains: Param.*, RawParam.*, Session.*, Task.Param.*, Task.RawParam.*,
 ///           Task.File.*, Job.Name, Step.Name, Env.File.* from step envs,
 ///           plus let bindings.
+///
+/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of the inline
+/// and required Services the Step lists with the `service` key in its
+/// `dependencies` are in scope (Template Schemas §9 scope item 3, §9.8
+/// item 2); `bindAddress` never is. A reference to a Service the Step does
+/// not list — inline or required — surfaces as an undefined variable, which
+/// `service_diagnostics` rewrites to name the missing dependency.
 fn build_task_scope_symtab(
     jt: &JobTemplate,
     step: &StepTemplate,
     expr_active: bool,
     env_names_active: bool,
+    service_active: bool,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(jt.parameter_definitions.as_deref());
+    if service_active {
+        add_unresolved_service_symbols(
+            &mut symtab,
+            listed_services(step.dependencies.as_deref(), jt.services()),
+            None,
+        )
+        .expect("symtab");
+        add_unresolved_requirement_symbols(
+            &mut symtab,
+            listed_requirements(step.dependencies.as_deref(), jt.external_services()),
+        )
+        .expect("symtab");
+    }
 
     // Session scope
     symtab
@@ -2002,18 +2141,40 @@ fn validate_env_actions_timing_fs(
     actions_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let wrap_hook_names: [&str; 3] = ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"];
+    // On the plain lifecycle actions these fields resolve at job creation,
+    // before any session exists, so they validate against the
+    // template-scope symtab. On the RFC 0008 wrap hooks they resolve at run
+    // time with the `WrappedAction.*` variables seeded — that is what makes
+    // round-trip forwarding (`timeout: "{{WrappedAction.Timeout}}"`,
+    // `mode: "{{WrappedAction.Cancelation.Mode}}"`) possible — so they
+    // validate against the wrapped-action scope, plus the hook's companion
+    // group (`WrappedEnv.Name`, `WrappedStep.Name`, or the RFC 0009
+    // `WrappedService.*`): the runtime resolves a hook's timing fields
+    // against the same symbol table as its command and args, so the two
+    // scopes must agree.
+    let wrap_hook_scopes: Vec<(&str, WrapHookScope)> = script
+        .actions
+        .wrap_hooks()
+        .iter()
+        .map(|(name, _, extra)| (*name, *extra))
+        .collect();
     for (name, action) in script.actions.iter_named() {
         let action_path = path_field(actions_path, name);
         let scoped_symtab: SymbolTable;
-        let field_symtab: &SymbolTable = if wrap_hook_names.contains(&name) {
-            let mut st = template_symtab.clone();
-            add_wrapped_action_scope(&mut st);
-            scoped_symtab = st;
-            &scoped_symtab
-        } else {
-            template_symtab
-        };
+        let field_symtab: &SymbolTable =
+            if let Some((_, extra)) = wrap_hook_scopes.iter().find(|(hook, _)| *hook == name) {
+                let mut st = template_symtab.clone();
+                add_wrapped_action_scope(&mut st);
+                match extra {
+                    WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
+                    WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
+                }
+                scoped_symtab = st;
+                &scoped_symtab
+            } else {
+                template_symtab
+            };
         validate_action_timing_fs(action, field_symtab, template_ev, &action_path, errors);
     }
 }
@@ -2147,12 +2308,14 @@ pub(crate) fn check_carried_forward_step_script(
 /// `symtab` is the session-scope check table: concrete `Param.*` /
 /// `RawParam.*` / `Job.Name` (and `Step.Name` for step environments) /
 /// `let` bindings, with `Unresolved` placeholders for `Session.*`,
-/// `Env.File.*`, and PATH `Param.*`. The RFC 0008 wrap hooks
-/// additionally see their `WrappedAction.*` / `WrappedEnv.Name` /
-/// `WrappedStep.Name` scopes, unresolved, exactly as in pass 8.
-/// `template_symtab` is the template-scope table `timeout` /
-/// `cancelation` resolve against (the job's table for a job
-/// environment, the step's for a step environment), as at pass 8.
+/// `Env.File.*`, PATH `Param.*`, and (RFC 0009) the `Service.*` endpoints
+/// of the Services the environment lists. The RFC
+/// 0008 wrap hooks additionally see their `WrappedAction.*` /
+/// `WrappedEnv.Name` / `WrappedStep.Name` / `WrappedService.*` scopes,
+/// unresolved, exactly as in pass 8. `template_symtab` is the
+/// template-scope table `timeout` / `cancelation` resolve against (the
+/// job's table for a job environment, the step's for a step
+/// environment), as at pass 8.
 pub(crate) fn check_carried_forward_environment(
     env: &Environment,
     symtab: &SymbolTable,
@@ -2204,6 +2367,7 @@ pub(crate) fn check_carried_forward_environment(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
                 }
                 validate_action_fs(
                     action,
@@ -2421,10 +2585,86 @@ fn compared_name(
     Some(known)
 }
 
+/// Shared state of one pass-8 run: the per-scope evaluators (template
+/// scope for job-creation-stage fields, host scope for session/task-stage
+/// fields), the extension flags, the limits, and the standard capability
+/// tables for `hostRequirements` checks.
+struct Pass8<'a> {
+    ctx: &'a ValidationContext,
+    expr_active: bool,
+    service_active: bool,
+    template_profile: &'a openjd_expr::ExprProfile,
+    host_profile: &'a openjd_expr::ExprProfile,
+    template_ev: FsEval<'a>,
+    host_ev: FsEval<'a>,
+    limits: super::EffectiveLimits,
+    caller_limits: &'a crate::types::CallerLimits,
+    standard_attrs: &'static [(&'static str, &'static [&'static str])],
+    standard_attr_names: Vec<&'static str>,
+    standard_amounts: &'static [&'static str],
+}
+
+impl<'a> Pass8<'a> {
+    fn new(
+        ctx: &'a ValidationContext,
+        template_profile: &'a openjd_expr::ExprProfile,
+        host_profile: &'a openjd_expr::ExprProfile,
+        template_lib: &'a FunctionLibrary,
+        host_lib: &'a FunctionLibrary,
+    ) -> Self {
+        // Standard attribute capability table for resolved-value checks
+        // (§3.3.2.2). Only errs for an unsupported revision, which cannot
+        // reach v2023-09 validation.
+        let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
+            crate::capabilities::standard_attribute_capabilities(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            )
+            .unwrap_or(&[]);
+        let standard_attr_names: Vec<&'static str> =
+            standard_attrs.iter().map(|(name, _)| *name).collect();
+        let standard_amounts: &'static [&'static str] =
+            crate::capabilities::standard_amount_capability_names(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            )
+            .unwrap_or(&[]);
+        Self {
+            ctx,
+            expr_active: ctx.profile.has_extension(ModelExtension::Expr),
+            service_active: ctx.profile.has_extension(ModelExtension::Service),
+            template_profile,
+            host_profile,
+            template_ev: FsEval::new(template_lib, &ctx.caller_limits),
+            host_ev: FsEval::new(host_lib, &ctx.caller_limits),
+            limits: super::EffectiveLimits::from_context(ctx),
+            caller_limits: &ctx.caller_limits,
+            standard_attrs,
+            standard_attr_names,
+            standard_amounts,
+        }
+    }
+
+    /// The standard capability tables, in the form
+    /// [`validate_host_requirements_fs`] takes them.
+    fn hr_standards(&self) -> HostRequirementsStandards<'_> {
+        HostRequirementsStandards {
+            amounts: self.standard_amounts,
+            attribute_names: &self.standard_attr_names,
+            attributes: self.standard_attrs,
+            env_params: self.ctx.profile.has_extension(ModelExtension::EnvParams),
+        }
+    }
+}
+
 /// Pass-8 checks of one `hostRequirements` object (§3.3) at `hr_path`,
 /// against `hr_symtab`, the scope its format strings resolve in: a Step's
 /// (template scope, `Job.*` and `Step.Name` with `EXPR`, and the Step's
-/// `let`), or an Environment's (`ENV_PARAMS` §7.3.2).
+/// `let`), a Service's under RFC 0009 (the job-creation scope of the
+/// Service: never `Session.*`, `Task.*`, or `Service.*`, Template Schemas
+/// §9: host requirements are resolved when the scheduler chooses a host,
+/// before any Service endpoint is known), or an Environment's (`ENV_PARAMS`
+/// §7.3.2).
 fn validate_host_requirements_fs(
     hr: &HostRequirements,
     hr_symtab: &SymbolTable,
@@ -2616,24 +2856,26 @@ pub fn validate_format_strings(
         .to_expr_profile(openjd_expr::HostContext::Unresolved);
     let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
     let host_lib = openjd_expr::FunctionLibrary::for_profile(&host_profile);
+    let p8 = Pass8::new(
+        ctx,
+        &template_profile,
+        &host_profile,
+        &template_lib,
+        &host_lib,
+    );
     let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
     let host_ev = FsEval::new(&host_lib, &ctx.caller_limits);
     let limits = super::EffectiveLimits::from_context(ctx);
-    // Standard attribute capability table for resolved-value checks
-    // (§3.3.2.2). Only errs for an unsupported revision, which cannot
-    // reach v2023-09 validation.
-    let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
-        crate::capabilities::standard_attribute_capabilities(
-            ctx.profile.revision(),
-            ctx.profile.extensions(),
-        )
-        .unwrap_or(&[]);
-    let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
-    let standard_amounts: &[&str] = crate::capabilities::standard_amount_capability_names(
-        ctx.profile.revision(),
-        ctx.profile.extensions(),
-    )
-    .unwrap_or(&[]);
+    // RFC 0009: Services are walked only when the extension is declared;
+    // without it pass 12 rejects the lists outright and nothing inside them
+    // is examined.
+    let service_active = p8.service_active;
+    let services: &[Service] = if service_active { jt.services() } else { &[] };
+    let requirements: &[ServiceRequirement] = if service_active {
+        jt.external_services()
+    } else {
+        &[]
+    };
 
     // ── Job name: template scope (Param/RawParam only) ──
     let template_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
@@ -2662,8 +2904,12 @@ pub fn validate_format_strings(
                     .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                     .expect("symtab");
                 if let Some(bindings) = &step.let_bindings {
+                    // The step-level `let` is validated (and its errors
+                    // reported) once, with the task scope below; here it is
+                    // only evaluated into the hostRequirements table.
                     let let_path = path_field(&step_path, "let");
                     let mut hr_let_names = HashSet::new();
+                    let mut discarded = ValidationErrors::default();
                     validate_let_bindings(
                         bindings,
                         &let_path,
@@ -2672,7 +2918,7 @@ pub fn validate_format_strings(
                         &mut hr_symtab,
                         &template_ev,
                         &template_profile,
-                        errors,
+                        &mut discarded,
                     );
                 }
             }
@@ -2682,12 +2928,7 @@ pub fn validate_format_strings(
                 &hr_symtab,
                 &template_ev,
                 &hr_path,
-                &HostRequirementsStandards {
-                    amounts: standard_amounts,
-                    attribute_names: &standard_attr_names,
-                    attributes: standard_attrs,
-                    env_params: env_params_active,
-                },
+                &p8.hr_standards(),
                 errors,
             );
         }
@@ -2729,12 +2970,7 @@ pub fn validate_format_strings(
                     &hr_symtab,
                     &template_ev,
                     &path_field(&path_index(&envs_path, i), "hostRequirements"),
-                    &HostRequirementsStandards {
-                        amounts: standard_amounts,
-                        attribute_names: &standard_attr_names,
-                        attributes: standard_attrs,
-                        env_params: true,
-                    },
+                    &p8.hr_standards(),
                     errors,
                 );
             }
@@ -2747,12 +2983,20 @@ pub fn validate_format_strings(
                     errors,
                 );
             }
+            // RFC 0009 §9 scope item 4: a job environment sees the inline
+            // and required Services it lists in its own `dependencies`, the
+            // same rule as for a Step or a Service; listing an inline
+            // Service puts every Step in that Service's scope (§9.1 rule
+            // 3). A reference to a Service it does not list is an undefined
+            // variable, which `service_diagnostics` names the fix for.
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
                 false,
                 expr_active,
                 env_names_active,
+                listed_services(env.dependencies.as_deref(), services),
+                listed_requirements(env.dependencies.as_deref(), requirements),
             );
             // Env script let bindings: validate and evaluate into the symtab
             // if EXPR, reject if not.
@@ -2788,6 +3032,34 @@ pub fn validate_format_strings(
                 limits.max_env_var_value_len,
                 ctx.caller_limits.max_resolved_arg_len,
                 ctx.caller_limits.max_resolved_data_len,
+                errors,
+            );
+        }
+    }
+
+    // ── Services (RFC 0009): job scope; each may reference the inline and
+    // required Services it lists in its `dependencies` (§9 scope item 2,
+    // §9.8 item 2; the dependency graph's acyclicity is pass 12's concern) ──
+    if service_active {
+        let list_path = path_field(&[], "services");
+        // `<Service>.let` may read `Job.EnvNames` with ENV_PARAMS (RFC 0009
+        // `<Service>` item 3), as a Step's `let` may.
+        let mut base = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        if expr_active {
+            add_job_symbols(&mut base, env_names_active);
+        }
+        for (k, svc) in services.iter().enumerate() {
+            validate_service_format_strings(
+                svc,
+                jt.parameter_definitions.as_deref(),
+                &base,
+                &HashSet::new(),
+                listed_services(svc.dependencies.as_deref(), services),
+                listed_requirements(svc.dependencies.as_deref(), requirements),
+                env_params_active.then_some(&job_env_types),
+                &|j| known.service_entry(k, j),
+                &path_index(&list_path, k),
+                &p8,
                 errors,
             );
         }
@@ -2983,7 +3255,8 @@ pub fn validate_format_strings(
             }
         }
 
-        let mut task_symtab = build_task_scope_symtab(jt, step, expr_active, env_names_active);
+        let mut task_symtab =
+            build_task_scope_symtab(jt, step, expr_active, env_names_active, service_active);
 
         // Template-scope symtab for the step's job-creation-stage fields:
         // Param.* (non-PATH), RawParam.*, and with EXPR Job.Name, Step.Name,
@@ -3035,9 +3308,8 @@ pub fn validate_format_strings(
         if env_params_active {
             validate_env_entry_values(
                 &job_env_types,
-                step,
-                i,
-                known,
+                step.dependencies.as_deref(),
+                |j| known.entry(i, j),
                 &step_template_symtab,
                 &template_ev,
                 ctx,
@@ -3046,7 +3318,7 @@ pub fn validate_format_strings(
             );
             // `enableIf` has the same scope (§7.3.2).
             validate_enable_if(
-                step,
+                step.dependencies.as_deref(),
                 &step_template_symtab,
                 &template_ev,
                 &template_profile,
@@ -3127,12 +3399,18 @@ pub fn validate_format_strings(
                         errors,
                     );
                 }
+                // RFC 0009 §9 scope item 3: a Step Environment is entered
+                // only by Task Sessions and follows its Step's dependencies
+                // — it sees the inline and required Services the Step
+                // lists, and no other.
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,
                     true,
                     expr_active,
                     env_names_active,
+                    listed_services(step.dependencies.as_deref(), services),
+                    listed_requirements(step.dependencies.as_deref(), requirements),
                 );
                 // Copy step-level let binding values (already evaluated with inferred types)
                 if expr_active {
@@ -3240,13 +3518,61 @@ pub fn validate_format_strings_environment_template(
     let host_lib = openjd_expr::FunctionLibrary::for_profile(&host_profile);
     let template_profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
     let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
+    let p8 = Pass8::new(
+        ctx,
+        &template_profile,
+        &host_profile,
+        &template_lib,
+        &host_lib,
+    );
     let host_ev = FsEval::new(&host_lib, &ctx.caller_limits);
     let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
 
-    let env = &et.environment;
-    let env_path = vec![PathElement::Field("environment".into())];
     // `Job.EnvNames` (§7.3.1) needs ENV_PARAMS, which requires EXPR.
     let env_names_active = ctx.profile.has_extension(ModelExtension::EnvParams);
+    // Job-creation-scope symtab for `timeout`/`notifyPeriodInSeconds`, and
+    // the base scope of the document's Services (RFC 0009): an environment
+    // template's Services are Job-scoped, so `Job.Name` is in scope and
+    // `Step.Name` is not.
+    let mut env_template_symtab = build_template_scope_symtab(et.parameter_definitions.as_deref());
+    if expr_active {
+        add_job_symbols(&mut env_template_symtab, env_names_active);
+    }
+
+    // ── Services (RFC 0009 §1.2.2): each sees the Services of the document
+    // it lists in its `dependencies`; the dependency graph's acyclicity is
+    // pass 12's concern ──
+    let services: &[Service] = if p8.service_active {
+        et.services.as_deref().unwrap_or(&[])
+    } else {
+        &[]
+    };
+    let list_path = path_field(&[], "services");
+    for (k, svc) in services.iter().enumerate() {
+        validate_service_format_strings(
+            svc,
+            et.parameter_definitions.as_deref(),
+            &env_template_symtab,
+            &HashSet::new(),
+            listed_services(svc.dependencies.as_deref(), services),
+            std::iter::empty(),
+            None,
+            // An Environment Template's Service has no Job Environments to
+            // type its entries against.
+            &|_| None,
+            &path_index(&list_path, k),
+            &p8,
+            errors,
+        );
+    }
+
+    // A services-only Environment Template (RFC 0009) has no environment
+    // body to walk.
+    let Some(env) = &et.environment else {
+        return;
+    };
+
+    let env_path = vec![PathElement::Field("environment".into())];
     // §7.3.2: the Environment's `enableIf` has exactly the
     // `hostRequirements` scope.
     if env_names_active {
@@ -3259,18 +3585,7 @@ pub fn validate_format_strings_environment_template(
             errors,
         );
     }
-    if let Some(hr) = env
-        .host_requirements
-        .as_ref()
-        .filter(|_| ctx.profile.has_extension(ModelExtension::EnvParams))
-    {
-        let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
-            crate::capabilities::standard_attribute_capabilities(
-                ctx.profile.revision(),
-                ctx.profile.extensions(),
-            )
-            .unwrap_or(&[]);
-        let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
+    if let Some(hr) = env.host_requirements.as_ref().filter(|_| env_names_active) {
         let hr_symtab =
             build_env_host_requirements_symtab(et.parameter_definitions.as_deref(), env);
         validate_host_requirements_fs(
@@ -3278,20 +3593,11 @@ pub fn validate_format_strings_environment_template(
             &hr_symtab,
             &template_ev,
             &path_field(&env_path, "hostRequirements"),
-            &HostRequirementsStandards {
-                amounts: crate::capabilities::standard_amount_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                )
-                .unwrap_or(&[]),
-                attribute_names: &standard_attr_names,
-                attributes: standard_attrs,
-                env_params: true,
-            },
+            &p8.hr_standards(),
             errors,
         );
     }
-    if ctx.profile.has_extension(ModelExtension::EnvParams) {
+    if env_names_active {
         validate_env_param_defaults(
             env,
             &build_env_param_default_symtab(et.parameter_definitions.as_deref()),
@@ -3300,18 +3606,17 @@ pub fn validate_format_strings_environment_template(
             errors,
         );
     }
+    // The environment may reference the Services of the document it lists
+    // in its `dependencies` (§1.2.2, §9 scope item 5).
     let mut env_symtab = build_session_scope_symtab(
         et.parameter_definitions.as_deref(),
         env,
         false,
         expr_active,
         env_names_active,
+        listed_services(env.dependencies.as_deref(), services),
+        std::iter::empty(),
     );
-    // Job-creation-scope symtab for `timeout`/`notifyPeriodInSeconds`.
-    let mut env_template_symtab = build_template_scope_symtab(et.parameter_definitions.as_deref());
-    if expr_active {
-        add_job_symbols(&mut env_template_symtab, env_names_active);
-    }
 
     // Env script let bindings: validate and evaluate into the symtab if EXPR,
     // reject if not. Same treatment as environments in a job template.
@@ -3354,6 +3659,424 @@ pub fn validate_format_strings_environment_template(
     if expr_active {
         validate_single_env_comprehensions(env, errors);
     }
+}
+
+/// §9.3 `<ServicePort>.port` (`<posintstring>`, RFC 0009): the resolved
+/// value must be a TCP port number; whole-field `null` means "runtime
+/// allocates".
+const SERVICE_PORT_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 1,
+    min_msg: "must be between 1 and 65535.",
+    max: Some((65535, "must be between 1 and 65535.")),
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// §9.3 `readinessIntervalSeconds` / `readinessTimeoutSeconds` /
+/// `healthIntervalSeconds` / `failureThreshold` (`<posintstring>`):
+/// positive; whole-field `null` means the §9.3 default applies (for a
+/// `STDOUT` check's `healthIntervalSeconds`, no heartbeat).
+const SERVICE_SECONDS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 1,
+    min_msg: "must be > 0.",
+    max: None,
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// §9.4 `maxRestarts` (`<intstring>`): non-negative; whole-field `null`
+/// means the default of 0.
+const SERVICE_MAX_RESTARTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 0,
+    min_msg: "must be >= 0.",
+    max: None,
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// Pass 8 for one `<Service>` (RFC 0009, Template Schemas §9) at `path`
+/// (`services[k]` of either template kind).
+///
+/// Two scopes, following the `@fmtstring` stage annotations:
+///
+/// - **Job-creation scope** — `base_template_symtab` (the document's
+///   template-scope table: `Param.*` without PATH, `RawParam.*`, `Job.Name`)
+///   plus the `<Service>.let` bindings. Used for `<Service>.let` itself,
+///   `hostRequirements`, the numeric `@fmtstring` fields (`port`, the
+///   health-check seconds and threshold, `maxRestarts`; target `int?`) and
+///   every action's `timeout` / cancelation fields. Never `Session.*`,
+///   `Service.*`, `Step.*`, or `Task.*` (§9 item 3).
+/// - **Service-execution scope** — the above plus PATH `Param.*`,
+///   `Session.*`, this Service's `Service.File.*`, its own
+///   `Service.<name>.<port>.*` (including `bindAddress`), the `port` /
+///   `connectAddress` of every other Service in `in_scope` (the Services
+///   of the document this Service lists in its `dependencies`, §9 scope
+///   item 2) and of every `requirements` entry's declared ports (the
+///   `externalServices` entries it lists, §9.8 item 2), and the
+///   `<ServiceScript>.let` bindings. Used for `variables`, every action's
+///   `command` / `args`, and embedded-file `data`. `Task.*` and `Step.*` are
+///   never in scope within a Service.
+///
+/// `enclosing_let_names` are names neither `let` may shadow (none today; a
+/// Service belongs to no Step).
+#[allow(clippy::too_many_arguments)]
+fn validate_service_format_strings<'a>(
+    svc: &Service,
+    params: Option<&[JobParameterDefinition]>,
+    base_template_symtab: &SymbolTable,
+    enclosing_let_names: &HashSet<String>,
+    in_scope: impl Iterator<Item = &'a Service> + Clone,
+    requirements: impl IntoIterator<Item = &'a ServiceRequirement>,
+    job_env_types: Option<&JobEnvParamTypes<'_>>,
+    known_entry: &dyn Fn(usize) -> Option<bool>,
+    path: &[PathElement],
+    p8: &Pass8<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let expr_active = p8.expr_active;
+    let template_ev = &p8.template_ev;
+    let host_ev = &p8.host_ev;
+
+    // ── Job-creation scope: <Service>.let ──
+    let mut template_symtab = base_template_symtab.clone();
+    let mut service_let_names = HashSet::new();
+    if let Some(bindings) = &svc.let_bindings {
+        let let_path = path_field(path, "let");
+        if !expr_active {
+            errors.add(&let_path, "'let' requires the EXPR extension.");
+        } else {
+            validate_let_bindings(
+                bindings,
+                &let_path,
+                enclosing_let_names,
+                &mut service_let_names,
+                &mut template_symtab,
+                template_ev,
+                p8.template_profile,
+                errors,
+            );
+        }
+    }
+
+    // `environment:` entry values and `enableIf` (RFC 0009 `<Service>` item
+    // 4), for a Job Template's Service: resolved at job creation in the
+    // Service's template scope — `RawParam.*`, non-PATH `Param.*`,
+    // `Job.Name`, `Job.EnvNames`, and its `let` names; not `Step.Name`,
+    // since a Service belongs to no Step — which is exactly
+    // `template_symtab`.
+    if let Some(job_env_types) = job_env_types {
+        validate_env_entry_values(
+            job_env_types,
+            svc.dependencies.as_deref(),
+            known_entry,
+            &template_symtab,
+            template_ev,
+            p8.ctx,
+            path,
+            errors,
+        );
+        validate_enable_if(
+            svc.dependencies.as_deref(),
+            &template_symtab,
+            template_ev,
+            p8.template_profile,
+            path,
+            errors,
+        );
+    }
+
+    if let Some(hr) = &svc.host_requirements {
+        validate_host_requirements_fs(
+            hr,
+            &template_symtab,
+            &p8.template_ev,
+            &path_field(path, "hostRequirements"),
+            &p8.hr_standards(),
+            errors,
+        );
+    }
+
+    // Numeric @fmtstring fields (§9.5.1): job-creation scope, `int?`.
+    let ports_path = path_field(path, "ports");
+    for (i, port) in svc.ports.iter().enumerate() {
+        if let Some(number) = &port.port {
+            validate_fs_with(
+                number,
+                &template_symtab,
+                template_ev,
+                &path_field(&path_index(&ports_path, i), "port"),
+                Some(&SERVICE_PORT_CONSTRAINT),
+                errors,
+            );
+        }
+    }
+    if let Some(declared) = &svc.health_check {
+        let hc_path = path_field(path, "healthCheck");
+        for (name, value) in declared.numeric_fields() {
+            if let Some(value) = value {
+                validate_fs_with(
+                    value,
+                    &template_symtab,
+                    template_ev,
+                    &path_field(&hc_path, name),
+                    Some(&SERVICE_SECONDS_CONSTRAINT),
+                    errors,
+                );
+            }
+        }
+    }
+    if let Some(attempts) = svc
+        .restart_policy
+        .as_ref()
+        .and_then(|p| p.max_restarts.as_ref())
+    {
+        validate_fs_with(
+            attempts,
+            &template_symtab,
+            template_ev,
+            &path_field(&path_field(path, "restartPolicy"), "maxRestarts"),
+            Some(&SERVICE_MAX_RESTARTS_CONSTRAINT),
+            errors,
+        );
+    }
+
+    // ── Service-execution scope ──
+    let mut session_symtab = build_param_symtab(params);
+    for (name, ty) in [
+        ("Session.WorkingDirectory", ExprType::PATH),
+        ("Session.HasPathMappingRules", ExprType::BOOL),
+        ("Session.PathMappingRulesFile", ExprType::PATH),
+    ] {
+        session_symtab
+            .set(name, ExprValue::unresolved(ty))
+            .expect("symtab");
+    }
+    // Job.Name, Step.Name, step-level and service-level let values: every
+    // job-creation-stage symbol is also known at service execution.
+    for key in template_symtab.keys() {
+        if key == "Param" || key == "RawParam" {
+            continue;
+        }
+        match template_symtab.get(key) {
+            Some(openjd_expr::symbol_table::SymbolTableEntry::Value(v)) => {
+                session_symtab.set(key, v.clone()).expect("symtab");
+            }
+            Some(openjd_expr::symbol_table::SymbolTableEntry::Table(t)) => {
+                session_symtab.set_table(key, t.clone());
+            }
+            None => {}
+        }
+    }
+    add_unresolved_service_file_symbols(&mut session_symtab, svc).expect("symtab");
+    add_unresolved_service_symbols(&mut session_symtab, in_scope, Some(svc)).expect("symtab");
+    add_unresolved_requirement_symbols(&mut session_symtab, requirements).expect("symtab");
+
+    let script_path = path_field(path, "script");
+    let mut script_let_names = HashSet::new();
+    if let Some(bindings) = &svc.script.let_bindings {
+        let let_path = path_field(&script_path, "let");
+        if !expr_active {
+            errors.add(&let_path, "'let' requires the EXPR extension.");
+        } else {
+            let enclosing: HashSet<String> = enclosing_let_names
+                .union(&service_let_names)
+                .cloned()
+                .collect();
+            validate_let_bindings(
+                bindings,
+                &let_path,
+                &enclosing,
+                &mut script_let_names,
+                &mut session_symtab,
+                host_ev,
+                p8.host_profile,
+                errors,
+            );
+        }
+    }
+
+    if let Some(vars) = &svc.variables {
+        let vars_path = path_field(path, "variables");
+        for (name, value) in vars {
+            let var_path = path_field(&vars_path, name);
+            if !expr_active && value.has_complex_expressions() {
+                errors.add(&var_path, "complex expressions require the EXPR extension.");
+            }
+            // §4.4.2 applies through §9 item 9 (same schema as
+            // `<Environment>.variables`).
+            validate_fs_with(
+                value,
+                &session_symtab,
+                host_ev,
+                &var_path,
+                Some(&ResolvedConstraint::Text {
+                    max_len: p8.limits.max_env_var_value_len,
+                    forbid_control_chars: false,
+                    forbid_empty: false,
+                }),
+                errors,
+            );
+        }
+    }
+
+    let actions_path = path_field(&script_path, "actions");
+    for (name, action) in svc.script.actions.iter_named() {
+        let action_path = path_field(&actions_path, name);
+        if !expr_active {
+            if action.command.has_complex_expressions() {
+                errors.add(
+                    &path_field(&action_path, "command"),
+                    "complex expressions require the EXPR extension.",
+                );
+            }
+            for (j, arg) in action.args.iter().flatten().enumerate() {
+                if arg.has_complex_expressions() {
+                    errors.add(
+                        &path_index(&path_field(&action_path, "args"), j),
+                        "complex expressions require the EXPR extension.",
+                    );
+                }
+            }
+        }
+        validate_action_fs(
+            action,
+            &session_symtab,
+            host_ev,
+            &action_path,
+            p8.caller_limits.max_resolved_arg_len,
+            errors,
+        );
+        // `timeout` and the cancelation fields are plain @fmtstring:
+        // resolved at job creation in the <Service>.let scope.
+        validate_action_timing_fs(action, &template_symtab, template_ev, &action_path, errors);
+    }
+
+    if let Some(files) = &svc.script.embedded_files {
+        let files_path = path_field(&script_path, "embeddedFiles");
+        let data_constraint = p8
+            .caller_limits
+            .max_resolved_data_len
+            .map(|max_len| ResolvedConstraint::ResolvedString { max_len });
+        for (j, f) in files.iter().enumerate() {
+            if let Some(data) = &f.data {
+                let data_path = path_field(&path_index(&files_path, j), "data");
+                if !expr_active && data.has_complex_expressions() {
+                    errors.add(
+                        &data_path,
+                        "complex expressions require the EXPR extension.",
+                    );
+                }
+                validate_fs_with(
+                    data,
+                    &session_symtab,
+                    host_ev,
+                    &data_path,
+                    data_constraint.as_ref(),
+                    errors,
+                );
+            }
+            // `filename` is a plain string per the 2023-09 schema.
+        }
+    }
+
+    // Comprehension loop variables may not shadow any `let` name in scope.
+    if expr_active {
+        let all_let_names: HashSet<String> = enclosing_let_names
+            .iter()
+            .chain(&service_let_names)
+            .chain(&script_let_names)
+            .cloned()
+            .collect();
+        if !all_let_names.is_empty() {
+            for (name, action) in svc.script.actions.iter_named() {
+                let action_path = path_field(&actions_path, name);
+                if let Err(e) = action.command.validate_comprehension_vars(&all_let_names) {
+                    errors.add(&path_field(&action_path, "command"), e.to_string());
+                }
+                for (j, arg) in action.args.iter().flatten().enumerate() {
+                    if let Err(e) = arg.validate_comprehension_vars(&all_let_names) {
+                        errors.add(
+                            &path_index(&path_field(&action_path, "args"), j),
+                            e.to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Job-creation resolved-value checks for a Service (RFC 0009): each
+/// `variables` value against §4.4.2's `max_env_var_value_len`, every
+/// action's `command`/`args` against `CallerLimits::max_resolved_arg_len`,
+/// every action's `timeout` / `cancelation` against the spec-mandated
+/// `Int`/`CancelationMode` constraints, and each embedded file's `data`
+/// against `CallerLimits::max_resolved_data_len` — the Service counterpart
+/// of [`check_carried_forward_environment`], in pass 8's order.
+///
+/// `symtab` is the service-execution check table: concrete `Param.*` /
+/// `RawParam.*` / `Job.Name` / service-level `let` values, with `Unresolved`
+/// placeholders for `Session.*`, PATH `Param.*`, `Service.File.*`, and the
+/// in-scope `Service.<name>.<port>.*` endpoints, and the `<ServiceScript>.let`
+/// bindings evaluated in. `template_symtab` is the Service's job-creation
+/// table (`Param.*` without PATH, `RawParam.*`, `Job.Name`, the
+/// `<Service>.let` values) the timing fields resolve against, as at pass 8.
+pub(crate) fn check_carried_forward_service(
+    svc: &Service,
+    symtab: &SymbolTable,
+    template_symtab: &SymbolTable,
+    ctx: &ValidationContext,
+    max_env_var_value_len: usize,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let host_profile = ctx
+        .profile
+        .to_expr_profile(openjd_expr::HostContext::Unresolved);
+    let host_lib = FunctionLibrary::for_profile(&host_profile);
+    let ev = FsEval::new(&host_lib, &ctx.caller_limits);
+    if let Some(vars) = &svc.variables {
+        let vars_path = path_field(path, "variables");
+        for (name, value) in vars {
+            validate_fs_with(
+                value,
+                symtab,
+                &ev,
+                &path_field(&vars_path, name),
+                Some(&ResolvedConstraint::Text {
+                    max_len: max_env_var_value_len,
+                    forbid_control_chars: false,
+                    forbid_empty: false,
+                }),
+                errors,
+            );
+        }
+    }
+    let script_path = path_field(path, "script");
+    let actions_path = path_field(&script_path, "actions");
+    let template_profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
+    let template_lib = FunctionLibrary::for_profile(&template_profile);
+    let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
+    for (name, action) in svc.script.actions.iter_named() {
+        let action_path = path_field(&actions_path, name);
+        validate_action_fs(
+            action,
+            symtab,
+            &ev,
+            &action_path,
+            ctx.caller_limits.max_resolved_arg_len,
+            errors,
+        );
+        validate_action_timing_fs(action, template_symtab, &template_ev, &action_path, errors);
+    }
+    check_embedded_files_data(
+        svc.script.embedded_files.as_deref(),
+        symtab,
+        &ev,
+        ctx.caller_limits.max_resolved_data_len,
+        &script_path,
+        errors,
+    );
 }
 
 /// Validate format strings within an environment (variables + script actions).
@@ -3443,10 +4166,12 @@ fn validate_env_format_strings(
                 errors,
             );
         }
-        // RFC 0008: all three wrap hooks see `WrappedAction.*`. `onWrapEnvEnter`
+        // RFC 0008: every wrap hook sees `WrappedAction.*`. `onWrapEnvEnter`
         // and `onWrapEnvExit` additionally see `WrappedEnv.Name`; `onWrapTaskRun`
-        // additionally sees `WrappedStep.Name`. Referencing these outside the
-        // permitted hook surfaces as a normal "Undefined variable" error.
+        // additionally sees `WrappedStep.Name`; the four RFC 0009
+        // `onWrapService*` hooks additionally see `WrappedService.*`.
+        // Referencing these outside the permitted hook surfaces as a normal
+        // "Undefined variable" error.
         for (hook_name, action_opt, extra) in script.actions.wrap_hooks() {
             if let Some(action) = action_opt {
                 let mut st = symtab.clone();
@@ -3454,6 +4179,7 @@ fn validate_env_format_strings(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
                 }
                 validate_action_fs(
                     action,
@@ -3565,6 +4291,15 @@ fn add_wrapped_step_name_scope(symtab: &mut SymbolTable) {
     symtab
         .set("WrappedStep.Name", ExprValue::unresolved(ExprType::STRING))
         .expect("symtab");
+}
+
+/// Augment with `WrappedService.*` — `Name` (string), `PortNames`
+/// (list[string]), `Ports` (list[int]), `BindAddresses` (list[string]),
+/// `Protocols` (list[string]) —
+/// available only in the four `onWrapService*` hooks (RFC 0009, Template
+/// Schemas §4.3.1).
+fn add_wrapped_service_scope(symtab: &mut SymbolTable) {
+    add_unresolved_wrapped_service_symbols(symtab).expect("symtab");
 }
 
 fn validate_env_comprehensions(envs: &Option<Vec<Environment>>, errors: &mut ValidationErrors) {

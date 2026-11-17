@@ -1,0 +1,56 @@
+# RFC 0009 Service scope rule 2 through an entering edge: Front's Sessions
+# enter the ON_REQUEST Job Environment E, which lists Back, so Front depends
+# on Back and Back's scope holds Front's. Only Step A lists Front, and no Step
+# requests E, so both scopes are Step A; Step B runs with neither Service.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, ENV_PARAMS, EXPR]
+name: "ScopeThroughEnteredEnvironment"
+jobEnvironments:
+  - name: E
+    activation: ON_REQUEST
+    dependencies:
+      - service: Back
+    variables:
+      BACK_PORT: "{{ Service.Back.main.port }}"
+services:
+  - name: Front
+    dependencies:
+      - environment: E
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time; print('FRONT_SEES_BACK_PORT', os.environ.get('BACK_PORT', 'UNSET').isdigit(), flush=True); print('openjd_service_ready: front up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+  - name: Back
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: back up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+steps:
+  - name: A
+    dependencies:
+      - service: Front
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_A_RAN', flush=True)"]
+  - name: B
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_B_RAN', flush=True)"]
