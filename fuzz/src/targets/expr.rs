@@ -233,16 +233,6 @@ pub(crate) fn is_non_iterable_error(e: &ExpressionError) -> bool {
         if message.starts_with("Cannot iterate over "))
 }
 
-/// Whether `src` can touch a PATH value: a PATH symbol it names, or a path
-/// function (`expr-static-fold-host-path-format` needs one).
-fn involves_paths(src: &str, env: &Env) -> bool {
-    src.contains("path")
-        || env
-            .symbols
-            .iter()
-            .any(|s| s.ty.to_string().contains("path") && src.contains(s.name.as_str()))
-}
-
 /// Whether `e` is (or contains, through compound sub-errors) a name that
 /// resolves nowhere: an undefined symbol, an unknown function, or a method
 /// or property no type has. Never value-dependent, so speculative evaluation
@@ -849,18 +839,15 @@ pub fn check_expression(
     let runtime = runtime_library(&env.rules);
     let validation = validation_library();
 
-    // Static pass, as template validation runs it (in the host's path
-    // format; the other format only for expr-static-fold-host-path-format).
-    let static_pass = |fmt: PathFormat| {
-        let tabs = [&env.unresolved];
-        parsed
-            .with_library(&validation)
-            .with_memory_limit(MEMORY_LIMIT)
-            .with_operation_limit(OP_LIMIT)
-            .with_path_format(fmt)
-            .evaluate(&tabs)
-    };
-    let static_result = static_pass(PathFormat::host());
+    // Static pass, as template validation runs it. The validation library
+    // leaves literal paths unresolved (the worker's path format isn't
+    // known), so the result doesn't depend on the format it runs in.
+    let static_result = parsed
+        .with_library(&validation)
+        .with_memory_limit(MEMORY_LIMIT)
+        .with_operation_limit(OP_LIMIT)
+        .with_path_format(PathFormat::host())
+        .evaluate(&[&env.unresolved]);
 
     for fmt in [PathFormat::Posix, PathFormat::Windows] {
         let table = env.concrete_in(fmt);
@@ -930,19 +917,6 @@ pub fn check_expression(
                     if !range_slice && ((facts.union && facts.generated) || empty_branch) {
                         explained.push("expr-union-arg-overload");
                     }
-                    // The static pass folds path operations in the host's
-                    // format; in the other format a folded condition can go
-                    // the other way. Only when the fold is the cause: the
-                    // static pass run in this run's format gives a type the
-                    // value fits. (Not "the host-format run fits": the
-                    // branch the host fold kept can fail at run time, with
-                    // an operation limit, say, and give no value to check.)
-                    if fmt != PathFormat::host()
-                        && involves_paths(src, env)
-                        && static_pass(fmt).is_ok_and(|fv| fits(cv, &static_type(&fv)))
-                    {
-                        explained.push("expr-static-fold-host-path-format");
-                    }
                 }
                 if !explained.is_empty() {
                     for id in explained {
@@ -958,7 +932,10 @@ pub fn check_expression(
                         "{src:?}: static type {st} but run-time value {cv:?} has type {ct}"
                     );
                 }
-                if !sv.is_unresolved() && fmt == PathFormat::host() {
+                // A static fold holds for a worker in either format: the
+                // validation library leaves every format-dependent value
+                // (a literal path) unresolved.
+                if !sv.is_unresolved() {
                     oracle!(
                         sv.equals(cv),
                         "{src:?}: statically folded to {sv:?} but evaluates to {cv:?}"

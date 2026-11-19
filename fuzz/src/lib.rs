@@ -90,14 +90,6 @@ pub mod known {
              openjd-for-js, which uses `{:?}`) does not use the spec spelling.",
         ),
         (
-            "expr-static-fold-host-path-format",
-            "Template validation folds path operations on literals in the validating host's \
-             path format, so a format-dependent condition (`is_absolute(path('../a') / \
-             path('C:\\\\'))`) is folded for the submitting machine, not the worker: an \
-             expression typed `list[nulltype]` (always empty) on Linux yields a non-empty list \
-             on a Windows worker.",
-        ),
-        (
             "expr-conditional-list-element-join",
             "A list element whose type depends on a conditional is typed with the numeric \
              join of its branches, dropping the others: `[1 if c else (2.5 if d else 'a') for x \
