@@ -570,11 +570,16 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   three. Defining a partial set is an error.
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
   wrap hooks. A session's environment stack is the job's `jobEnvironments` plus exactly
-  one step's `stepEnvironments`, so this is enforced per step: for every step, the count
-  of wrap-defining envs in `jobEnvironments` plus that step's `stepEnvironments` must be
-  ≤ 1. Multiple wrap envs in `jobEnvironments` alone are reported once at the
-  `jobEnvironments` path (reachable from every session); a step that adds its own wrap env
-  on top is reported at that step's `stepEnvironments` path.
+  one step's `stepEnvironments`, so this is enforced per step: a step's layers are the
+  `jobEnvironments` and its own `stepEnvironments` that define a wrap hook, and two or more
+  is an error at `steps[i]`, naming them in the order a session enters them, with
+  `(stepEnvironments)` after a step environment's name: `its Sessions would enter 2
+  Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit):
+  'A', 'B'. A Session may have at most one Environment defining wrap hooks (RFC 0008).`
+  Steps with the same layers get one error between them, at the first, which names them
+  (`the Sessions of Steps 'S1', 'S2', 'S3' would enter ...`); the names are capped as
+  `helpers::capped_name_list` caps them (at most 50 names and 512 characters, then
+  `and N more`).
 
 The single-layer rule runs only in the job-template path. An environment template defines
 one environment, so the rule is trivially satisfied for an isolated env template; if

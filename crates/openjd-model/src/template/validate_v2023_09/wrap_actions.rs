@@ -16,12 +16,14 @@
 //! - **All-or-nothing.** An environment that defines any of the three
 //!   wrap hooks must define all three.
 //! - **Single-layer.** At most one environment in the session stack
-//!   (job environments + each step's step environments) may define any
-//!   wrap hook.
+//!   (the job environments and each step's step environments) may define
+//!   any wrap hook. It is reported with [`report_wrap_layers`], once for
+//!   Steps with the same layers.
 //! - **EXPR prerequisite.** A template that lists `WRAP_ACTIONS` in
 //!   `extensions:` must also list `EXPR`.
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::job::create_job::{steps_phrase, ByValues};
 use crate::template::actions::EnvironmentActions;
 use crate::template::{Environment, EnvironmentTemplate, JobTemplate};
 use crate::types::{ModelExtension, ValidationContext};
@@ -64,21 +66,12 @@ fn check_environment_actions(
     }
 }
 
-/// Walk one environment for WRAP_ACTIONS gating and return whether it
-/// defined any wrap hook (used for the single-layer check upstream).
-fn check_env(
-    env: &Environment,
-    path: &[PathElement],
-    active: bool,
-    errors: &mut ValidationErrors,
-) -> bool {
-    let Some(script) = &env.script else {
-        return false;
-    };
-    let script_path = path_field(path, "script");
-    let actions_path = path_field(&script_path, "actions");
-    check_environment_actions(&script.actions, &actions_path, active, errors);
-    script.actions.has_any_wrap_hook()
+/// Walk one environment for WRAP_ACTIONS gating.
+fn check_env(env: &Environment, path: &[PathElement], active: bool, errors: &mut ValidationErrors) {
+    if let Some(script) = &env.script {
+        let actions_path = path_field(&path_field(path, "script"), "actions");
+        check_environment_actions(&script.actions, &actions_path, active, errors);
+    }
 }
 
 /// Enforce the EXPR prerequisite: when `WRAP_ACTIONS` is listed in a
@@ -109,68 +102,77 @@ pub fn validate_wrap_actions_job_template(
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
     check_expr_prerequisite(ctx, errors);
 
-    // Single-wrap-layer enforcement (RFC 0008).
-    //
-    // The session model is: a session's environment stack is the job's
-    // `jobEnvironments` plus exactly ONE step's `stepEnvironments`.
-    // Different steps never share a session. So "only one wrap layer per
-    // session" reduces to: for every step, (wrap envs in jobEnvironments)
-    // + (wrap envs in that step's stepEnvironments) must be <= 1.
-    //
-    // `check_env` does double duty below: it gates the new fields on the
-    // extension and returns true iff the env defines any wrap hook, which
-    // is what we sum into the per-scope counts.
-
-    // 1. Count wrap-defining envs in jobEnvironments (shared by every session).
-    let mut job_env_wrap_count = 0usize;
-    if let Some(envs) = &jt.job_environments {
-        let envs_path = path_field(&[], "jobEnvironments");
-        for (i, env) in envs.iter().enumerate() {
-            if check_env(env, &path_index(&envs_path, i), active, errors) {
-                job_env_wrap_count += 1;
-            }
-        }
+    // Single-wrap-layer enforcement (RFC 0008). A Session enters the Job
+    // Environments and one Step's Step Environments, so each Step's layers
+    // are the Job Environments and its own Step Environments that define a
+    // wrap hook.
+    let job_envs = jt.job_environments.as_deref().unwrap_or(&[]);
+    for (k, env) in job_envs.iter().enumerate() {
+        let path = path_index(&path_field(&[], "jobEnvironments"), k);
+        check_env(env, &path, active, errors);
     }
-
-    // Job-envs-only violation: multiple wrap envs in jobEnvironments are
-    // reachable from every session, regardless of any step's
-    // stepEnvironments, so emit at the jobEnvironments path as soon as the
-    // job-env count exceeds one. This is independent of the per-step check
-    // below: a template with two job-env wrap layers AND a step that adds
-    // its own should report both the jobEnvironments and stepEnvironments
-    // violations.
-    if active && job_env_wrap_count > 1 {
-        errors.add(&path_field(&[], "jobEnvironments"), SINGLE_WRAP_LAYER_MSG);
-    }
-
-    // 2. For each step, count its stepEnvironments' wrap envs and add the
-    //    job-env total — that sum is exactly the set of wrap envs reachable
-    //    in that step's session.
+    let mut steps = Vec::new();
     for (i, step) in jt.steps.iter().enumerate() {
-        let Some(envs) = &step.step_environments else {
-            continue;
-        };
         let base = path_index(&path_field(&[], "steps"), i);
         let envs_path = path_field(&base, "stepEnvironments");
-        let mut step_env_wrap_count = 0usize;
-        for (j, env) in envs.iter().enumerate() {
-            if check_env(env, &path_index(&envs_path, j), active, errors) {
-                step_env_wrap_count += 1;
-            }
+        for (j, env) in step.step_environments.iter().flatten().enumerate() {
+            check_env(env, &path_index(&envs_path, j), active, errors);
         }
-        // Single-wrap-layer rule: a session is built from the job's
-        // jobEnvironments plus one step's stepEnvironments, so checking
-        // each step's combined total catches every reachable session.
-        // This catches two job-env wrap layers, one job-env + one step-env,
-        // and two step-env layers within the same step.
-        if active && job_env_wrap_count + step_env_wrap_count > 1 {
-            errors.add(&envs_path, SINGLE_WRAP_LAYER_MSG);
+        if !active {
+            continue;
         }
+        let mut layers: Vec<String> = job_envs
+            .iter()
+            .filter(|env| env.defines_wrap_hooks())
+            .map(|env| format!("'{}'", env.name))
+            .collect();
+        layers.extend(
+            step.step_environments
+                .iter()
+                .flatten()
+                .filter(|env| env.defines_wrap_hooks())
+                .map(|env| format!("'{}' (stepEnvironments)", env.name)),
+        );
+        steps.push((i, step.name.as_str(), layers));
     }
+    report_wrap_layers(steps, |i, message| {
+        errors.add(&path_index(&path_field(&[], "steps"), i), message);
+    });
 }
 
-const SINGLE_WRAP_LAYER_MSG: &str =
-    "only one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).";
+/// The `WRAP_ACTIONS` single-layer rule (RFC 0008) over `steps`: each
+/// Step's index, name and `layers`, which names each Environment that
+/// defines a wrap hook among those its Sessions enter, in the order they
+/// enter them (the Job Environments, then its `stepEnvironments`). Two or
+/// more is an error. Steps with the same layers get one, naming them, which
+/// goes to `report` with the index of the first.
+pub(crate) fn report_wrap_layers<'s>(
+    steps: impl IntoIterator<Item = (usize, &'s str, Vec<String>)>,
+    mut report: impl FnMut(usize, String),
+) {
+    let mut groups: ByValues<(usize, Vec<String>), &str> = ByValues::default();
+    for (index, name, layers) in steps {
+        if layers.len() > 1 {
+            groups.add(format!("{layers:?}"), name, || (index, layers));
+        }
+    }
+    for ((first, layers), names) in groups.groups() {
+        let whose = match names.as_slice() {
+            [_] => "its Sessions".to_string(),
+            _ => format!("the Sessions of {}", steps_phrase(names)),
+        };
+        report(
+            *first,
+            format!(
+                "{whose} would enter {} Environments that define wrap hooks (onWrapEnvEnter, \
+                 onWrapTaskRun, onWrapEnvExit): {}. A Session may have at most one Environment \
+                 defining wrap hooks (RFC 0008).",
+                layers.len(),
+                super::helpers::capped_name_list(layers.iter().map(String::as_str), layers.len())
+            ),
+        );
+    }
+}
 
 /// Validate RFC 0008 constraints for an environment template.
 ///
@@ -193,6 +195,94 @@ pub fn validate_wrap_actions_environment_template(
 mod tests {
     //! Integration tests in `tests/integration/test_wrap_actions.rs`
     //! exercise the full decode + validate pipeline against real templates.
-    //! No direct unit tests here: every helper is pure-data and already
-    //! covered through the integration surface.
+    use super::report_wrap_layers;
+
+    /// The errors `report_wrap_layers` gives for `steps`, each with the
+    /// index of the Step it is reported at.
+    fn reported(steps: Vec<(usize, &str, Vec<String>)>) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        report_wrap_layers(steps, |i, m| out.push((i, m)));
+        out
+    }
+
+    fn layers(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("'E{i}'")).collect()
+    }
+
+    #[test]
+    fn two_or_more_layers_are_an_error_naming_them() {
+        assert_eq!(reported(vec![(0, "A", layers(0)), (1, "B", layers(1))]), []);
+        assert_eq!(
+            reported(vec![(3, "A", layers(2))]),
+            [(
+                3,
+                "its Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, \
+                 onWrapTaskRun, onWrapEnvExit): 'E0', 'E1'. A Session may have at most one \
+                 Environment defining wrap hooks (RFC 0008)."
+                    .to_string()
+            )]
+        );
+        // The list is capped.
+        let many = reported(vec![(0, "A", layers(60))]).remove(0).1;
+        assert!(many.starts_with("its Sessions would enter 60 Environments"));
+        assert!(many.contains("and 10 more"), "{many}");
+    }
+
+    /// Steps with the same layers get one error naming them, at the first;
+    /// different layers get their own, in the order of their first Step.
+    #[test]
+    fn steps_with_the_same_layers_get_one_error() {
+        let other = vec!["'E1'".to_string(), "'E0'".to_string()];
+        let got = reported(vec![
+            (0, "A", layers(2)),
+            (1, "B", other.clone()),
+            (2, "C", layers(1)),
+            (3, "D", layers(2)),
+            (4, "E", layers(2)),
+        ]);
+        let tail = "Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, \
+                    onWrapEnvExit)";
+        assert_eq!(
+            got,
+            [
+                (
+                    0,
+                    format!(
+                        "the Sessions of Steps 'A', 'D', 'E' would enter 2 {tail}: 'E0', 'E1'. \
+                         A Session may have at most one Environment defining wrap hooks \
+                         (RFC 0008)."
+                    )
+                ),
+                (
+                    1,
+                    format!(
+                        "its Sessions would enter 2 {tail}: 'E1', 'E0'. A Session may have at \
+                         most one Environment defining wrap hooks (RFC 0008)."
+                    )
+                ),
+            ]
+        );
+        // Two Steps are named with "and"; many are capped.
+        let two = reported(vec![(0, "A", layers(2)), (1, "B", layers(2))]);
+        assert!(
+            two[0]
+                .1
+                .starts_with("the Sessions of Steps 'A' and 'B' would"),
+            "{two:?}"
+        );
+        let names: Vec<String> = (0..1000).map(|i| format!("S{i}")).collect();
+        let many = reported(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (i, n.as_str(), layers(2)))
+                .collect(),
+        );
+        assert_eq!(many.len(), 1);
+        assert!(
+            many[0].1.contains("'S49', and 950 more would enter 2"),
+            "{}",
+            many[0].1
+        );
+    }
 }

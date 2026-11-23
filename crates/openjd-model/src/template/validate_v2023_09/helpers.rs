@@ -175,3 +175,75 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
         }
     }
 }
+
+/// Most names a message's name list shows.
+const MAX_LISTED_NAMES: usize = 50;
+
+/// Most characters a message's name list takes, the first name aside.
+const MAX_LISTED_CHARS: usize = 512;
+
+/// A comma-separated list of `names` for a message: at most
+/// [`MAX_LISTED_NAMES`] names and [`MAX_LISTED_CHARS`] characters (the
+/// first name is always listed), then "and N more" for the rest of `total`,
+/// so many or long names cannot make a message arbitrarily long. Consumes
+/// `names` only as far as it lists.
+pub(crate) fn capped_name_list<'n>(names: impl Iterator<Item = &'n str>, total: usize) -> String {
+    let mut text = String::new();
+    let mut shown = 0usize;
+    for name in names {
+        if shown == MAX_LISTED_NAMES
+            || (shown > 0 && text.len() + 2 + name.len() > MAX_LISTED_CHARS)
+        {
+            break;
+        }
+        if shown > 0 {
+            text.push_str(", ");
+        }
+        text.push_str(name);
+        shown += 1;
+    }
+    if total > shown {
+        text.push_str(&format!(", and {} more", total - shown));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capped_name_list;
+
+    fn names(n: usize, len: usize) -> Vec<String> {
+        (0..n).map(|i| format!("{i:0>len$}")).collect()
+    }
+
+    #[test]
+    fn capped_name_list_stops_at_512_characters_or_50_names() {
+        // 255 + ", " + 255 = 512 characters: both fit.
+        let a = "a".repeat(255);
+        let b = "b".repeat(255);
+        assert_eq!(
+            capped_name_list([a.as_str(), b.as_str()].into_iter(), 2),
+            format!("{a}, {b}")
+        );
+        // One more character does not fit.
+        let b = "b".repeat(256);
+        assert_eq!(
+            capped_name_list([a.as_str(), b.as_str()].into_iter(), 2),
+            format!("{a}, and 1 more")
+        );
+        // The first name is listed however long it is.
+        let long = "x".repeat(600);
+        assert_eq!(
+            capped_name_list([long.as_str()].into_iter(), 3),
+            format!("{long}, and 2 more")
+        );
+        // At most 50 names.
+        let short = names(51, 2);
+        let list = capped_name_list(short.iter().map(String::as_str), 51);
+        assert_eq!(list, format!("{}, and 1 more", short[..50].join(", ")));
+        assert_eq!(
+            capped_name_list(short[..50].iter().map(String::as_str), 50),
+            short[..50].join(", ")
+        );
+    }
+}

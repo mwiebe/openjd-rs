@@ -4,12 +4,16 @@
 
 //! Host requirements at job creation (Template Schemas §3.3).
 
+use std::collections::HashMap;
+
 use openjd_expr::symbol_table::SymbolTable;
 
 use crate::error::{path_field, ModelError, PathElement, ValidationErrors};
 use crate::job;
 use crate::template;
-use crate::template::validate_v2023_09::helpers::{check_capability_name, CapabilityKind};
+use crate::template::validate_v2023_09::helpers::{
+    capped_name_list, check_capability_name, CapabilityKind,
+};
 
 use super::ranges;
 
@@ -362,4 +366,93 @@ fn check_resolved_attribute_values(
         }
     }
     errors.into_result("JobTemplate")
+}
+
+/// Values computed once per distinct key, with the members that share each,
+/// in the order they were added. The `WRAP_ACTIONS` single-layer rule
+/// groups Steps by their layer list with it.
+pub(crate) struct ByValues<T, M> {
+    by_key: HashMap<String, usize>,
+    groups: Vec<(T, Vec<M>)>,
+}
+
+impl<T, M> Default for ByValues<T, M> {
+    fn default() -> Self {
+        Self {
+            by_key: HashMap::new(),
+            groups: Vec::new(),
+        }
+    }
+}
+
+impl<T, M> ByValues<T, M> {
+    /// Add `member` to the group of `key`, computing its value with `value`
+    /// when the key is new; the group's value.
+    pub(crate) fn add(&mut self, key: String, member: M, value: impl FnOnce() -> T) -> &T {
+        let index = *self.by_key.entry(key).or_insert_with(|| {
+            self.groups.push((value(), Vec::new()));
+            self.groups.len() - 1
+        });
+        let (value, members) = &mut self.groups[index];
+        members.push(member);
+        value
+    }
+
+    /// Each group's value and members, in the order the keys were first
+    /// added.
+    pub(crate) fn groups(&self) -> &[(T, Vec<M>)] {
+        &self.groups
+    }
+}
+
+/// `Step 'A'`, or `Steps 'A' and 'B'`, for the Step names `names` (one or
+/// more), quoted and listed as [`name_list`] lists them.
+pub(crate) fn steps_phrase<S: AsRef<str>>(names: &[S]) -> String {
+    let noun = if names.len() == 1 { "Step" } else { "Steps" };
+    let quoted: Vec<String> = names.iter().map(|s| format!("'{}'", s.as_ref())).collect();
+    format!(
+        "{noun} {}",
+        name_list(&quoted.iter().map(String::as_str).collect::<Vec<_>>())
+    )
+}
+
+/// `labels` for a message: `a and b` for two, else a capped
+/// comma-separated list.
+fn name_list(labels: &[&str]) -> String {
+    match labels {
+        [a, b] => format!("{a} and {b}"),
+        _ => capped_name_list(labels.iter().copied(), labels.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{steps_phrase, ByValues};
+
+    /// Each value is computed once per key, and each group lists its
+    /// members in the order they were added, the groups in first-key order.
+    #[test]
+    fn by_values_computes_once_per_key_and_keeps_order() {
+        let mut computed = 0;
+        let mut by: ByValues<usize, &str> = ByValues::default();
+        for (key, member) in [("x", "A"), ("y", "B"), ("x", "C"), ("y", "D"), ("z", "E")] {
+            let value = *by.add(key.to_string(), member, || {
+                computed += 1;
+                computed
+            });
+            assert_eq!(value, (key.as_bytes()[0] - b'w') as usize);
+        }
+        assert_eq!(computed, 3);
+        assert_eq!(
+            by.groups(),
+            [(1, vec!["A", "C"]), (2, vec!["B", "D"]), (3, vec!["E"])]
+        );
+    }
+
+    #[test]
+    fn steps_phrase_names_one_two_or_many_steps() {
+        assert_eq!(steps_phrase(&["A"]), "Step 'A'");
+        assert_eq!(steps_phrase(&["A", "B"]), "Steps 'A' and 'B'");
+        assert_eq!(steps_phrase(&["A", "B", "C"]), "Steps 'A', 'B', 'C'");
+    }
 }

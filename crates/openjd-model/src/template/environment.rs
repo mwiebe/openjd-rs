@@ -56,3 +56,13 @@ pub struct EmbeddedFile {
     #[serde(rename = "endOfLine")]
     pub end_of_line: Option<EndOfLine>,
 }
+
+impl Environment {
+    /// Whether the Environment defines any of the `WRAP_ACTIONS` hooks
+    /// (RFC 0008), which the single-layer rule counts.
+    pub(crate) fn defines_wrap_hooks(&self) -> bool {
+        self.script
+            .as_ref()
+            .is_some_and(|s| s.actions.has_any_wrap_hook())
+    }
+}

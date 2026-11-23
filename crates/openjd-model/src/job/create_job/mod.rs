@@ -11,6 +11,8 @@ mod instantiate;
 pub mod parameters;
 mod ranges;
 
+pub(crate) use host_requirements::{steps_phrase, ByValues};
+
 use indexmap::IndexMap;
 
 use openjd_expr::path_mapping::PathFormat;

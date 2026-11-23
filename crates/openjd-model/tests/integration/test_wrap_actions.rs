@@ -212,7 +212,7 @@ fn two_job_envs_with_wrap_hooks_rejected() {
         }"#,
         WRAP_EXTS,
         &[
-            "only one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).",
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A', 'B'. A Session may have at most one Environment defining wrap hooks (RFC 0008).",
         ],
     );
 }
@@ -251,7 +251,7 @@ fn job_env_and_step_env_with_wrap_hooks_rejected() {
         }"#,
         WRAP_EXTS,
         &[
-            "steps[0] -> stepEnvironments:\n\tonly one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).",
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer', 'Inner' (stepEnvironments). A Session may have at most one Environment defining wrap hooks (RFC 0008).",
         ],
     );
 }
@@ -1140,5 +1140,74 @@ environment:
         Some(&openjd_expr::ExprValue::String("/tmp/work".into())),
         "a Param.* accessed only by a deferred cancelation field must get \
          its RawParam.* fallback in the frozen symtab"
+    );
+}
+
+/// Without WRAP_ACTIONS each hook is a gate error, and the single-layer rule
+/// is not checked: two Environments with hooks give these six errors only.
+#[test]
+fn single_layer_rule_needs_the_extension() {
+    let env = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "script": {{"actions": {{"onEnter": {{"command": "x"}},
+               "onWrapEnvEnter": {{"command": "x"}}, "onWrapTaskRun": {{"command": "x"}},
+               "onWrapEnvExit": {{"command": "x"}}}}}}}}"#
+        )
+    };
+    let src = format!(
+        r#"{{"specificationVersion": "jobtemplate-2023-09", "name": "J", "extensions": ["EXPR"],
+           "jobEnvironments": [{}, {}],
+           "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "x"}}}}}}}}]}}"#,
+        env("A"),
+        env("B")
+    );
+    let err = decode_job_template(yaml_val(&src), Some(WRAP_EXTS), &CallerLimits::default())
+        .expect_err("hooks without the extension are rejected")
+        .to_string();
+    let mut expected = "Model validation error: 6 validation errors for JobTemplate".to_string();
+    for k in 0..2 {
+        for hook in ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"] {
+            expected.push_str(&format!(
+                "\njobEnvironments[{k}] -> script -> actions -> {hook}:\n\t{hook} requires the \
+                 WRAP_ACTIONS extension."
+            ));
+        }
+    }
+    assert_eq!(err, expected);
+}
+
+/// Steps whose Sessions would enter the same wrap layers get one error, at
+/// the first of them, naming them all.
+#[test]
+fn steps_with_the_same_wrap_layers_get_one_error() {
+    let env = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "script": {{"actions": {{"onEnter": {{"command": "x"}},
+               "onWrapEnvEnter": {{"command": "x"}}, "onWrapTaskRun": {{"command": "x"}},
+               "onWrapEnvExit": {{"command": "x"}}}}}}}}"#
+        )
+    };
+    let step = |name: &str| {
+        format!(r#"{{"name": "{name}", "script": {{"actions": {{"onRun": {{"command": "x"}}}}}}}}"#)
+    };
+    let src = format!(
+        r#"{{"specificationVersion": "jobtemplate-2023-09", "name": "J",
+           "extensions": ["WRAP_ACTIONS", "EXPR"], "jobEnvironments": [{}, {}],
+           "steps": [{}, {}, {}]}}"#,
+        env("A"),
+        env("B"),
+        step("S1"),
+        step("S2"),
+        step("S3")
+    );
+    let err = decode_job_template(yaml_val(&src), Some(WRAP_EXTS), &CallerLimits::default())
+        .expect_err("two wrap layers are rejected")
+        .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0]:\n\tthe Sessions of \
+         Steps 'S1', 'S2', 'S3' would enter 2 Environments that define wrap hooks \
+         (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A', 'B'. A Session may have at most \
+         one Environment defining wrap hooks (RFC 0008)."
     );
 }
