@@ -8,7 +8,9 @@
 
 use std::str::FromStr;
 
-use crate::error::{path_field, path_index, ModelError, PathElement, ValidationErrors};
+use crate::error::{
+    path_field, path_index, path_to_string, ModelError, PathElement, ValidationErrors,
+};
 use crate::template::constrained_strings::ExtensionName;
 use crate::template::validation as validate;
 use crate::template::{EnvironmentTemplate, JobTemplate};
@@ -198,7 +200,7 @@ type WrittenTypeName = (Vec<PathElement>, String);
 /// type table. Deserialization matches the tag case-blind (§2 makes type names
 /// case-insensitive under EXPR), so the author's spelling does not survive it, and
 /// the effective extension set does not exist until after it. This runs before the
-/// document is moved into `serde_json::from_value`, and
+/// document is moved into deserialization (`decode_as`), and
 /// `check_type_name_canonical_case` consumes the result once the extensions are
 /// known.
 ///
@@ -296,6 +298,35 @@ fn canonical_case_message(kind: &str, written: &str, canonical: &str) -> String 
     )
 }
 
+/// Deserialize a template of version `version_str` as `T`. A decode error
+/// is a [`ModelError::DecodeValidation`] that names where in the document
+/// it is, as model validation errors write paths: `steps[1] -> bogus:
+/// unknown field ...` for an unknown key. An error at the top level of the
+/// document has no location: ``missing field `steps` ``.
+fn decode_as<T: serde::de::DeserializeOwned>(
+    template: serde_json::Value,
+    version_str: &str,
+) -> Result<T, ModelError> {
+    serde_path_to_error::deserialize(template).map_err(|e| {
+        let path: Vec<PathElement> = e
+            .path()
+            .iter()
+            .filter_map(|segment| match segment {
+                serde_path_to_error::Segment::Map { key } => Some(PathElement::Field(key.clone())),
+                serde_path_to_error::Segment::Seq { index } => Some(PathElement::Index(*index)),
+                serde_path_to_error::Segment::Enum { .. }
+                | serde_path_to_error::Segment::Unknown => None,
+            })
+            .collect();
+        let at = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{}: ", path_to_string(&path))
+        };
+        ModelError::DecodeValidation(format!("'{version_str}' failed checks: {at}{}", e.inner()))
+    })
+}
+
 /// Decode and validate a job template from a YAML value.
 pub fn decode_job_template(
     template: serde_json::Value,
@@ -338,9 +369,7 @@ pub fn decode_job_template(
     let jt: JobTemplate = match version.revision() {
         // Future revisions may decode into a different struct layout.
         // Making the match explicit now localizes the dispatch point.
-        SpecificationRevision::V2023_09 => serde_json::from_value(template).map_err(|e| {
-            ModelError::DecodeValidation(format!("'{version_str}' failed checks: {e}"))
-        })?,
+        SpecificationRevision::V2023_09 => decode_as(template, &version_str)?,
     };
 
     // Build extension set with collect-all error reporting. Any problems
@@ -406,9 +435,7 @@ pub fn decode_environment_template(
         // Future revisions may decode into a different struct layout.
         // Making the match explicit now localizes the dispatch point,
         // mirroring `decode_job_template`.
-        SpecificationRevision::V2023_09 => serde_json::from_value(template).map_err(|e| {
-            ModelError::DecodeValidation(format!("'{version_str}' failed checks: {e}"))
-        })?,
+        SpecificationRevision::V2023_09 => decode_as(template, &version_str)?,
     };
 
     // Build extension set with collect-all error reporting. Same helper

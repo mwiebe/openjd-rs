@@ -288,7 +288,8 @@ fn yaml_wrong_case_boolean_is_rejected_for_bool_field() {
     assert_eq!(
         err.to_string(),
         "Validation error: 'jobtemplate-2023-09' failed checks: \
-         invalid type: string \"tRUE\", expected a boolean"
+         steps[0] -> script -> embeddedFiles[0] -> runnable: invalid type: string \"tRUE\", \
+         expected a boolean"
     );
 }
 
@@ -513,5 +514,89 @@ fn empty_extensions_job_template() {
     assert!(
         decode_environment_template(v2, None, &CallerLimits::default()).is_err(),
         "Env template with empty extensions should be rejected"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Decode errors name where they are
+// ══════════════════════════════════════════════════════════════
+
+/// A key or value the template types do not accept is reported at its
+/// place in the document, an unknown key at the key itself, written as
+/// model validation errors write paths. An error at the top level of the
+/// document has no location.
+#[test]
+fn decode_errors_name_their_location() {
+    const RUN: &str = "  script:\n    actions:\n      onRun:\n        command: echo\n";
+    let job = |top: &str, step: &str, action: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\n{top}steps:\n- name: A\n{RUN}\
+             - name: B\n{step}{RUN}{action}"
+        )
+    };
+    let fields = "expected one of `command`, `args`, `cancelation`, `timeout`";
+    let rows = [
+        (
+            "an unknown key in a later Step's action",
+            job("", "", "        bogus: 1\n"),
+            format!("steps[1] -> script -> actions -> onRun -> bogus: unknown field `bogus`, {fields}"),
+        ),
+        (
+            "a value of the wrong type",
+            job("", "", "        args: x\n"),
+            "steps[1] -> script -> actions -> onRun -> args: invalid type: string \"x\", \
+             expected a sequence"
+                .to_string(),
+        ),
+        (
+            "an unknown key in a Step",
+            job("", "  bogus: 1\n", ""),
+            "steps[1] -> bogus: unknown field `bogus`, expected one of `name`, `description`, `let`, \
+             `dependencies`, `stepEnvironments`, `hostRequirements`, `parameterSpace`, `script`, \
+             `bash`, `python`, `cmd`, `powershell`, `node`"
+                .to_string(),
+        ),
+        (
+            "a missing key",
+            job("", "", "").replace("        command: echo\n", "        {}\n"),
+            "steps[0] -> script -> actions -> onRun: missing field `command`".to_string(),
+        ),
+        (
+            "a missing key at the top level, which has no location",
+            "specificationVersion: jobtemplate-2023-09\nname: J\n".to_string(),
+            "missing field `steps`".to_string(),
+        ),
+        (
+            "an unknown key at the top level",
+            job("bogus: 1\n", "", ""),
+            "bogus: unknown field `bogus`, expected one of `specificationVersion`, `$schema`, \
+             `extensions`, `name`, `description`, `parameterDefinitions`, `jobEnvironments`, \
+             `steps`"
+                .to_string(),
+        ),
+    ];
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|(case, doc, message)| {
+            let err = decode_job_template(yaml_val(doc), None, &CallerLimits::default())
+                .expect_err(case)
+                .to_string();
+            let want = format!("Validation error: 'jobtemplate-2023-09' failed checks: {message}");
+            (err != want).then(|| format!("{case}:\n  got:  {err}\n  want: {want}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    let env = yaml_val(
+        "specificationVersion: environment-2023-09\nenvironment:\n  name: E\n  \
+         script:\n    actions:\n      onEnter:\n        command: x\n        bogus: 1\n",
+    );
+    let err = decode_environment_template(env, None, &CallerLimits::default()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Validation error: 'environment-2023-09' failed checks: environment -> script -> \
+             actions -> onEnter -> bogus: unknown field `bogus`, {fields}"
+        )
     );
 }

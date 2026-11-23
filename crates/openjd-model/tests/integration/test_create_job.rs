@@ -9172,19 +9172,19 @@ fn list_parameter_default_rejects_a_string_that_is_not_a_number() {
     for (param, expected) in [
         (
             r#"{"name": "LI", "type": "LIST[INT]", "default": ["1 000"]}"#,
-            "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '1 000' as integer",
+            "Validation error: 'jobtemplate-2023-09' failed checks: parameterDefinitions[0]: Cannot parse '1 000' as integer",
         ),
         (
             r#"{"name": "LF", "type": "LIST[FLOAT]", "default": ["1.5x"]}"#,
-            "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '1.5x' as float",
+            "Validation error: 'jobtemplate-2023-09' failed checks: parameterDefinitions[0]: Cannot parse '1.5x' as float",
         ),
         (
             r#"{"name": "LF", "type": "LIST[FLOAT]", "item": {"maxValue": "1 0"}}"#,
-            "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '1 0' as float",
+            "Validation error: 'jobtemplate-2023-09' failed checks: parameterDefinitions[0]: Cannot parse '1 0' as float",
         ),
         (
             r#"{"name": "LL", "type": "LIST[LIST[INT]]", "default": [["\u200b1"]]}"#,
-            "Validation error: 'jobtemplate-2023-09' failed checks: Cannot parse '\u{200b}1' as integer",
+            "Validation error: 'jobtemplate-2023-09' failed checks: parameterDefinitions[0]: Cannot parse '\u{200b}1' as integer",
         ),
     ] {
         let v: serde_json::Value = serde_saphyr::from_str(&format!(

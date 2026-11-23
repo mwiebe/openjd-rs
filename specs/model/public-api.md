@@ -165,6 +165,11 @@ loosen a spec limit.
 [`decode_template`] auto-detects the template kind from
 `specificationVersion` and dispatches to the matching decoder.
 
+A document that does not deserialize into the template types is a
+`ModelError::DecodeValidation` whose message names where the failure is, as
+model validation errors write paths (see
+[parsing.md](parsing.md#pass-3-serde-deserialization)).
+
 ### Job Instantiation
 
 ```rust

@@ -191,7 +191,7 @@ fn range_list_malformed_format_string() {
     .to_string();
     assert_eq!(
         err,
-        "Validation error: 'jobtemplate-2023-09' failed checks: Failed to parse interpolation expression at [0, 20]. Reason: Braces mismatch.\n  {{ Job.Parameter.Foo\n  ^~"
+        "Validation error: 'jobtemplate-2023-09' failed checks: steps[0] -> parameterSpace -> taskParameterDefinitions[0]: Failed to parse interpolation expression at [0, 20]. Reason: Braces mismatch.\n  {{ Job.Parameter.Foo\n  ^~"
     );
 }
 

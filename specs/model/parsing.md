@@ -94,8 +94,15 @@ Unrecognized versions produce `ModelError::UnsupportedSchema`.
 
 ### Pass 3: Serde Deserialization
 
-The value tree is deserialized into the appropriate struct via `serde_json::from_value`.
+The value tree is deserialized into the appropriate struct via `serde_json::from_value`, through
+`serde_path_to_error`.
 All template types use `#[serde(deny_unknown_fields)]`, so unexpected fields produce errors.
+A failure is a `ModelError::DecodeValidation` naming where it is, with the path written as
+model validation errors write it: `'jobtemplate-2023-09' failed checks: steps[1] -> script ->
+actions -> onRun -> bogus: unknown field ...`. An unknown key's path ends at the key, and an
+error at the top level of the document has no path (``failed checks: missing field `steps` ``).
+A value that a custom deserializer below reads whole, such as a task parameter definition, is
+located at that value, not inside it.
 
 Custom deserializers handle:
 - **`ExtensionName`** — Validates regex pattern during deserialization

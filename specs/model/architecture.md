@@ -92,6 +92,7 @@ The crate re-exports a curated public API from `lib.rs`:
 |------------|--------|
 | `openjd-expr` | Expression evaluation, format strings, symbol tables, ExprValue/ExprType |
 | `serde` + `serde_json` + `serde-saphyr` | YAML/JSON deserialization with `deny_unknown_fields`: `serde-saphyr` reads YAML into a `serde_json::Value`, and serde_json deserializes that into the template types |
+| `serde_path_to_error` | The location of a decode error (see [parsing.md](parsing.md#pass-3-serde-deserialization)) |
 | `indexmap` | Insertion-ordered maps for deterministic output |
 | `thiserror` | Ergonomic error type derivation |
 | `regex` | Capability name validation, let binding self-reference detection |
