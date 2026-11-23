@@ -1328,9 +1328,9 @@ fn step_let_feeds_host_requirements_and_range() {
     ));
 }
 
-/// A binding that fails to evaluate is reported by the host-requirements
-/// pass and the step body at `let[j]`, and by the range pass at the step,
-/// where the failed name is unbound.
+/// A binding that fails to evaluate is reported once, at its `let[j]`, with
+/// the host requirements. The range reads the failed name as
+/// `unresolved(ANY)` and reports nothing.
 #[test]
 fn step_let_evaluation_failure_diagnostics() {
     let msg = full_err(&job_with_let_in_hr_and_range(
@@ -1339,19 +1339,7 @@ fn step_let_evaluation_failure_diagnostics() {
     ));
     assert_eq!(
         msg,
-        "Model validation error: 4 validation errors for JobTemplate\n\
-         steps[0] -> let[1]:\n\
-         \tInvalid expression in let binding 't': Unknown function: 'str'\n  \
-         t = str(b)\n      \
-         ^~~~~~\n\
-         steps[0]:\n\
-         \tlet binding 't': Unknown function: 'str'\n  \
-         str(b)\n  \
-         ^~~~~~\n\
-         steps[0] -> parameterSpace -> taskParameterDefinitions[0] -> range[0]:\n\
-         \tFailed to parse interpolation expression at [0, 7]. Undefined variable: 't'. Did you mean: b\n  \
-         t\n  \
-         ^\n\
+        "Model validation error: 1 validation error for JobTemplate\n\
          steps[0] -> let[1]:\n\
          \tInvalid expression in let binding 't': Unknown function: 'str'\n  \
          t = str(b)\n      \
@@ -1359,9 +1347,9 @@ fn step_let_evaluation_failure_diagnostics() {
     );
 }
 
-/// A structural error with no evaluation failure is reported by the
-/// host-requirements pass and the step body; the range pass sees the
-/// evaluated binding and reports nothing.
+/// A structural error with no evaluation failure is reported once, with the
+/// host requirements; the ranges see the evaluated binding and report
+/// nothing.
 #[test]
 fn step_let_structural_error_diagnostics() {
     let msg = full_err(&job_with_let_in_hr_and_range(
@@ -1370,9 +1358,7 @@ fn step_let_structural_error_diagnostics() {
     ));
     assert_eq!(
         msg,
-        "Model validation error: 2 validation errors for JobTemplate\n\
-         steps[0] -> let[1]:\n\
-         \tname 'Tt' must start with lowercase letter or underscore.\n\
+        "Model validation error: 1 validation error for JobTemplate\n\
          steps[0] -> let[1]:\n\
          \tname 'Tt' must start with lowercase letter or underscore."
     );
@@ -1391,7 +1377,7 @@ fn step_let_errors_precede_host_requirement_errors() {
     assert_eq!(
         msg,
         [
-            "Model validation error: 4 validation errors for JobTemplate",
+            "Model validation error: 2 validation errors for JobTemplate",
             "steps[0] -> let[1]:",
             "\tInvalid expression in let binding 't': Unknown function: 'str'",
             "  t = str(b)",
@@ -1400,21 +1386,13 @@ fn step_let_errors_precede_host_requirement_errors() {
             "\tFailed to parse interpolation expression at [0, 10]. Undefined variable: 'nope'. Did you mean one of: b, t",
             "  nope",
             "  ^~~~",
-            "steps[0]:",
-            "\tlet binding 't': Unknown function: 'str'",
-            "  str(b)",
-            "  ^~~~~~",
-            "steps[0] -> let[1]:",
-            "\tInvalid expression in let binding 't': Unknown function: 'str'",
-            "  t = str(b)",
-            "      ^~~~~~",
         ]
         .join("\n")
     );
 }
 
-/// When a binding fails, the range pass evaluates the bindings with
-/// `Job.Name` and `Step.Name` in scope.
+/// When a binding fails, the ranges and the body still see `Job.Name`,
+/// `Step.Name`, and the bindings that read them.
 #[test]
 fn step_let_failure_range_sees_job_and_step_names() {
     let msg = full_err(&job_with_let_in_hr_and_range_ext(
@@ -1426,15 +1404,7 @@ fn step_let_failure_range_sees_job_and_step_names() {
     assert_eq!(
         msg,
         [
-            "Model validation error: 3 validation errors for JobTemplate",
-            "steps[0] -> let[0]:",
-            "\tInvalid expression in let binding 't': Unknown function: 'str'",
-            "  t = str(1)",
-            "      ^~~~~~",
-            "steps[0]:",
-            "\tlet binding 't': Unknown function: 'str'",
-            "  str(1)",
-            "  ^~~~~~",
+            "Model validation error: 1 validation error for JobTemplate",
             "steps[0] -> let[0]:",
             "\tInvalid expression in let binding 't': Unknown function: 'str'",
             "  t = str(1)",
@@ -1444,10 +1414,10 @@ fn step_let_failure_range_sees_job_and_step_names() {
     );
 }
 
-/// When a binding fails, the range pass skips bindings with no `=`, an
-/// empty name, or an empty expression.
+/// Bindings with no `=`, an empty name, or an empty expression, beside one
+/// that fails, are each reported once, and the ranges report nothing.
 #[test]
-fn step_let_failure_range_skips_malformed_bindings() {
+fn step_let_failure_with_malformed_bindings_is_reported_once() {
     let msg = full_err(&job_with_let_in_hr_and_range_ext(
         r#""EXPR", "FEATURE_BUNDLE_1""#,
         r#""t = str(1)", "c =", "= 2", "d 3""#,
@@ -1466,14 +1436,7 @@ fn step_let_failure_range_skips_malformed_bindings() {
         "steps[0] -> let[3]:",
         "\tmissing '=' in 'd 3'.",
     ];
-    let mut expected = vec!["Model validation error: 9 validation errors for JobTemplate"];
-    expected.extend(let_errors);
-    expected.extend([
-        "steps[0]:",
-        "\tlet binding 't': Unknown function: 'str'",
-        "  str(1)",
-        "  ^~~~~~",
-    ]);
+    let mut expected = vec!["Model validation error: 4 validation errors for JobTemplate"];
     expected.extend(let_errors);
     assert_eq!(msg, expected.join("\n"));
 }
@@ -1507,8 +1470,7 @@ fn step_let_without_expr_is_not_in_scope() {
     );
 }
 
-/// When a binding fails to parse, the range pass reports the parse error at
-/// the step.
+/// A binding that fails to parse is reported once, at its `let[j]`.
 #[test]
 fn step_let_parse_failure_diagnostics() {
     let msg = full_err(&job_with_let_in_hr_and_range_ext(
@@ -1523,14 +1485,7 @@ fn step_let_parse_failure_diagnostics() {
         "  x = (",
         "      ^",
     ];
-    let mut expected = vec!["Model validation error: 3 validation errors for JobTemplate"];
-    expected.extend(let_error);
-    expected.extend([
-        "steps[0]:",
-        "\tlet binding 'x': Syntax error: unexpected EOF while parsing",
-        "  (",
-        "  ^",
-    ]);
+    let mut expected = vec!["Model validation error: 1 validation error for JobTemplate"];
     expected.extend(let_error);
     assert_eq!(msg, expected.join("\n"));
 }
@@ -1617,11 +1572,7 @@ fn step_let_failure_body_sees_evaluated_bindings() {
     assert_eq!(
         full_err(s),
         [
-            "Model validation error: 2 validation errors for JobTemplate",
-            "steps[0]:",
-            "\tlet binding 't': Unknown function: 'str'",
-            "  str(b)",
-            "  ^~~~~~",
+            "Model validation error: 1 validation error for JobTemplate",
             "steps[0] -> let[1]:",
             "\tInvalid expression in let binding 't': Unknown function: 'str'",
             "  t = str(b)",
@@ -1654,11 +1605,7 @@ fn step_let_failure_timeout_sees_step_name() {
     assert_eq!(
         full_err(s),
         [
-            "Model validation error: 2 validation errors for JobTemplate",
-            "steps[0]:",
-            "\tlet binding 'b': Cannot convert 'nope' to int",
-            "  int('nope')",
-            "  ^~~~~~~~~~~",
+            "Model validation error: 1 validation error for JobTemplate",
             "steps[0] -> let[1]:",
             "\tInvalid expression in let binding 'b': Cannot convert 'nope' to int",
             "  b = int('nope')",

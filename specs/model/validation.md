@@ -206,8 +206,7 @@ no PATH `Param.*`, a PATH definition adds no `Param.<name>`.
 2. **Job scope** — the template scope and, with EXPR, `Job.Name`.
    The action timing fields of a Job Environment or an Environment Template.
 3. **Step template scope** — the job scope and, with EXPR, `Step.Name` and the Step's `let`
-   bindings (see [Let Binding Validation](#let-binding-validation) for how often they are
-   evaluated and reported). The Step's `hostRequirements`, `parameterSpace` and action timing
+   bindings, whose errors are reported once (see [Let Binding Validation](#let-binding-validation)). The Step's `hostRequirements`, `parameterSpace` and action timing
    fields, and its Step Environments' timing fields.
 4. **Session scope** — every `Param.*` and `RawParam.*`, `Session.*`, with EXPR `Job.Name`, the environment's
    `Env.File.*`, and in a Step Environment, with EXPR, `Step.Name` and the values of the Step's
@@ -326,15 +325,19 @@ above) — so a value-dependent failure reads identically at both stages,
 including the `unresolved(ANY)` continuation. See
 `specs/model/job-creation.md`.
 
-A step's `let` block is read by three sites in pass 8: its host
-requirements, its parameterSpace ranges, and its body. When evaluating it
-reports nothing, the sites share one evaluation; otherwise each evaluates it
-and reports as before. Host requirements run for every step before the job
-environments, so sharing with them keeps the evaluated values until the
-step's ranges and body run. Pass 8 keeps at most `RETAINED_SCOPE_BUDGET`
-(4 MiB, counted as requested allocation bytes) of them at once, and only
-scalar values whose size it can measure; past that the later sites evaluate
-again. Output is the same either way.
+A Step's `let` block is read by three sites in pass 8: its host
+requirements, its parameterSpace ranges, and its body. Its errors are
+reported once, at `steps[i] -> let[j]`: with the host requirements when the
+Step has them, otherwise with the body, after the ranges. A site that does
+not report evaluates the block into a scratch collection, so a range reads a
+failed binding as `unresolved(ANY)`, as the body does. When evaluating it
+reports nothing, the sites share one evaluation. Host requirements run for
+every Step before the Job Environments, so sharing with them keeps the
+evaluated values until the Step's ranges and body run. Pass 8 keeps at most
+`RETAINED_SCOPE_BUDGET` (4 MiB, counted as requested allocation bytes) of
+them at once, and only scalar values whose size it can measure; past that
+the later sites evaluate again. Apart from the kept values, one Step's
+evaluation is alive at a time.
 
 ### Function Libraries
 

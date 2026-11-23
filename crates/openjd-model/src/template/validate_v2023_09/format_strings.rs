@@ -348,44 +348,6 @@ impl<'a> FsCtx<'a> {
         StepLetScope { symtab, names }
     }
 
-    /// The `parameterSpace` range scope of a Step whose `let` bindings are
-    /// not clean. A range sees a failed binding as unbound, and the failure
-    /// is reported at the Step as `let binding '<name>': <error>`. For
-    /// clean bindings the result equals [`StepLetScope::symtab`], so this
-    /// runs only for the others, to keep their diagnostics. Bindings are
-    /// only evaluated, and so only fail to be clean, with `EXPR`, so the
-    /// scope always has `Job.Name` and `Step.Name`.
-    fn range_scope_for_unclean_lets(
-        &self,
-        step: &StepTemplate,
-        step_path: &[PathElement],
-        errors: &mut ValidationErrors,
-    ) -> SymbolTable {
-        let mut symtab = self.step_base_scope();
-        let ev = &self.template;
-        for binding in step.let_bindings.iter().flatten() {
-            let Some(eq_pos) = binding.find('=') else {
-                continue;
-            };
-            let name = binding[..eq_pos].trim();
-            let expr_str = binding[eq_pos + 1..].trim();
-            if name.is_empty() || expr_str.is_empty() {
-                continue;
-            }
-            let result = ParsedExpression::with_profile(expr_str, &ev.profile).and_then(|parsed| {
-                ev.budgeted(parsed.with_library(&ev.lib))
-                    .evaluate(&[&symtab as &SymbolTable])
-            });
-            match result {
-                Ok(val) => {
-                    let _ = symtab.set(name, val);
-                }
-                Err(e) => errors.add(step_path, format!("let binding '{name}': {e}")),
-            }
-        }
-        symtab
-    }
-
     /// What the session and task scopes share: every `Param.*` and
     /// `RawParam.*`, `Session.*`, and, with `EXPR`, `Job.Name` and, for a
     /// Step, `Step.Name`.
@@ -1928,10 +1890,11 @@ pub fn validate_format_strings(
         errors,
     );
     // The `let` bindings and `hostRequirements` of each Step that has
-    // `hostRequirements`. A clean scope's bindings are kept for the Step's
+    // `hostRequirements`; the `let` errors of such a Step are reported
+    // here and only here. A clean scope's bindings are kept for the Step's
     // ranges and body while all kept bindings stay within
-    // `RETAINED_SCOPE_BUDGET`; past it, those sites evaluate the bindings
-    // again.
+    // `RETAINED_SCOPE_BUDGET`; past it, or when they are not clean, those
+    // sites evaluate the bindings again without reporting.
     let mut retained = std::collections::VecDeque::new();
     let mut retained_bytes = RetainedBindings::DEQUE_MIN_BYTES;
     for (i, step) in jt.steps.iter().enumerate() {
@@ -2014,33 +1977,34 @@ fn validate_step(
     errors: &mut ValidationErrors,
 ) {
     // The ranges and the body share one evaluation of the Step's `let`
-    // bindings when it is clean.
-    let mut shared = kept.map(|kept| kept.into_scope(f.step_base_scope()));
+    // bindings. Their errors are reported once: with the Step's
+    // `hostRequirements` when it has them, otherwise here, after the
+    // ranges, as the body's.
+    let reported = step.host_requirements.is_some();
+    let mut scratch = ValidationErrors::default();
+    let scope = match kept {
+        Some(kept) => kept.into_scope(f.step_base_scope()),
+        None if reported || step.parameter_space.is_some() => {
+            f.step_let_scope(step, step_path, &mut scratch)
+        }
+        None => f.step_let_scope(step, step_path, errors),
+    }
+    .symtab;
+    let clean = scratch.is_empty();
+    drop(scratch);
     if let Some(ps) = &step.parameter_space {
         let ps_path = path_field(step_path, "parameterSpace");
-        // Shared only when evaluating them reported nothing (also when it
-        // did not run: no EXPR, or no bindings).
-        if shared.is_none() {
-            let mut let_errors = ValidationErrors::default();
-            let scope = f.step_let_scope(step, step_path, &mut let_errors);
-            shared = let_errors.is_empty().then_some(scope);
-        }
-        match &shared {
-            Some(scope) => validate_parameter_space(f, ps, &scope.symtab, &ps_path, errors),
-            None => {
-                let range_scope = f.range_scope_for_unclean_lets(step, step_path, errors);
-                validate_parameter_space(f, ps, &range_scope, &ps_path, errors);
-            }
-        }
+        validate_parameter_space(f, ps, &scope, &ps_path, errors);
     }
-    let StepLetScope {
-        symtab: step_scope,
-        names,
-    } = match shared {
-        Some(scope) => scope,
-        None => f.step_let_scope(step, step_path, errors),
+    let step_scope = if reported || clean || step.parameter_space.is_none() {
+        scope
+    } else {
+        // Reported here, after the ranges, which read the scratch
+        // evaluation (a failed binding is `unresolved(ANY)` there). Its
+        // errors are not held through the ranges.
+        drop(scope);
+        f.step_let_scope(step, step_path, errors).symtab
     };
-    drop(names);
     let step_scope = &step_scope;
     if step.let_bindings.is_some() && !f.expr {
         errors.add(
