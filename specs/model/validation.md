@@ -49,7 +49,9 @@ omitted (there are no steps, so passes 9's ChunkInt checks and pass 6's step/dep
 checks have nothing to walk):
 
 - **Limits + structure** — parameter-definition count/uniqueness (its own cap,
-  `max_env_template_param_count`), then `validate_single_environment` for the env body.
+  `max_env_template_param_count`), then `validate_single_environment` for the env body,
+  which reports an environment with neither `script` nor `variables` once, as it does for
+  a Job or Step Environment.
 - **Pass 7** — `validate_feature_bundle_1_environment_template`: `endOfLine` on the
   environment's embedded files requires FEATURE_BUNDLE_1.
 - **Pass 8** — `validate_format_strings_environment_template`: the environment body

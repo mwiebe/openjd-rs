@@ -247,12 +247,6 @@ pub fn validate_environment_template(
     // Validate the environment
     let env = &et.environment;
     let env_path = vec![crate::error::PathElement::Field("environment".into())];
-    if env.script.is_none() && env.variables.is_none() {
-        errors.add(
-            &env_path,
-            "must have at least one of 'script' or 'variables'.".to_string(),
-        );
-    }
     structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
 
     // Pass 7: FEATURE_BUNDLE_1 (validate or reject)

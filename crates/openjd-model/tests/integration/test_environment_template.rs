@@ -322,17 +322,17 @@ fn test_duplicate_parameter_names() {
 // Failure cases — Environment validation errors
 // ══════════════════════════════════════════════════════════════
 
+/// The rule is reported once.
 #[test]
 fn test_env_missing_script_and_variables() {
-    check_env_err(
-        r#"{
-        "specificationVersion": "environment-2023-09",
-        "environment": {"name": "Foo"}
-    }"#,
-        &[
-            "validation errors for EnvironmentTemplate\n",
-            "environment:\n\tmust have at least one of 'script' or 'variables'.",
-        ],
+    let v = yaml_val(
+        r#"{"specificationVersion": "environment-2023-09", "environment": {"name": "Foo"}}"#,
+    );
+    let err = decode_environment_template(v, None, &CallerLimits::default()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for EnvironmentTemplate\nenvironment:\n\t\
+         must have at least one of 'script' or 'variables'."
     );
 }
 
