@@ -1216,10 +1216,12 @@ fn known_capability_name(
 /// Check the §3.3 constraint that no two amounts, and no two attributes,
 /// have the same resolved name, for the names template validation knows.
 ///
-/// Structure reports duplicates between literal names, so a pair is only
-/// reported here when at least one of its names is fully static. A name
-/// that is not known yet is compared at job creation. Comparison is
-/// case-insensitive, and the message matches the one for literal names.
+/// Structure reports a literal name that repeats an earlier literal name
+/// (entries marked `literal`), so an entry is reported here when it
+/// repeats an earlier known name and structure did not already report it:
+/// each entry is reported at most once. A name that is not known yet is
+/// compared at job creation. Comparison is case-insensitive, and the
+/// message matches the one for literal names.
 fn check_known_names_unique(
     known: &[Option<KnownCapabilityName>],
     kind: helpers::CapabilityKind,
@@ -1230,10 +1232,14 @@ fn check_known_names_unique(
     for (index, k) in known.iter().enumerate() {
         let Some(k) = k else { continue };
         let lower = k.name.to_lowercase();
-        if seen
-            .iter()
-            .any(|(name, literal)| *name == lower && !(*literal && k.literal))
-        {
+        let matches = |literal: Option<bool>| {
+            seen.iter()
+                .any(|(name, l)| *name == lower && literal.is_none_or(|want| *l == want))
+        };
+        // Structure has already reported a literal name that repeats an
+        // earlier literal one.
+        let reported_by_structure = k.literal && matches(Some(true));
+        if !reported_by_structure && matches(None) {
             errors.add(
                 &path_index(list_path, index),
                 format!("duplicate {} name '{}'.", kind.noun(), k.name),

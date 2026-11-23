@@ -798,11 +798,10 @@ steps:
     );
 }
 
-/// Structure reports a literal amount name that repeats an earlier literal
-/// one, and pass 8 reports a name that repeats a static one, so a literal
-/// name that repeats both is reported by each.
+/// A literal amount or attribute name that repeats an earlier literal one is
+/// reported once, by structure, though it also repeats a static one.
 #[test]
-fn a_duplicate_amount_name_is_reported_by_structure_and_by_pass_8() {
+fn a_duplicate_capability_name_is_reported_once() {
     assert_message(
         &[],
         r#"
@@ -816,12 +815,19 @@ steps:
     - {name: "{{ 'amount.custom.a' }}", min: 1}
     - {name: amount.custom.a, min: 1}
     - {name: amount.custom.a, min: 1}
+    attributes:
+    - {name: "{{ 'attr.custom.a' }}", anyOf: [x]}
+    - {name: attr.custom.a, anyOf: [x]}
+    - {name: attr.custom.a, anyOf: [x]}
   script: {actions: {onRun: {command: x}}}
 "#,
-        "Model validation error: 3 validation errors for JobTemplate\n\
+        "Model validation error: 4 validation errors for JobTemplate\n\
          steps[0] -> hostRequirements -> amounts[2]:\n\tduplicate amount name 'amount.custom.a'.\n\
+         steps[0] -> hostRequirements -> attributes[2]:\n\tduplicate attribute name \
+         'attr.custom.a'.\n\
          steps[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.custom.a'.\n\
-         steps[0] -> hostRequirements -> amounts[2]:\n\tduplicate amount name 'amount.custom.a'.",
+         steps[0] -> hostRequirements -> attributes[1]:\n\tduplicate attribute name \
+         'attr.custom.a'.",
     );
 }
 

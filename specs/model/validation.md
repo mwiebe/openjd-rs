@@ -122,7 +122,8 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   that is fully static (see the resolved-value table below), and at job creation for
   the resolved name. Uniqueness within `amounts` and within `attributes` is checked
   here between literal names, in pass 8 for any pair that includes a fully static name,
-  and at job creation between the resolved names. The standard-capability value checks
+  and at job creation between the resolved names. Pass 8 does not report a literal name
+  again that structure already reported, so each entry gets at most one error. The standard-capability value checks
   and the single-valued rule below key off the name, so they run for a literal name
   here, for a fully static name in pass 8, and for every other name at job creation.
 
