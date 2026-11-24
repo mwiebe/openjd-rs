@@ -13,8 +13,9 @@ updates:
     commit-message:
       prefix: "chore(deps):"
     # These PRs update only the workspace Cargo.lock. The fuzz harness has its
-    # own lock, so push `scripts/fuzz.sh sync-lock` to each one before merging
-    # it (the Linux fuzz replay check fails until then).
+    # own lock: when a PR bumps a package the harness also uses, the Linux
+    # fuzz replay check fails until the output of `scripts/fuzz.sh sync-lock`
+    # is pushed to the PR.
     # Dependabot puts each update in the first group that matches it, so the
     # lock-step groups come first.
     groups:
