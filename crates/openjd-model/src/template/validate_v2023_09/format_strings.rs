@@ -1969,12 +1969,17 @@ pub fn validate_format_strings(
         validate_step(&f, step, kept, &step_path, errors);
     }
     if f.expr {
-        let envs = jt
-            .steps
-            .iter()
-            .flat_map(|s| s.step_environments.iter().flatten());
-        for env in jt.job_environments.iter().flatten().chain(envs) {
-            validate_env_comprehensions(env, errors);
+        for (i, env) in jt.job_environments.iter().flatten().enumerate() {
+            validate_env_comprehensions(env, &path_index(&envs_path, i), errors);
+        }
+        for (i, step) in jt.steps.iter().enumerate() {
+            let step_envs_path = path_field(
+                &path_index(&path_field(&[], "steps"), i),
+                "stepEnvironments",
+            );
+            for (j, env) in step.step_environments.iter().flatten().enumerate() {
+                validate_env_comprehensions(env, &path_index(&step_envs_path, j), errors);
+            }
         }
     }
 }
@@ -2272,7 +2277,7 @@ pub fn validate_format_strings_environment_template(
     let env_path = path_field(&[], "environment");
     validate_environment(&f, &et.environment, &f.job_scope(), &env_path, errors);
     if f.expr {
-        validate_env_comprehensions(&et.environment, errors);
+        validate_env_comprehensions(&et.environment, &env_path, errors);
     }
 }
 
@@ -2445,21 +2450,28 @@ fn add_wrapped_step_name_scope(symtab: &mut SymbolTable) {
 }
 
 /// The comprehension-variable rules for an Environment's script against
-/// its `let` names.
-fn validate_env_comprehensions(env: &Environment, errors: &mut ValidationErrors) {
+/// its `let` names, on every action's `command` and `args`, each error
+/// reported at its field under `env_path`, as for a Step script.
+fn validate_env_comprehensions(
+    env: &Environment,
+    env_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
     let Some(script) = &env.script else { return };
     let env_let_names = let_names(script.let_bindings.as_deref());
     if env_let_names.is_empty() {
         return;
     }
-    let path: Vec<PathElement> = vec![];
-    for action in script.actions.iter_actions() {
+    let actions_path = path_field(&path_field(env_path, "script"), "actions");
+    for (name, action) in script.actions.iter_named() {
+        let action_path = path_field(&actions_path, name);
         if let Err(e) = action.command.validate_comprehension_vars(&env_let_names) {
-            errors.add(&path, e.to_string());
+            errors.add(&path_field(&action_path, "command"), e.to_string());
         }
-        for arg in action.args.iter().flatten() {
+        let args_path = path_field(&action_path, "args");
+        for (j, arg) in action.args.iter().flatten().enumerate() {
             if let Err(e) = arg.validate_comprehension_vars(&env_let_names) {
-                errors.add(&path, e.to_string());
+                errors.add(&path_index(&args_path, j), e.to_string());
             }
         }
     }

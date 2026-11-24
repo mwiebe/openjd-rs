@@ -261,6 +261,14 @@ bound, `timeout`/`cancelation` in the Step template scope, each embedded file's
 the comprehension-variable rules (against the step's and the script's
 `let` names) on `command`, `args`, and embedded `data`.
 
+Environment scripts get the comprehension-variable rules too
+(`validate_env_comprehensions`), against the environment script's
+own `let` names, on every action's `command` and `args`. Each error is
+reported at its field, in the same form as for a Step script:
+`jobEnvironments[i] -> script -> actions -> onEnter -> args[j]`,
+`steps[i] -> stepEnvironments[j] -> script -> actions -> ...`, or
+`environment -> script -> actions -> ...` for an environment template.
+
 An authored `script` runs through it once. Each SimpleAction field the
 step sets (§8; only when FEATURE_BUNDLE_1 is enabled and the step has no
 `script` — pass 7 rejects both other cases, and validating sugar against

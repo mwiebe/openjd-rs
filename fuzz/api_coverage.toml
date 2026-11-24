@@ -126,6 +126,7 @@
 "openjd_expr::functions::conversion::int_from_bool" = "not registered in the default library (dead public helper)"
 "openjd_expr::functions::misc::path_join_fn" = "not registered in the default library (dead public helper)"
 "openjd_expr::functions::path_parse::extension_no_dot" = "not registered in the default library (dead public helper)"
+"openjd_model::template::EnvironmentActions::iter_actions" = "no caller in the workspace (dead public helper): it is iter_named without the names, and the corpus executes iter_named"
 # --- trait impls ------------------------------------------------------------
 "openjd_expr::ExprProfile::<Default>::default" = "constant default configuration; takes no input"
 "openjd_expr::ExprRevision::<Default>::default" = "constant default configuration; takes no input"

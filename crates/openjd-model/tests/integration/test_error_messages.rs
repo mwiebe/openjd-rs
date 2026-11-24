@@ -450,7 +450,8 @@ steps:
   script: {actions: {onRun: {command: foo}}}
 "#,
         "Model validation error: 1 validation error for JobTemplate\n\
-         JobTemplate: List comprehension variable 'x' shadows a let binding",
+         steps[0] -> stepEnvironments[0] -> script -> actions -> onEnter -> command:\n\t\
+         List comprehension variable 'x' shadows a let binding",
     );
     assert_message(
         &[],
@@ -468,7 +469,8 @@ steps:
   script: {actions: {onRun: {command: foo}}}
 "#,
         "Model validation error: 1 validation error for JobTemplate\n\
-         JobTemplate: List comprehension variable 'x' shadows a let binding",
+         jobEnvironments[0] -> script -> actions -> onEnter -> command:\n\t\
+         List comprehension variable 'x' shadows a let binding",
     );
 }
 
@@ -977,5 +979,104 @@ steps:
          steps[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.custom.a'.\n\
          steps[0] -> hostRequirements -> attributes[1]:\n\tduplicate attribute name \
          'attr.custom.a'.",
+    );
+}
+
+// === EXPR: a comprehension-variable error in an Environment script names its field ===
+
+fn job_err_text(s: &str) -> String {
+    decode_job_template(
+        yaml_val(s),
+        Some(&["EXPR", "WRAP_ACTIONS"]),
+        &CallerLimits::default(),
+    )
+    .expect_err("Expected validation error")
+    .to_string()
+}
+
+#[test]
+fn comprehension_var_errors_in_environment_scripts_are_located() {
+    // The same `let` and comprehensions in a Step script and in job and
+    // step Environment scripts: every error names its field, in the same
+    // form for both kinds of script.
+    let msg = job_err_text(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, WRAP_ACTIONS]
+name: J
+jobEnvironments:
+- name: JE
+  script:
+    let: ["x = 1"]
+    actions:
+      onEnter:
+        command: "{{ [x for x in [1]] }}"
+        args: ["ok", "{{ [x * 2 for x in [1]] }}"]
+      onWrapEnvEnter:
+        command: echo
+      onWrapTaskRun:
+        command: "{{ [x for x in [1]] }}"
+      onWrapEnvExit:
+        command: echo
+steps:
+- name: S
+  stepEnvironments:
+  - name: SE
+    script:
+      let: ["x = 1"]
+      actions:
+        onExit:
+          command: echo
+          args: ["{{ [x for x in [1]] }}"]
+  script:
+    let: ["x = 1"]
+    actions:
+      onRun:
+        command: "{{ [x for x in [1]] }}"
+        args: ["ok", "{{ [x * 2 for x in [1]] }}"]
+"#,
+    );
+    let shadow = "List comprehension variable 'x' shadows a let binding";
+    let expected = [
+        "Model validation error: 6 validation errors for JobTemplate".to_string(),
+        format!("steps[0] -> script -> actions -> onRun -> command:\n\t{shadow}"),
+        format!("steps[0] -> script -> actions -> onRun -> args[1]:\n\t{shadow}"),
+        format!("jobEnvironments[0] -> script -> actions -> onEnter -> command:\n\t{shadow}"),
+        format!("jobEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\t{shadow}"),
+        format!("jobEnvironments[0] -> script -> actions -> onWrapTaskRun -> command:\n\t{shadow}"),
+        format!(
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onExit -> args[0]:\n\t{shadow}"
+        ),
+    ]
+    .join("\n");
+    assert_eq!(msg, expected);
+}
+
+#[test]
+fn comprehension_var_error_in_environment_template_is_located() {
+    let err = decode_environment_template(
+        yaml_val(
+            r#"
+specificationVersion: environment-2023-09
+extensions: [EXPR]
+environment:
+  name: E
+  script:
+    let: ["x = 1"]
+    actions:
+      onEnter:
+        command: echo
+        args: ["{{ [x for x in [1]] }}"]
+"#,
+        ),
+        Some(&["EXPR"]),
+        &CallerLimits::default(),
+    )
+    .expect_err("Expected validation error");
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for EnvironmentTemplate\n\
+         environment -> script -> actions -> onEnter -> args[0]:\n\t\
+         List comprehension variable 'x' shadows a let binding"
     );
 }
