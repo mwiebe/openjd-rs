@@ -1153,12 +1153,27 @@ environment:
 // the hook scope still binds its own symbols, so a hook's references to
 // them resolve, and no panic escapes from the symbol-table insert.
 
-/// The three hooks, each referencing every symbol its scope defines.
+/// The three hooks, each referencing every symbol its scope defines, the
+/// names through a string method, so they must be bound as strings.
 const WRAP_HOOKS_JSON: &str = r#"{
-    "onWrapEnvEnter": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name}}"]},
-    "onWrapTaskRun": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedStep.Name}}"]},
-    "onWrapEnvExit": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name}}"]}
+    "onWrapEnvEnter": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name.upper()}}"]},
+    "onWrapTaskRun": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedStep.Name.upper()}}"]},
+    "onWrapEnvExit": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name.upper()}}"]}
 }"#;
+
+#[test]
+fn wrap_hook_names_are_strings() {
+    expect_env_ok(
+        &format!(
+            r#"{{
+                "specificationVersion": "environment-2023-09",
+                "extensions": ["EXPR", "WRAP_ACTIONS"],
+                "environment": {{"name": "E", "script": {{"actions": {WRAP_HOOKS_JSON}}}}}
+            }}"#
+        ),
+        WRAP_EXTS,
+    );
+}
 
 const WRAP_SCOPE_ROOTS: [&str; 3] = ["WrappedAction", "WrappedEnv", "WrappedStep"];
 
