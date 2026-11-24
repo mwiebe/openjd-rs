@@ -2294,7 +2294,7 @@ fn validate_env_body(
     errors: &mut ValidationErrors,
 ) {
     let vars_path = path_field(path, "variables");
-    for (name, value) in env.variables.iter().flatten() {
+    for (name, value) in env.variables_by_name() {
         let var_path = path_field(&vars_path, name);
         if reject_complex && value.has_complex_expressions() {
             errors.add(&var_path, "complex expressions require the EXPR extension.");

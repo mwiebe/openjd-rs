@@ -33,6 +33,16 @@ receives the template and the computed limits/rules, and appends errors to a sha
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
 short-circuiting), so users see all problems at once.
 
+Errors are reported in the same order on every run. List elements are walked in
+template order. The keys of a template mapping are walked in name order:
+`Environment::variables` through `Environment::variables_by_name`, and the
+`<Cancelation>` keys through the key-sorted map `CancelationMode`'s deserializer
+reads. The template reaches the decoder as a `serde_json::Value`, whose maps are
+key-sorted, so name order is the only order its keys still have. The
+"missing from combination expression" errors follow the task parameter
+definitions' order. The Python reference walks a mapping in document order, so the two
+implementations can list an Environment's `variables` errors in different orders.
+
 | Pass | File | Purpose |
 |------|------|---------|
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
@@ -173,7 +183,8 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 **Combination expression validation:**
 - Character allowlist, balanced parentheses, tokenization
 - All referenced parameters must exist and appear exactly once
-- All defined parameters must appear in the expression
+- All defined parameters must appear in the expression; those that don't are
+  reported in definition order
 
 ## Pass 7: FEATURE_BUNDLE_1 Gating
 

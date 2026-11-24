@@ -314,8 +314,10 @@ impl Serialize for CancelationMode {
 
 impl<'de> Deserialize<'de> for CancelationMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use std::collections::HashMap;
-        let map = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+        // Key-sorted, so an unknown-field error names the same key on
+        // every run: the first unknown key in name order.
+        let map =
+            std::collections::BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
         let mode_value = map
             .get("mode")
             .ok_or_else(|| serde::de::Error::missing_field("mode"))?;

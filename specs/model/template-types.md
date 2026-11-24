@@ -213,7 +213,9 @@ pub enum CancelationMode {
 The `Terminate` variant rejects any extra fields. The `NotifyThenTerminate` variant
 accepts an optional `notifyPeriodInSeconds` field. An explicit JSON/YAML `null` for
 `notifyPeriodInSeconds` is treated the same as omitting the field, matching the
-Python implementation (pydantic `Optional`).
+Python implementation (pydantic `Optional`). The deserializer reads the object into a
+key-sorted map, so when there are several unknown fields, the error names the one that
+sorts first, on every run.
 
 #### DeferredMode: why the mode decision can be deferred
 

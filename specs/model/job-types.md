@@ -201,6 +201,8 @@ itself. Serialization omits `notifyPeriodInSeconds` when unset; deserialization
 accepts an explicit `null` as unset for backward compatibility with documents
 written by the previous derived impl (which always wrote
 `"notifyPeriodInSeconds": null`).
+As on the template side, an unknown-field error names the unknown field that sorts
+first.
 
 ### StepParameterSpace
 

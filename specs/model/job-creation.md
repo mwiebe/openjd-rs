@@ -475,9 +475,9 @@ in the template at once: one `ValidationErrors` collection is threaded
 through the job environments and every step (`instantiate_step` takes
 it as `&mut`) and converted to a single `ModelError::ModelValidation`
 once, after all steps are instantiated and before the caller-limit
-task-count and size checks. The order is pass 8's order — deterministic
-except within one environment's `variables`, which is a `HashMap` and
-iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
+task-count and size checks. The order is pass 8's order, the same on
+every run (one environment's `variables` are walked in name order, as in
+pass 8): `jobEnvironments` in template order, then each step in template
 order — its step-level `let`, its script (`let`, `onRun`
 `command`/`args`, `timeout`/`cancelation`, embedded-file `data`), then
 its `stepEnvironments` in order (`let`, `variables`, every action's

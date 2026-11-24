@@ -27,6 +27,8 @@ mod test_embedded;
 mod test_environment_template;
 #[path = "integration/test_error_messages.rs"]
 mod test_error_messages;
+#[path = "integration/test_error_order.rs"]
+mod test_error_order;
 #[path = "integration/test_expr_parameters.rs"]
 mod test_expr_parameters;
 #[path = "integration/test_feature_bundle_1.rs"]
