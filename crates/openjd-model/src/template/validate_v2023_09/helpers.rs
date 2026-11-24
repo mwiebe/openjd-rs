@@ -179,7 +179,8 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
 /// Most names a message's name list shows.
 const MAX_LISTED_NAMES: usize = 50;
 
-/// Most bytes a message's name list takes, the first name aside.
+/// Most bytes a message's name list takes; the first name is listed even
+/// when it alone is longer.
 const MAX_LISTED_BYTES: usize = 512;
 
 /// A comma-separated list of `names` for a message: at most

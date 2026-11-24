@@ -1411,8 +1411,8 @@ The crate targets the 2023-09 specification revision exclusively at
 present. Per the future-revision-readiness report, the plumbing for a
 second revision exists (`EffectiveLimits::from_context` dispatches on
 revision, `validation::validate_*` dispatches on revision,
-`decode_job_template` wraps its `from_value` call in a revision
-match), but no second revision has been defined.
+`decode_job_template` wraps its deserialization (`decode_as`) in a
+revision match), but no second revision has been defined.
 
 Enums that are marked `#[non_exhaustive]` today:
 
