@@ -93,21 +93,23 @@ fn add_job_symbols(symtab: &mut SymbolTable) {
 /// Add `{prefix}File.<name>` (`Env.File.*` or `Task.File.*`) for each
 /// embedded file of a script. A `filename` is a plain string, so a Session
 /// allocates the files before it evaluates the script's `let` bindings,
-/// and these are in their scope. A name that is not an `<Identifier>` is
-/// skipped: structure validation reports it, and a dotted one would collide
-/// with the path another name binds.
+/// and these are in their scope.
+///
+/// A name that fails the embedded file name check, such as `x.y`, is one
+/// structure validation reports. It is still bound, so a reference to it
+/// draws no second error, but after every name that passes, and a binding
+/// that conflicts with one of those (`x.y` nests under the PATH `x` binds)
+/// is dropped. So with files `x` and `x.y`, in either order, `x` is bound.
 fn add_files(symtab: &mut SymbolTable, prefix: &str, files: Option<&[EmbeddedFile]>) {
-    for f in files
+    let (valid, invalid): (Vec<_>, Vec<_>) = files
         .into_iter()
         .flatten()
-        .filter(|f| helpers::is_embedded_file_name(&f.name))
-    {
-        symtab
-            .set(
-                &format!("{prefix}File.{}", f.name),
-                ExprValue::unresolved(ExprType::PATH),
-            )
-            .expect("symtab");
+        .partition(|f| helpers::is_embedded_file_name(&f.name));
+    for f in valid.into_iter().chain(invalid) {
+        let _ = symtab.set(
+            &format!("{prefix}File.{}", f.name),
+            ExprValue::unresolved(ExprType::PATH),
+        );
     }
 }
 
@@ -2602,12 +2604,13 @@ fn evaluate_let_binding(
                 Ok(result) => {
                     // Set the binding in the symtab with its inferred value/type
                     // so subsequent bindings and format strings see the correct type.
-                    // `set` fails only when the key path collides with an existing
-                    // scalar or table, as a binding named like a scope root
-                    // (`Session`) does. Template validation reports the name, so
-                    // the binding is dropped and the scope keeps its symbol. A
-                    // scope added after the bindings (a wrap hook's) is merged
-                    // over them instead.
+                    // `set` fails only on a name that conflicts with a scope already
+                    // in the symtab: an uppercase scope root such as `Session`, or a
+                    // dotted name under one. Every such name breaks the
+                    // `<UserIdentifier>` rule, which is reported at template
+                    // validation, so the binding is dropped and the scope keeps its
+                    // symbol. A scope added after the bindings (a wrap hook's) is
+                    // merged over them instead.
                     let _ = symtab.set(name, result);
                 }
                 Err(e) => {

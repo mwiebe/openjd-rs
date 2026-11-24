@@ -512,3 +512,78 @@ fn env_template_files_x_and_x_dot_y_is_a_name_error() {
         );
     }
 }
+
+/// A lone `x.y` is still bound, so format string validation adds no
+/// "Undefined variable" error to the name's own. (In a step script the
+/// structural `Task.File.*` reference check, which reads `x` as the file
+/// name, reports the reference separately.)
+#[test]
+fn referenced_lone_dotted_file_name_is_one_name_error() {
+    let step = decode_job_template(
+        yaml_val(
+            r#"{
+            "specificationVersion": "jobtemplate-2023-09",
+            "name": "J",
+            "steps": [{"name": "S", "script": {
+                "embeddedFiles": [{"name": "x.y", "type": "TEXT", "data": "a"}],
+                "actions": {"onRun": {"command": "{{Task.File.x.y}}"}}
+            }}]
+        }"#,
+        ),
+        None,
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string();
+    assert_eq!(
+        step,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> script:\n\treferences undefined embedded file 'x'.\n\
+         steps[0] -> script -> embeddedFiles[0] -> name:\n\t'x.y' is not a valid identifier."
+    );
+    let env = decode_environment_template(
+        yaml_val(
+            r#"{
+            "specificationVersion": "environment-2023-09",
+            "environment": {"name": "E", "script": {
+                "embeddedFiles": [{"name": "x.y", "type": "TEXT", "data": "a"}],
+                "actions": {"onEnter": {"command": "{{Env.File.x.y}}"}}
+            }}
+        }"#,
+        ),
+        None,
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string();
+    assert_eq!(
+        env,
+        "Model validation error: 1 validation error for EnvironmentTemplate\n\
+         environment -> script -> embeddedFiles[0] -> name:\n\t'x.y' is not a valid identifier."
+    );
+}
+
+#[test]
+fn empty_file_name_is_a_name_error() {
+    let err = decode_job_template(
+        yaml_val(
+            r#"{
+            "specificationVersion": "jobtemplate-2023-09",
+            "name": "J",
+            "steps": [{"name": "S", "script": {
+                "embeddedFiles": [{"name": "", "type": "TEXT", "data": "a"}],
+                "actions": {"onRun": {"command": "echo"}}
+            }}]
+        }"#,
+        ),
+        None,
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> embeddedFiles[0] -> name:\n\t'' is not a valid identifier."
+    );
+}

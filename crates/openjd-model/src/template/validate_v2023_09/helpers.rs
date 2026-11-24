@@ -23,11 +23,13 @@ pub static ATTR_VALUE_RE: LazyLock<Regex> =
 
 pub const RESERVED_SCOPES: &[&str] = &["worker", "job", "step", "task"];
 
-/// Whether `name` passes the embedded file `name` check (an `<Identifier>`,
-/// Template Schemas §6.1), which `validate_embedded_files` reports on.
+/// Whether `name` passes the embedded file `name` check, which
+/// `validate_embedded_files` reports on: a letter or `_`, then letters,
+/// digits and `_`. It accepts any Unicode letter or digit, where the
+/// `<Identifier>` the spec requires (Template Schemas §7.1, and
+/// `Identifier` in `constrained_strings.rs`) allows only ASCII ones.
 /// Format string validation binds `Task.File.<name>` and `Env.File.<name>`
-/// only for a name that passes, so a name such as `x.y`, which would nest
-/// under the path `x` binds, never reaches the symbol table.
+/// for the names that pass before the others.
 pub(crate) fn is_embedded_file_name(name: &str) -> bool {
     name.chars()
         .next()

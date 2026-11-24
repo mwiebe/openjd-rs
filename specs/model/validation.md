@@ -223,16 +223,19 @@ The Step's `let` values are copied into the session and task scopes after the sc
 symbols, so a binding with a name the naming rule rejects can replace a symbol (a dotted name)
 or be dropped (`Session`).
 
-A name that fails its naming rule is reported once, where it is defined, and
-never makes the scope builders panic. `Task.File.<name>` and
-`Env.File.<name>` are bound only for an embedded file name that passes the
-`<Identifier>` check (`helpers::is_embedded_file_name`, the check pass 6
-reports on), so with files `x` and `x.y` only `x` is bound. A `let` binding
-is bound unless its name is already a scope table, such as `Session`; the
-`<UserIdentifier>` rule reports both kinds of uppercase name. The RFC 0008
-wrap hook scopes (`WrappedAction.*`, `WrappedEnv.Name`, `WrappedStep.Name`)
-are added after the bindings and merged over them, so in a hook they replace
-a binding named `WrappedAction`, `WrappedEnv` or `WrappedStep`.
+A name that fails its naming rule never makes the scope builders panic.
+`Task.File.<name>` and `Env.File.<name>` are bound for every embedded file,
+those whose name passes the check pass 6 reports with
+(`helpers::is_embedded_file_name`) first; a later binding that conflicts with
+an earlier one is dropped. So with files `x` and `x.y`, in either order, `x`
+is bound, and a lone `x.y` is bound too, so a reference to it draws no
+"Undefined variable" error. A `let` binding is dropped when its name conflicts
+with a scope already in the symtab (`Session`, or a dotted name under a
+scope); the `<UserIdentifier>` rule reports every such name. The RFC 0008 wrap
+hook scopes (`WrappedAction.*`, `WrappedEnv.Name`, `WrappedStep.Name`) are
+added after the bindings and merged over them, so in a hook they replace a
+binding named `WrappedAction`, `WrappedEnv` or `WrappedStep`, and the hook's
+references to the scope resolve.
 
 Scope selection follows the spec's `@fmtstring` stage annotations, not the
 container: `timeout` and `notifyPeriodInSeconds` are plain `@fmtstring`
