@@ -2606,8 +2606,9 @@ fn evaluate_let_binding(
                     // Set the binding in the symtab with its inferred value/type
                     // so subsequent bindings and format strings see the correct type.
                     // `set` fails only on a name that conflicts with an entry already
-                    // in the symtab: a scope (`Session`, or a dotted name under one)
-                    // or an earlier binding (`a` after `a.b`). Each such conflict
+                    // in the symtab: a scope root (`Session`), a dotted name under a
+                    // value (`Session.WorkingDirectory.x`), or an earlier binding (`a`
+                    // after `a.b`). Each such conflict
                     // involves a name the `<UserIdentifier>` rule reports at template
                     // validation, so the binding is dropped and ignoring the result
                     // is safe. A scope added after the bindings (a wrap hook's) is

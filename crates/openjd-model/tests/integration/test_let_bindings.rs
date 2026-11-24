@@ -1950,3 +1950,55 @@ fn a_let_named_like_a_scope_root_is_only_a_naming_error() {
         );
     }
 }
+
+// ══════════════════════════════════════════════════════════════
+// A `let` name that conflicts with the symbol table
+// ══════════════════════════════════════════════════════════════
+//
+// A binding whose name conflicts with an entry already in the symtab (a
+// scope root, or a name an earlier binding made a table) is dropped, and
+// validation reports the `<UserIdentifier>` error. These pin that no panic
+// escapes from the insert, on both the evaluated and the failed binding
+// paths.
+
+fn decode_err_text(s: &str) -> String {
+    decode_job_template(
+        yaml_val(s),
+        Some(&["EXPR", "FEATURE_BUNDLE_1"]),
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string()
+}
+
+#[test]
+fn let_named_scope_root_is_a_name_error() {
+    assert_eq!(
+        decode_err_text(&job_with_script_let(r#""Session = 1""#)),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> let[0]:\n\t\
+         name 'Session' must start with lowercase letter or underscore."
+    );
+}
+
+#[test]
+fn failed_let_named_scope_root_is_a_name_error() {
+    assert_eq!(
+        decode_err_text(&job_with_script_let(r#""Session = 1 +""#)),
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> script -> let[0]:\n\t\
+         name 'Session' must start with lowercase letter or underscore.\n\
+         steps[0] -> script -> let[0]:\n\t\
+         Invalid expression in let binding 'Session': Syntax error: Expected an expression\n  \
+         Session = 1 +\n            ^~~"
+    );
+}
+
+#[test]
+fn let_after_dotted_let_of_same_root_is_dropped() {
+    assert_eq!(
+        decode_err_text(&job_with_script_let(r#""a.b = 1", "a = 2""#)),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> let[0]:\n\tname 'a.b' contains invalid characters."
+    );
+}
