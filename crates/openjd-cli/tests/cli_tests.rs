@@ -479,6 +479,70 @@ steps:
         assert_eq!(code, 0, ".ojdt summary should succeed. stderr: {stderr}");
         assert!(stdout.contains("OjdtJob"), "stdout: {stdout}");
     }
+
+    /// Embedded files named `x` and `x.y` in one step script: `check`
+    /// reports the invalid name and exits 1, rather than panicking (exit
+    /// 101) when `Task.File.x.y` meets the value `Task.File.x` binds.
+    #[test]
+    fn test_check_embedded_files_x_and_x_dot_y_reports_name_error() {
+        let mut f = NamedTempFile::with_suffix(".template.yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: jobtemplate-2023-09
+name: Test
+steps:
+- name: S
+  script:
+    actions: {{onRun: {{command: foo}}}}
+    embeddedFiles: [{{name: x, type: TEXT, data: a}}, {{name: x.y, type: TEXT, data: b}}]
+"#
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(&["check", f.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stderr,
+            "ERROR: Model validation error: 1 validation error for JobTemplate\n\
+             steps[0] -> script -> embeddedFiles[1] -> name:\n\t'x.y' is not a valid identifier.\n"
+        );
+    }
+
+    /// A `let` named `WrappedAction` in an Environment with wrap hooks:
+    /// `check` reports the invalid name and exits 1, rather than panicking
+    /// (exit 101) when the hook scope's `WrappedAction.*` meets the value
+    /// the binding holds.
+    #[test]
+    fn test_check_let_named_wrapped_action_reports_name_error() {
+        let mut f = NamedTempFile::with_suffix(".template.yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, WRAP_ACTIONS]
+name: Test
+jobEnvironments:
+- name: E
+  script:
+    let: ["WrappedAction = 1"]
+    actions:
+      onWrapEnvEnter: {{command: echo}}
+      onWrapTaskRun: {{command: "{{{{WrappedAction.Command}}}}"}}
+      onWrapEnvExit: {{command: echo}}
+steps:
+- name: S
+  script:
+    actions: {{onRun: {{command: foo}}}}
+"#
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(&["check", f.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stderr,
+            "ERROR: Model validation error: 1 validation error for JobTemplate\n\
+             jobEnvironments[0] -> script -> let[0]:\n\t\
+             name 'WrappedAction' must start with lowercase letter or underscore.\n"
+        );
+    }
 }
 
 // ============================================================

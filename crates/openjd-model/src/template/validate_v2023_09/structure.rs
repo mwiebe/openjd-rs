@@ -994,14 +994,7 @@ fn validate_embedded_files(
                 format!("duplicate embedded file name '{}'.", f.name),
             );
         }
-        if f.name.is_empty()
-            || !f
-                .name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphabetic() || c == '_')
-            || !f.name.chars().all(|c| c.is_alphanumeric() || c == '_')
-        {
+        if !is_embedded_file_name(&f.name) {
             errors.add(
                 &path_field(&f_path, "name"),
                 format!("'{}' is not a valid identifier.", f.name),

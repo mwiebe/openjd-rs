@@ -1,0 +1,8 @@
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, WRAP_ACTIONS]
+name: Test
+steps:
+- name: S
+  script:
+    actions: {onRun: {command: foo}}
+    embeddedFiles: [{name: x, type: TEXT, data: x}, {name: x.y, type: TEXT, data: y}]

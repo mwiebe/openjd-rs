@@ -93,9 +93,15 @@ fn add_job_symbols(symtab: &mut SymbolTable) {
 /// Add `{prefix}File.<name>` (`Env.File.*` or `Task.File.*`) for each
 /// embedded file of a script. A `filename` is a plain string, so a Session
 /// allocates the files before it evaluates the script's `let` bindings,
-/// and these are in their scope.
+/// and these are in their scope. A name that is not an `<Identifier>` is
+/// skipped: structure validation reports it, and a dotted one would collide
+/// with the path another name binds.
 fn add_files(symtab: &mut SymbolTable, prefix: &str, files: Option<&[EmbeddedFile]>) {
-    for f in files.into_iter().flatten() {
+    for f in files
+        .into_iter()
+        .flatten()
+        .filter(|f| helpers::is_embedded_file_name(&f.name))
+    {
         symtab
             .set(
                 &format!("{prefix}File.{}", f.name),
@@ -2400,7 +2406,10 @@ fn reject_complex_action(
 ///   `null` for `TERMINATE` or when no `<Cancelation>` is defined)
 ///
 /// The caller has already cloned the session symtab, so we mutate in place.
+/// The scope is merged over the symtab, so it replaces a `let` binding
+/// named `WrappedAction`, a name the `<UserIdentifier>` rule rejects.
 fn add_wrapped_action_scope(symtab: &mut SymbolTable) {
+    let mut scope = SymbolTable::new();
     for (name, ty) in [
         ("WrappedAction.Command", ExprType::STRING),
         (
@@ -2424,24 +2433,36 @@ fn add_wrapped_action_scope(symtab: &mut SymbolTable) {
             fixed_type(ExprType::union(vec![ExprType::INT, ExprType::NULLTYPE])),
         ),
     ] {
-        symtab.set(name, ExprValue::unresolved(ty)).expect("symtab");
+        scope
+            .set(name, ExprValue::unresolved(ty))
+            .expect("the WrappedAction.* paths do not conflict with each other");
     }
+    symtab.merge_from(&scope);
 }
 
 /// Augment with `WrappedEnv.Name`, available only in `onWrapEnvEnter` and
-/// `onWrapEnvExit` (RFC 0008).
+/// `onWrapEnvExit` (RFC 0008). Merged over the symtab, as in
+/// [`add_wrapped_action_scope`].
 fn add_wrapped_env_name_scope(symtab: &mut SymbolTable) {
-    symtab
-        .set("WrappedEnv.Name", ExprValue::unresolved(ExprType::STRING))
-        .expect("symtab");
+    add_wrap_name_scope(symtab, "WrappedEnv");
 }
 
 /// Augment with `WrappedStep.Name`, available only in `onWrapTaskRun`
-/// (RFC 0008).
+/// (RFC 0008). Merged over the symtab, as in [`add_wrapped_action_scope`].
 fn add_wrapped_step_name_scope(symtab: &mut SymbolTable) {
-    symtab
-        .set("WrappedStep.Name", ExprValue::unresolved(ExprType::STRING))
-        .expect("symtab");
+    add_wrap_name_scope(symtab, "WrappedStep");
+}
+
+/// Merge `<root>.Name`, a string, over `symtab`, replacing any value bound
+/// at `root`.
+fn add_wrap_name_scope(symtab: &mut SymbolTable, root: &str) {
+    let mut names = SymbolTable::new();
+    names
+        .set("Name", ExprValue::unresolved(ExprType::STRING))
+        .expect("a fresh table has no conflicts");
+    let mut scope = SymbolTable::new();
+    scope.set_table(root, names);
+    symtab.merge_from(&scope);
 }
 
 /// The comprehension-variable rules for an Environment's script against
@@ -2584,7 +2605,9 @@ fn evaluate_let_binding(
                     // `set` fails only when the key path collides with an existing
                     // scalar or table, as a binding named like a scope root
                     // (`Session`) does. Template validation reports the name, so
-                    // the binding is dropped and the scope keeps its symbol.
+                    // the binding is dropped and the scope keeps its symbol. A
+                    // scope added after the bindings (a wrap hook's) is merged
+                    // over them instead.
                     let _ = symtab.set(name, result);
                 }
                 Err(e) => {

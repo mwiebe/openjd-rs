@@ -223,6 +223,17 @@ The Step's `let` values are copied into the session and task scopes after the sc
 symbols, so a binding with a name the naming rule rejects can replace a symbol (a dotted name)
 or be dropped (`Session`).
 
+A name that fails its naming rule is reported once, where it is defined, and
+never makes the scope builders panic. `Task.File.<name>` and
+`Env.File.<name>` are bound only for an embedded file name that passes the
+`<Identifier>` check (`helpers::is_embedded_file_name`, the check pass 6
+reports on), so with files `x` and `x.y` only `x` is bound. A `let` binding
+is bound unless its name is already a scope table, such as `Session`; the
+`<UserIdentifier>` rule reports both kinds of uppercase name. The RFC 0008
+wrap hook scopes (`WrappedAction.*`, `WrappedEnv.Name`, `WrappedStep.Name`)
+are added after the bindings and merged over them, so in a hook they replace
+a binding named `WrappedAction`, `WrappedEnv` or `WrappedStep`.
+
 Scope selection follows the spec's `@fmtstring` stage annotations, not the
 container: `timeout` and `notifyPeriodInSeconds` are plain `@fmtstring`
 (resolved at job creation, before any session exists), so they validate in

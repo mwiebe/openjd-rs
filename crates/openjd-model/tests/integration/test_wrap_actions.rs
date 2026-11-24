@@ -1142,3 +1142,154 @@ environment:
          its RawParam.* fallback in the frozen symtab"
     );
 }
+
+// ══════════════════════════════════════════════════════════════
+// A `let` name that is a wrap hook's scope root
+// ══════════════════════════════════════════════════════════════
+//
+// `WrappedAction`, `WrappedEnv` and `WrappedStep` start with an uppercase
+// letter, so the `<UserIdentifier>` rule (Template Schemas §3.6.1) rejects
+// them as `let` names. Validation reports that one error and nothing else:
+// the hook scope still binds its own symbols, so a hook's references to
+// them resolve, and no panic escapes from the symbol-table insert.
+
+/// The three hooks, each referencing every symbol its scope defines.
+const WRAP_HOOKS_JSON: &str = r#"{
+    "onWrapEnvEnter": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name}}"]},
+    "onWrapTaskRun": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedStep.Name}}"]},
+    "onWrapEnvExit": {"command": "echo", "args": ["{{WrappedAction.Command}}", "{{WrappedEnv.Name}}"]}
+}"#;
+
+const WRAP_SCOPE_ROOTS: [&str; 3] = ["WrappedAction", "WrappedEnv", "WrappedStep"];
+
+fn decode_job_err_text(template: &str) -> String {
+    decode_job_template(
+        yaml_val(template),
+        Some(WRAP_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string()
+}
+
+fn uppercase_let_error(template_kind: &str, let_path: &str, name: &str) -> String {
+    format!(
+        "Model validation error: 1 validation error for {template_kind}\n\
+         {let_path}:\n\tname '{name}' must start with lowercase letter or underscore."
+    )
+}
+
+#[test]
+fn job_env_let_named_wrap_scope_root_is_a_name_error() {
+    for name in WRAP_SCOPE_ROOTS {
+        let template = format!(
+            r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "extensions": ["EXPR", "WRAP_ACTIONS"],
+                "name": "J",
+                "jobEnvironments": [{{
+                    "name": "E",
+                    "script": {{"let": ["{name} = 1"], "actions": {WRAP_HOOKS_JSON}}}
+                }}],
+                "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}}}]
+            }}"#
+        );
+        assert_eq!(
+            decode_job_err_text(&template),
+            uppercase_let_error(
+                "JobTemplate",
+                "jobEnvironments[0] -> script -> let[0]",
+                name
+            ),
+            "let name {name}"
+        );
+    }
+}
+
+#[test]
+fn step_env_let_named_wrap_scope_root_is_a_name_error() {
+    for name in WRAP_SCOPE_ROOTS {
+        let template = format!(
+            r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "extensions": ["EXPR", "WRAP_ACTIONS"],
+                "name": "J",
+                "steps": [{{
+                    "name": "S",
+                    "stepEnvironments": [{{
+                        "name": "E",
+                        "script": {{"let": ["{name} = 1"], "actions": {WRAP_HOOKS_JSON}}}
+                    }}],
+                    "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}
+                }}]
+            }}"#
+        );
+        assert_eq!(
+            decode_job_err_text(&template),
+            uppercase_let_error(
+                "JobTemplate",
+                "steps[0] -> stepEnvironments[0] -> script -> let[0]",
+                name
+            ),
+            "let name {name}"
+        );
+    }
+}
+
+/// A Step-level `let` is in scope in the Step's Environments, so it meets
+/// the wrap hook scope there.
+#[test]
+fn step_let_named_wrap_scope_root_is_a_name_error() {
+    for name in WRAP_SCOPE_ROOTS {
+        let template = format!(
+            r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "extensions": ["EXPR", "WRAP_ACTIONS"],
+                "name": "J",
+                "steps": [{{
+                    "name": "S",
+                    "let": ["{name} = 1"],
+                    "stepEnvironments": [{{"name": "E", "script": {{"actions": {WRAP_HOOKS_JSON}}}}}],
+                    "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}
+                }}]
+            }}"#
+        );
+        assert_eq!(
+            decode_job_err_text(&template),
+            uppercase_let_error("JobTemplate", "steps[0] -> let[0]", name),
+            "let name {name}"
+        );
+    }
+}
+
+#[test]
+fn env_template_let_named_wrap_scope_root_is_a_name_error() {
+    for name in WRAP_SCOPE_ROOTS {
+        let template = format!(
+            r#"{{
+                "specificationVersion": "environment-2023-09",
+                "extensions": ["EXPR", "WRAP_ACTIONS"],
+                "environment": {{
+                    "name": "E",
+                    "script": {{"let": ["{name} = 1"], "actions": {WRAP_HOOKS_JSON}}}
+                }}
+            }}"#
+        );
+        let err = decode_environment_template(
+            yaml_val(&template),
+            Some(WRAP_EXTS),
+            &CallerLimits::default(),
+        )
+        .expect_err("expected a validation error")
+        .to_string();
+        assert_eq!(
+            err,
+            uppercase_let_error(
+                "EnvironmentTemplate",
+                "environment -> script -> let[0]",
+                name
+            ),
+            "let name {name}"
+        );
+    }
+}

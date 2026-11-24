@@ -1,0 +1,15 @@
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, WRAP_ACTIONS]
+name: Test
+jobEnvironments:
+- name: E
+  script:
+    let: ["WrappedAction = 1"]
+    actions:
+      onWrapEnvEnter: {command: echo}
+      onWrapTaskRun: {command: "{{WrappedAction.Command}}"}
+      onWrapEnvExit: {command: echo}
+steps:
+- name: S
+  script:
+    actions: {onRun: {command: foo}}

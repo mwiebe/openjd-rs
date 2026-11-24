@@ -350,3 +350,165 @@ fn embedded_file_name_with_dot_rejected() {
         "Expected invalid-identifier error for a dotted embedded file name, got: {msg}"
     );
 }
+
+// ══════════════════════════════════════════════════════════════
+// Embedded file names `x` and `x.y` in one script
+// ══════════════════════════════════════════════════════════════
+//
+// `x.y` is not an `<Identifier>`, and `Task.File.x.y` / `Env.File.x.y`
+// would nest under the path `x` binds. Validation reports the name error
+// and nothing else: `x` still resolves, and no panic escapes from the
+// symbol-table insert. Both orders are covered, because which name binds
+// first decides which insert conflicts.
+
+const DOTTED_PAIRS: [(&str, &str); 2] = [("x", "x.y"), ("x.y", "x")];
+
+fn files_json(first: &str, second: &str) -> String {
+    format!(
+        r#"[{{"name": "{first}", "type": "TEXT", "data": "a"}}, {{"name": "{second}", "type": "TEXT", "data": "b"}}]"#
+    )
+}
+
+fn dotted_index(first: &str) -> usize {
+    if first.contains('.') {
+        0
+    } else {
+        1
+    }
+}
+
+fn dotted_name_error(template_kind: &str, files_path: &str, first: &str) -> String {
+    format!(
+        "Model validation error: 1 validation error for {template_kind}\n\
+         {files_path}[{}] -> name:\n\t'x.y' is not a valid identifier.",
+        dotted_index(first)
+    )
+}
+
+#[test]
+fn step_script_files_x_and_x_dot_y_is_a_name_error() {
+    for (first, second) in DOTTED_PAIRS {
+        let files = files_json(first, second);
+        let err = decode_job_template(
+            yaml_val(&format!(
+                r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "name": "J",
+                "steps": [{{"name": "S", "script": {{
+                    "embeddedFiles": {files},
+                    "actions": {{"onRun": {{"command": "{{{{Task.File.x}}}}"}}}}
+                }}}}]
+            }}"#
+            )),
+            None,
+            &CallerLimits::default(),
+        )
+        .expect_err("expected a validation error")
+        .to_string();
+        assert_eq!(
+            err,
+            dotted_name_error("JobTemplate", "steps[0] -> script -> embeddedFiles", first),
+            "files {first}, {second}"
+        );
+    }
+}
+
+#[test]
+fn job_env_files_x_and_x_dot_y_is_a_name_error() {
+    for (first, second) in DOTTED_PAIRS {
+        let files = files_json(first, second);
+        let err = decode_job_template(
+            yaml_val(&format!(
+                r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "name": "J",
+                "jobEnvironments": [{{"name": "E", "script": {{
+                    "embeddedFiles": {files},
+                    "actions": {{"onEnter": {{"command": "{{{{Env.File.x}}}}"}}}}
+                }}}}],
+                "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}}}]
+            }}"#
+            )),
+            None,
+            &CallerLimits::default(),
+        )
+        .expect_err("expected a validation error")
+        .to_string();
+        assert_eq!(
+            err,
+            dotted_name_error(
+                "JobTemplate",
+                "jobEnvironments[0] -> script -> embeddedFiles",
+                first
+            ),
+            "files {first}, {second}"
+        );
+    }
+}
+
+#[test]
+fn step_env_files_x_and_x_dot_y_is_a_name_error() {
+    for (first, second) in DOTTED_PAIRS {
+        let files = files_json(first, second);
+        let err = decode_job_template(
+            yaml_val(&format!(
+                r#"{{
+                "specificationVersion": "jobtemplate-2023-09",
+                "name": "J",
+                "steps": [{{
+                    "name": "S",
+                    "stepEnvironments": [{{"name": "E", "script": {{
+                        "embeddedFiles": {files},
+                        "actions": {{"onEnter": {{"command": "{{{{Env.File.x}}}}"}}}}
+                    }}}}],
+                    "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}
+                }}]
+            }}"#
+            )),
+            None,
+            &CallerLimits::default(),
+        )
+        .expect_err("expected a validation error")
+        .to_string();
+        assert_eq!(
+            err,
+            dotted_name_error(
+                "JobTemplate",
+                "steps[0] -> stepEnvironments[0] -> script -> embeddedFiles",
+                first
+            ),
+            "files {first}, {second}"
+        );
+    }
+}
+
+#[test]
+fn env_template_files_x_and_x_dot_y_is_a_name_error() {
+    for (first, second) in DOTTED_PAIRS {
+        let files = files_json(first, second);
+        let err = decode_environment_template(
+            yaml_val(&format!(
+                r#"{{
+                "specificationVersion": "environment-2023-09",
+                "environment": {{"name": "E", "script": {{
+                    "embeddedFiles": {files},
+                    "actions": {{"onEnter": {{"command": "{{{{Env.File.x}}}}"}}}}
+                }}}}
+            }}"#
+            )),
+            None,
+            &CallerLimits::default(),
+        )
+        .expect_err("expected a validation error")
+        .to_string();
+        assert_eq!(
+            err,
+            dotted_name_error(
+                "EnvironmentTemplate",
+                "environment -> script -> embeddedFiles",
+                first
+            ),
+            "files {first}, {second}"
+        );
+    }
+}
