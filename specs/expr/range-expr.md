@@ -399,7 +399,8 @@ r.to_string()  // → "1-10" (unchanged)
 When the flag is set and the values are contiguous (`last - first + 1 == len`), `Display`
 writes `"{first}-{last}"`; otherwise it writes the canonical form. The model layer sets
 the flag on every `CONTIGUOUS` chunk it builds, the CLI sets it on a `--task-param` or
-`--tasks` value for a `CONTIGUOUS` `CHUNK[INT]` parameter, and every string path (`Task.Param`,
+`--tasks` value for a `CONTIGUOUS` `CHUNK[INT]` parameter, the session sets it on a
+`CHUNK[INT]` value given as a string written `<N>-<M>` (`Session::chunk_param_value`), and every string path (`Task.Param`,
 `Task.RawParam`, `string()`, `repr_*`, `+`) goes through `Display`, so the chunk form
 reaches all of them. The flag is not transported: `Serialize` writes the runs and their lengths with the flag
 bit masked out of `length`, and

@@ -4419,6 +4419,10 @@ mod typed_param_seeding_tests {
         for (value, reason) in [
             (ExprValue::String("1:5".into()), "Unexpected ':' in '1:5'"),
             (ExprValue::Int(5), "Cannot coerce int to range_expr"),
+            (
+                ExprValue::new_path("/a".to_string(), openjd_expr::PathFormat::host()),
+                "Cannot coerce path to range_expr",
+            ),
         ] {
             let err = build_symtab_with_task_params(
                 vec![],
@@ -4465,6 +4469,10 @@ mod typed_param_seeding_tests {
             (TaskParameterType::Int, ExprValue::Int(7)),
             (TaskParameterType::Float, ExprValue::String("1.5".into())),
             (TaskParameterType::String, ExprValue::String("s".into())),
+            (
+                TaskParameterType::String,
+                ExprValue::new_path("/s".to_string(), host),
+            ),
             (TaskParameterType::Path, ExprValue::String("/p".into())),
             (
                 TaskParameterType::Path,

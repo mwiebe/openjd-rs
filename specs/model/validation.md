@@ -219,7 +219,8 @@ no PATH `Param.*`, a PATH definition adds no `Param.<name>`.
    `Task.Param.*`, `Task.RawParam.*`, `Task.File.*` and, with EXPR, the Step's `let` values;
    then the script's `let` bindings. A step script. `Env.File.*` is not in it. A task
    parameter's two symbols are typed by `TaskParameterType::expr_type` and `raw_expr_type`
-   (`string` for PATH's `Task.RawParam.*`), which job creation and the session also use.
+   (`string` for PATH's `Task.RawParam.*`), which job creation also uses, and the session
+   binds values of those types.
 
 The Step's `let` values are copied into the session and task scopes after the scope's other
 symbols, so a binding with a name the naming rule rejects can replace a symbol (a dotted name)
