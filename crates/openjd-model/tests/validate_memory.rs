@@ -117,6 +117,35 @@ fn template(steps: &[Step], job_env_lets: Option<&[&str]>) -> serde_json::Value 
     t
 }
 
+/// `steps` plain Steps under `envs` Job Environments that each define every
+/// wrap hook, named with `name_len` characters: every Step breaks the
+/// single-layer rule with the same layers.
+fn wrap_template(steps: usize, envs: usize, name_len: usize) -> serde_json::Value {
+    let envs: Vec<_> = (0..envs)
+        .map(|k| {
+            serde_json::json!({
+                "name": format!("{k:0>name_len$}"),
+                "script": {"actions": {
+                    "onEnter": {"command": "x"},
+                    "onWrapEnvEnter": {"command": "x"},
+                    "onWrapTaskRun": {"command": "x"},
+                    "onWrapEnvExit": {"command": "x"}
+                }}
+            })
+        })
+        .collect();
+    let steps: Vec<_> = (0..steps)
+        .map(|i| serde_json::json!({"name": format!("S{i}"), "script": {"actions": {"onRun": {"command": "x"}}}}))
+        .collect();
+    serde_json::json!({
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"],
+        "name": "M",
+        "jobEnvironments": envs,
+        "steps": steps,
+    })
+}
+
 /// `steps` steps with literal host requirements and the `let` block `lets`,
 /// over `params` STRING job parameters.
 fn hr_template(steps: usize, params: usize, expr: bool, lets: &[String]) -> serde_json::Value {
@@ -152,7 +181,7 @@ fn hr_template(steps: usize, params: usize, expr: bool, lets: &[String]) -> serd
 fn validate(t: serde_json::Value) {
     let _ = decode_job_template(
         t,
-        Some(&["EXPR", "FEATURE_BUNDLE_1"]),
+        Some(&["EXPR", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"]),
         &CallerLimits::default(),
     );
 }
@@ -222,8 +251,8 @@ fn validation_peak_memory_stays_within_its_bounds() {
             ),
             2.5,
         ),
-        // 9.00, each Step's bad `let` reported once, with its host
-        // requirements.
+        // 9.00. Reporting each Step's bad `let` with its host requirements
+        // and again with its body: 17.00.
         (
             "3 steps, large errors, large job environment",
             template(
@@ -363,6 +392,13 @@ fn validation_peak_memory_stays_within_its_bounds() {
                 None,
             ),
             20.5,
+        ),
+        // 1.10, decoding the 0.7 MB template included (main: 1.07). Naming
+        // the 1,000 Job Environments for each of the 1,000 Steps: 258.
+        (
+            "1000 steps under 1000 wrapping job environments, 500-character names",
+            wrap_template(1000, 1000, 500),
+            1.6,
         ),
         // 0.61. Keeping each step's whole symtab (Param.* entries
         // included) for its body: 3.57.

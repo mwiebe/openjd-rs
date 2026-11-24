@@ -1228,3 +1228,30 @@ fn an_environment_without_wrap_hooks_is_not_a_layer() {
     decode_job_template(yaml_val(src), Some(WRAP_EXTS), &CallerLimits::default())
         .expect("one wrap layer is valid");
 }
+
+/// An Environment that defines only some of the wrap hooks is a layer too:
+/// the all-or-nothing error and the single-layer error are both reported.
+#[test]
+fn an_environment_with_some_wrap_hooks_is_a_layer() {
+    let src = r#"{"specificationVersion": "jobtemplate-2023-09", "name": "J",
+       "extensions": ["WRAP_ACTIONS", "EXPR"],
+       "jobEnvironments": [
+         {"name": "P", "script": {"actions": {"onEnter": {"command": "x"},
+           "onWrapEnvEnter": {"command": "x"}}}},
+         {"name": "W", "script": {"actions": {"onEnter": {"command": "x"},
+           "onWrapEnvEnter": {"command": "x"}, "onWrapTaskRun": {"command": "x"},
+           "onWrapEnvExit": {"command": "x"}}}}],
+       "steps": [{"name": "S", "script": {"actions": {"onRun": {"command": "x"}}}}]}"#;
+    let err = decode_job_template(yaml_val(src), Some(WRAP_EXTS), &CallerLimits::default())
+        .expect_err("rejected")
+        .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         jobEnvironments[0] -> script -> actions:\n\tan environment that defines any of \
+         onWrapEnvEnter, onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).\n\
+         steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks \
+         (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'P', 'W'. A Session may have at most \
+         one Environment defining wrap hooks (RFC 0008)."
+    );
+}

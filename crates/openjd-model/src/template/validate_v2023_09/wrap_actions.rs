@@ -111,6 +111,13 @@ pub fn validate_wrap_actions_job_template(
         let path = path_index(&path_field(&[], "jobEnvironments"), k);
         check_env(env, &path, active, errors);
     }
+    // Every Step's Sessions enter the Job Environments, so their layers are
+    // named once, and each Step adds only its own Step Environments'.
+    let job_layers: Vec<String> = job_envs
+        .iter()
+        .filter(|env| env.defines_wrap_hooks())
+        .map(|env| format!("'{}'", env.name))
+        .collect();
     let mut steps = Vec::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let base = path_index(&path_field(&[], "steps"), i);
@@ -121,54 +128,55 @@ pub fn validate_wrap_actions_job_template(
         if !active {
             continue;
         }
-        let mut layers: Vec<String> = job_envs
+        let own: Vec<String> = step
+            .step_environments
             .iter()
+            .flatten()
             .filter(|env| env.defines_wrap_hooks())
-            .map(|env| format!("'{}'", env.name))
+            .map(|env| format!("'{}' (stepEnvironments)", env.name))
             .collect();
-        layers.extend(
-            step.step_environments
-                .iter()
-                .flatten()
-                .filter(|env| env.defines_wrap_hooks())
-                .map(|env| format!("'{}' (stepEnvironments)", env.name)),
-        );
-        steps.push((i, step.name.as_str(), layers));
+        steps.push((i, step.name.as_str(), own));
     }
-    report_wrap_layers(steps, |i, message| {
+    report_wrap_layers(&job_layers, steps, |i, message| {
         errors.add(&path_index(&path_field(&[], "steps"), i), message);
     });
 }
 
-/// The `WRAP_ACTIONS` single-layer rule (RFC 0008) over `steps`: each
-/// Step's index, name and `layers`, which names each Environment that
-/// defines a wrap hook among those its Sessions enter, in the order they
-/// enter them (the Job Environments, then its `stepEnvironments`). Two or
-/// more is an error. Steps with the same layers get one, naming them, which
-/// goes to `report` with the index of the first.
+/// The `WRAP_ACTIONS` single-layer rule (RFC 0008) over `steps`. Each Step
+/// enters the `shared` layers (named once for all of them), then its own:
+/// each Step's index, name and own layers. A layer names an Environment
+/// that defines a wrap hook, in the order a Session enters them (the Job
+/// Environments, then the Step's `stepEnvironments`). Two or more in all is
+/// an error. Steps with the same own layers get one, naming them, which
+/// goes to `report` with the index of the first. Memory is bounded by the
+/// names given, not by the Steps times the shared layers: Steps are grouped
+/// by their own layers, and a message lists at most what
+/// [`capped_name_list`](super::helpers::capped_name_list) shows.
 pub(crate) fn report_wrap_layers<'s>(
+    shared: &[String],
     steps: impl IntoIterator<Item = (usize, &'s str, Vec<String>)>,
     mut report: impl FnMut(usize, String),
 ) {
     let mut groups: ByValues<(usize, Vec<String>), &str> = ByValues::default();
-    for (index, name, layers) in steps {
-        if layers.len() > 1 {
-            groups.add(format!("{layers:?}"), name, || (index, layers));
+    for (index, name, own) in steps {
+        if shared.len() + own.len() > 1 {
+            groups.add(format!("{own:?}"), name, || (index, own));
         }
     }
-    for ((first, layers), names) in groups.groups() {
+    for ((first, own), names) in groups.groups() {
         let whose = match names.as_slice() {
             [_] => "its Sessions".to_string(),
             _ => format!("the Sessions of {}", steps_phrase(names)),
         };
+        let total = shared.len() + own.len();
+        let layers = shared.iter().chain(own).map(String::as_str);
         report(
             *first,
             format!(
-                "{whose} would enter {} Environments that define wrap hooks (onWrapEnvEnter, \
+                "{whose} would enter {total} Environments that define wrap hooks (onWrapEnvEnter, \
                  onWrapTaskRun, onWrapEnvExit): {}. A Session may have at most one Environment \
                  defining wrap hooks (RFC 0008).",
-                layers.len(),
-                super::helpers::capped_name_list(layers.iter().map(String::as_str), layers.len())
+                super::helpers::capped_name_list(layers, total)
             ),
         );
     }
@@ -201,7 +209,7 @@ mod tests {
     /// index of the Step it is reported at.
     fn reported(steps: Vec<(usize, &str, Vec<String>)>) -> Vec<(usize, String)> {
         let mut out = Vec::new();
-        report_wrap_layers(steps, |i, m| out.push((i, m)));
+        report_wrap_layers(&[], steps, |i, m| out.push((i, m)));
         out
     }
 
@@ -284,5 +292,44 @@ mod tests {
             "{}",
             many[0].1
         );
+    }
+
+    /// The shared layers come first and count for every Step; a Step's own
+    /// layers follow them, and Steps are grouped by their own.
+    #[test]
+    fn shared_layers_count_for_every_step() {
+        let shared = layers(2);
+        let mut out = Vec::new();
+        report_wrap_layers(
+            &shared,
+            vec![
+                (0, "A", vec![]),
+                (1, "B", vec!["'X' (stepEnvironments)".to_string()]),
+                (2, "C", vec![]),
+            ],
+            |i, m| out.push((i, m)),
+        );
+        let tail = "Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, \
+                    onWrapEnvExit)";
+        let rule = "A Session may have at most one Environment defining wrap hooks (RFC 0008).";
+        assert_eq!(
+            out,
+            [
+                (
+                    0,
+                    format!("the Sessions of Steps 'A' and 'C' would enter 2 {tail}: 'E0', 'E1'. {rule}")
+                ),
+                (
+                    1,
+                    format!(
+                        "its Sessions would enter 3 {tail}: 'E0', 'E1', 'X' (stepEnvironments). {rule}"
+                    )
+                ),
+            ]
+        );
+        // One shared layer and none of a Step's own is no error.
+        let mut out = Vec::new();
+        report_wrap_layers(&layers(1), vec![(0, "A", vec![])], |i, m| out.push((i, m)));
+        assert_eq!(out, []);
     }
 }

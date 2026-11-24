@@ -331,9 +331,12 @@ including the `unresolved(ANY)` continuation. See
 A Step's `let` block is read by three sites in pass 8: its host
 requirements, its parameterSpace ranges, and its body. Its errors are
 reported once, at `steps[i] -> let[j]`: with the host requirements when the
-Step has them, otherwise with the body, after the ranges. A site that does
-not report evaluates the block into a scratch collection, so a range reads a
-failed binding as `unresolved(ANY)`, as the body does. When evaluating it
+Step has them, otherwise with the body, after the ranges; so are the errors
+about the block as a whole, at `steps[i] -> let` (an empty block, more than
+50 bindings). A site that does not report evaluates the block into a scratch
+collection, so a range reads a failed binding as `unresolved(ANY)`, as the
+body does, and an `Undefined variable` error's suggestions there include the
+failed binding's name. When evaluating it
 reports nothing, the sites share one evaluation. Host requirements run for
 every Step before the Job Environments, so sharing with them keeps the
 evaluated values until the Step's ranges and body run. Pass 8 keeps at most

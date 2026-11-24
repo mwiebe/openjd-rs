@@ -301,8 +301,8 @@ fn canonical_case_message(kind: &str, written: &str, canonical: &str) -> String 
 /// Deserialize a template of version `version_str` as `T`. A decode error
 /// is a [`ModelError::DecodeValidation`] that names where in the document
 /// it is, as model validation errors write paths: `steps[1] -> bogus:
-/// unknown field ...` for an unknown key. An error at the top level of the
-/// document has no location: ``missing field `steps` ``.
+/// unknown field ...` for an unknown key. A missing key of the document
+/// itself has no location: ``missing field `steps` ``.
 fn decode_as<T: serde::de::DeserializeOwned>(
     template: serde_json::Value,
     version_str: &str,

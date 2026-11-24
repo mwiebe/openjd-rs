@@ -1897,3 +1897,25 @@ fn a_let_named_like_a_scope_root_is_only_a_naming_error() {
         );
     }
 }
+
+/// A Step with host requirements and no parameterSpace reports a bad `let`
+/// once, with its host requirements, not again with its body.
+#[test]
+fn a_bad_let_in_a_step_with_host_requirements_and_no_ranges_is_reported_once() {
+    let s = r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "Test",
+        "extensions": ["EXPR"],
+        "steps": [{
+            "name": "S",
+            "let": ["t = str(1)"],
+            "hostRequirements": {"amounts": [{"name": "amount.worker.vcpu", "min": 1}]},
+            "script": {"actions": {"onRun": {"command": "echo"}}}
+        }]
+    }"#;
+    assert_eq!(
+        full_err(s),
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> let[0]:\n\t\
+         Invalid expression in let binding 't': Unknown function: 'str'\n  t = str(1)\n      ^~~~~~"
+    );
+}
