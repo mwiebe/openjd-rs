@@ -1958,8 +1958,8 @@ fn a_let_named_like_a_scope_root_is_only_a_naming_error() {
 // A binding whose name conflicts with an entry already in the symtab (a
 // scope root, or a name an earlier binding made a table) is dropped, and
 // validation reports the `<UserIdentifier>` error. These pin that no panic
-// escapes from the insert, on both the evaluated and the failed binding
-// paths.
+// escapes from the insert on each path: a binding that evaluates, one whose
+// expression fails to parse, and one that fails to evaluate.
 
 fn decode_err_text(s: &str) -> String {
     decode_job_template(
@@ -1991,6 +1991,19 @@ fn failed_let_named_scope_root_is_a_name_error() {
          steps[0] -> script -> let[0]:\n\t\
          Invalid expression in let binding 'Session': Syntax error: Expected an expression\n  \
          Session = 1 +\n            ^~~"
+    );
+}
+
+#[test]
+fn unevaluable_let_named_scope_root_is_a_name_error() {
+    assert_eq!(
+        decode_err_text(&job_with_script_let(r#""Session = nope""#)),
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> script -> let[0]:\n\t\
+         name 'Session' must start with lowercase letter or underscore.\n\
+         steps[0] -> script -> let[0]:\n\t\
+         Invalid expression in let binding 'Session': Undefined variable: 'nope'.\n  \
+         Session = nope\n            ^~~~"
     );
 }
 
