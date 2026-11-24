@@ -229,11 +229,13 @@ those whose name passes the check pass 6 reports with
 (`helpers::is_embedded_file_name`) first; a later binding that conflicts with
 an earlier one is dropped. So with files `x` and `x.y`, in either order, `x`
 is bound, and a lone `x.y` is bound too, so a reference to it draws no
-"Undefined variable" error. A `let` binding is dropped when its name conflicts
-with a scope already in the symtab (`Session`, or a dotted name under a
-scope); the `<UserIdentifier>` rule reports every such name. The RFC 0008 wrap
-hook scopes (`WrappedAction.*`, `WrappedEnv.Name`, `WrappedStep.Name`) are
-added after the bindings and merged over them, so in a hook they replace a
+"Undefined variable" error. A reference to a dropped name (`x.y` beside `x`)
+is reported at the reference. A `let` binding is dropped when its name
+conflicts with an entry already in the symtab: a scope (`Session`, or a dotted
+name under a scope) or an earlier binding (`a` after `a.b`); each such
+conflict involves a name the `<UserIdentifier>` rule reports. The RFC 0008
+wrap hook scopes (`WrappedAction.*`, `WrappedEnv.Name`, `WrappedStep.Name`)
+are added after the bindings and merged over them, so in a hook they replace a
 binding named `WrappedAction`, `WrappedEnv` or `WrappedStep`, and the hook's
 references to the scope resolve.
 

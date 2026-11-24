@@ -96,10 +96,11 @@ fn add_job_symbols(symtab: &mut SymbolTable) {
 /// and these are in their scope.
 ///
 /// A name that fails the embedded file name check, such as `x.y`, is one
-/// structure validation reports. It is still bound, so a reference to it
-/// draws no second error, but after every name that passes, and a binding
-/// that conflicts with one of those (`x.y` nests under the PATH `x` binds)
-/// is dropped. So with files `x` and `x.y`, in either order, `x` is bound.
+/// structure validation reports. It is still bound, after every name that
+/// passes, and a binding that conflicts with an earlier one (`x.y` nests
+/// under the PATH `x` binds) is dropped. So with files `x` and `x.y`, in
+/// either order, `x` is bound, and a lone `x.y` is bound too. A reference
+/// to a dropped name is reported at the reference.
 fn add_files(symtab: &mut SymbolTable, prefix: &str, files: Option<&[EmbeddedFile]>) {
     let (valid, invalid): (Vec<_>, Vec<_>) = files
         .into_iter()
@@ -2604,12 +2605,12 @@ fn evaluate_let_binding(
                 Ok(result) => {
                     // Set the binding in the symtab with its inferred value/type
                     // so subsequent bindings and format strings see the correct type.
-                    // `set` fails only on a name that conflicts with a scope already
-                    // in the symtab: an uppercase scope root such as `Session`, or a
-                    // dotted name under one. Every such name breaks the
-                    // `<UserIdentifier>` rule, which is reported at template
-                    // validation, so the binding is dropped and the scope keeps its
-                    // symbol. A scope added after the bindings (a wrap hook's) is
+                    // `set` fails only on a name that conflicts with an entry already
+                    // in the symtab: a scope (`Session`, or a dotted name under one)
+                    // or an earlier binding (`a` after `a.b`). Each such conflict
+                    // involves a name the `<UserIdentifier>` rule reports at template
+                    // validation, so the binding is dropped and ignoring the result
+                    // is safe. A scope added after the bindings (a wrap hook's) is
                     // merged over them instead.
                     let _ = symtab.set(name, result);
                 }

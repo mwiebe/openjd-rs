@@ -587,3 +587,35 @@ fn empty_file_name_is_a_name_error() {
          steps[0] -> script -> embeddedFiles[0] -> name:\n\t'' is not a valid identifier."
     );
 }
+
+/// With `x` bound, `x.y` is dropped, so a reference to it is reported at
+/// the reference as well.
+#[test]
+fn referenced_dropped_file_name_is_reported_at_the_reference() {
+    let err = decode_environment_template(
+        yaml_val(
+            r#"{
+            "specificationVersion": "environment-2023-09",
+            "environment": {"name": "E", "script": {
+                "embeddedFiles": [
+                    {"name": "x", "type": "TEXT", "data": "a"},
+                    {"name": "x.y", "type": "TEXT", "data": "b"}
+                ],
+                "actions": {"onEnter": {"command": "{{Env.File.x.y}}"}}
+            }}
+        }"#,
+        ),
+        None,
+        &CallerLimits::default(),
+    )
+    .expect_err("expected a validation error")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 2 validation errors for EnvironmentTemplate\n\
+         environment -> script -> embeddedFiles[1] -> name:\n\t'x.y' is not a valid identifier.\n\
+         environment -> script -> actions -> onEnter -> command:\n\t\
+         Failed to parse interpolation expression at [0, 16]. Cannot access attribute 'y' on path\n  \
+         Env.File.x.y\n  ~~~~~~~~~~~^"
+    );
+}
