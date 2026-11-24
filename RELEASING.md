@@ -64,10 +64,12 @@ The process is:
    workspace. The PR shows the proposed version bumps and CHANGELOG entries.
 3. A maintainer reviews the Release PR, edits the CHANGELOG entries if
    desired, and merges it. Release-plz updates only the workspace
-   `Cargo.lock`, so when the Release PR bumps a crate version the "Fuzz
-   corpus replay (ubuntu-latest)" check fails on `fuzz/Cargo.lock`. Before
+   `Cargo.lock`, so every Release PR leaves `fuzz/Cargo.lock` behind. Before
    merging, run `scripts/fuzz.sh sync-lock` on the Release PR's branch and
-   push the result as a signed-off commit.
+   push the result as a signed-off commit. Release-plz opens the PR with
+   `GITHUB_TOKEN`, so its checks may not have run; that push runs them.
+   Without it, the "Fuzz corpus replay (ubuntu-latest)" check fails on
+   `fuzz/Cargo.lock`, on the PR or, after the merge, on `main`.
 4. On the post-merge run, release-plz publishes the changed crates to
    crates.io, creates git tags (`<crate-name>-v<version>`), and creates
    GitHub Releases.

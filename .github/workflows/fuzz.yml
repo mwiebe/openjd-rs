@@ -215,8 +215,8 @@ jobs:
           key: fuzz-corpus-all-${{ github.run_id }}
           restore-keys: fuzz-corpus-all-
       - name: Sync fuzz/Cargo.lock to the workspace lock
-        # Dependabot bumps only the workspace lock; build against the
-        # versions the crates ship with either way.
+        # Dependabot and release-plz update only the workspace lock; build
+        # against the versions the crates ship with either way.
         shell: bash
         run: scripts/fuzz.sh sync-lock
       - name: Fuzz
@@ -287,8 +287,8 @@ jobs:
         if: steps.llvm-cov-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-llvm-cov --locked --version 0.9.1
       - name: Sync fuzz/Cargo.lock to the workspace lock
-        # Dependabot bumps only the workspace lock; build against the
-        # versions the crates ship with either way.
+        # Dependabot and release-plz update only the workspace lock; build
+        # against the versions the crates ship with either way.
         shell: bash
         run: scripts/fuzz.sh sync-lock
       - name: Check every public function is fuzzed
