@@ -998,13 +998,16 @@ fn job_err_text(s: &str) -> String {
 fn comprehension_var_errors_in_environment_scripts_are_located() {
     // The same `let` and comprehensions in a Step script and in job and
     // step Environment scripts: every error names its field, in the same
-    // form for both kinds of script.
+    // form for both kinds of script. Each failing script is the second of
+    // its list, so its path carries a non-zero index.
     let msg = job_err_text(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, WRAP_ACTIONS]
 name: J
 jobEnvironments:
+- name: JE0
+  variables: {V: v}
 - name: JE
   script:
     let: ["x = 1"]
@@ -1019,8 +1022,15 @@ jobEnvironments:
       onWrapEnvExit:
         command: echo
 steps:
+- name: S0
+  script:
+    actions:
+      onRun:
+        command: echo
 - name: S
   stepEnvironments:
+  - name: SE0
+    variables: {V: v}
   - name: SE
     script:
       let: ["x = 1"]
@@ -1039,13 +1049,13 @@ steps:
     let shadow = "List comprehension variable 'x' shadows a let binding";
     let expected = [
         "Model validation error: 6 validation errors for JobTemplate".to_string(),
-        format!("steps[0] -> script -> actions -> onRun -> command:\n\t{shadow}"),
-        format!("steps[0] -> script -> actions -> onRun -> args[1]:\n\t{shadow}"),
-        format!("jobEnvironments[0] -> script -> actions -> onEnter -> command:\n\t{shadow}"),
-        format!("jobEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\t{shadow}"),
-        format!("jobEnvironments[0] -> script -> actions -> onWrapTaskRun -> command:\n\t{shadow}"),
+        format!("steps[1] -> script -> actions -> onRun -> command:\n\t{shadow}"),
+        format!("steps[1] -> script -> actions -> onRun -> args[1]:\n\t{shadow}"),
+        format!("jobEnvironments[1] -> script -> actions -> onEnter -> command:\n\t{shadow}"),
+        format!("jobEnvironments[1] -> script -> actions -> onEnter -> args[1]:\n\t{shadow}"),
+        format!("jobEnvironments[1] -> script -> actions -> onWrapTaskRun -> command:\n\t{shadow}"),
         format!(
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onExit -> args[0]:\n\t{shadow}"
+            "steps[1] -> stepEnvironments[1] -> script -> actions -> onExit -> args[0]:\n\t{shadow}"
         ),
     ]
     .join("\n");
