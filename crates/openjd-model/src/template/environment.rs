@@ -27,10 +27,11 @@ pub struct Environment {
 
 impl Environment {
     /// The `variables` entries sorted by name, the order every check
-    /// reports them in. The template reaches the decoder as a
-    /// `serde_json::Value`, whose maps are key-sorted, so this is the
-    /// order the template's keys arrive in; walking the `HashMap` itself
-    /// would give a different order on each run.
+    /// reports them in. Walking the `HashMap` itself would give a
+    /// different order on each run. The template reaches the decoder as a
+    /// `serde_json::Value`, whose maps are key-sorted unless a crate in the
+    /// build enables `serde_json`'s `preserve_order` feature, so without
+    /// that feature this is also the order the keys arrive in.
     pub(crate) fn variables_by_name(&self) -> Vec<(&String, &FormatString)> {
         let mut entries: Vec<_> = self.variables.iter().flatten().collect();
         entries.sort_unstable_by(|a, b| a.0.cmp(b.0));

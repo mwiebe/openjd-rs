@@ -800,14 +800,9 @@ fn validate_step_param_space(
         errors.add(&tpd_path, "exceeds 16 elements.");
     }
     let mut names = HashSet::new();
-    // The distinct names in definition order, so the combination check
-    // reports missing parameters in the order the template lists them.
-    let mut ordered_names: Vec<String> = Vec::new();
     for (i, p) in space.task_parameter_definitions.iter().enumerate() {
         let p_path = path_index(&tpd_path, i);
-        if names.insert(p.name().to_string()) {
-            ordered_names.push(p.name().to_string());
-        } else {
+        if !names.insert(p.name().to_string()) {
             errors.add(
                 &p_path,
                 format!("duplicate task parameter name '{}'.", p.name()),
@@ -829,23 +824,13 @@ fn validate_step_param_space(
         validate_task_param_range(p, &p_path, limits, errors);
     }
     if let Some(comb) = &space.combination {
-        validate_combination_expr(
-            comb,
-            &names,
-            &ordered_names,
-            &path_field(path, "combination"),
-            errors,
-        );
+        validate_combination_expr(comb, &names, &path_field(path, "combination"), errors);
     }
 }
 
-/// `param_names` is the set of defined task parameter names, and
-/// `ordered_names` the same names in definition order, which
-/// "missing from combination expression" errors follow.
 fn validate_combination_expr(
     expr: &str,
     param_names: &HashSet<String>,
-    ordered_names: &[String],
     path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
@@ -985,13 +970,18 @@ fn validate_combination_expr(
 
     // Check all params are referenced
     let found_set: HashSet<String> = all_names.into_iter().collect();
-    for name in ordered_names {
-        if !found_set.contains(name) {
-            errors.add(
-                path,
-                format!("parameter '{name}' missing from combination expression."),
-            );
-        }
+    // In name order, as the Python reference lists them, so the errors
+    // don't follow the `HashSet`'s order.
+    let mut missing: Vec<&String> = param_names
+        .iter()
+        .filter(|name| !found_set.contains(*name))
+        .collect();
+    missing.sort_unstable();
+    for name in missing {
+        errors.add(
+            path,
+            format!("parameter '{name}' missing from combination expression."),
+        );
     }
 }
 

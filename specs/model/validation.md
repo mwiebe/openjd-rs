@@ -38,10 +38,12 @@ template order. The keys of a template mapping are walked in name order:
 `Environment::variables` through `Environment::variables_by_name`, and the
 `<Cancelation>` keys through the key-sorted map `CancelationMode`'s deserializer
 reads. The template reaches the decoder as a `serde_json::Value`, whose maps are
-key-sorted, so name order is the only order its keys still have. The
-"missing from combination expression" errors follow the task parameter
-definitions' order. The Python reference walks a mapping in document order, so the two
-implementations can list an Environment's `variables` errors in different orders.
+key-sorted unless a crate in the build enables `serde_json`'s `preserve_order`
+feature; sorting by name gives one order either way. The task parameters missing
+from a combination expression are reported in name order too, as the Python
+reference lists them. The Python reference walks a mapping in document order, so
+the two implementations can list an Environment's `variables` errors in different
+orders.
 
 | Pass | File | Purpose |
 |------|------|---------|
@@ -184,7 +186,7 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - Character allowlist, balanced parentheses, tokenization
 - All referenced parameters must exist and appear exactly once
 - All defined parameters must appear in the expression; those that don't are
-  reported in definition order
+  reported in name order
 
 ## Pass 7: FEATURE_BUNDLE_1 Gating
 

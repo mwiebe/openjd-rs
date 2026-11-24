@@ -4,9 +4,8 @@
 
 //! Validation and job-creation errors come out in the same order on every
 //! run. A template's mapping keys (an Environment's `variables`, the keys
-//! of a `<Cancelation>`) reach the model through a `serde_json::Value`,
-//! whose maps are key-sorted, so the model reports them in key order. Task
-//! parameters are a list, so errors about them follow the template's order.
+//! of a `<Cancelation>`) and the task parameters missing from a
+//! combination expression are reported in name order.
 //!
 //! Each test decodes the same input many times in one process. Every
 //! `HashMap` gets its own random hash seed, so a check that walked one
@@ -275,7 +274,7 @@ fn unknown_job_cancelation_key_reported_is_the_first_in_key_order() {
 }
 
 #[test]
-fn missing_combination_parameters_are_in_definition_order() {
+fn missing_combination_parameters_are_in_name_order() {
     let template = r#"
 specificationVersion: jobtemplate-2023-09
 name: J
@@ -297,11 +296,41 @@ steps:
     let msg = same_every_run(|| job_err(template));
     let mut expected =
         vec!["Model validation error: 4 validation errors for JobTemplate".to_string()];
-    for name in ["E", "D", "B", "C"] {
+    for name in ["B", "C", "D", "E"] {
         expected.push(format!(
             "steps[0] -> parameterSpace -> combination:\n\t\
              parameter '{name}' missing from combination expression."
         ));
     }
     assert_eq!(msg, expected.join("\n"));
+}
+
+#[test]
+fn a_duplicated_task_parameter_is_reported_missing_once() {
+    let msg = job_err(
+        r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+- name: S
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: A, type: INT, range: [1]}
+    - {name: B, type: INT, range: [1]}
+    - {name: B, type: INT, range: [1]}
+    combination: "A"
+  script:
+    actions:
+      onRun:
+        command: echo
+"#,
+    );
+    assert_eq!(
+        msg,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> parameterSpace -> taskParameterDefinitions[2]:\n\t\
+         duplicate task parameter name 'B'.\n\
+         steps[0] -> parameterSpace -> combination:\n\t\
+         parameter 'B' missing from combination expression."
+    );
 }
