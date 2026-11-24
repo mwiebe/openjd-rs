@@ -222,7 +222,8 @@ fn validation_peak_memory_stays_within_its_bounds() {
             ),
             2.5,
         ),
-        // 17.01. Step errors alive while the job environment evaluates: 18.00.
+        // 9.00, each Step's bad `let` reported once, with its host
+        // requirements.
         (
             "3 steps, large errors, large job environment",
             template(
@@ -234,7 +235,7 @@ fn validation_peak_memory_stays_within_its_bounds() {
                 }; 3],
                 Some(&[&env_z, "w = len(z)"]),
             ),
-            17.5,
+            9.5,
         ),
         // 11.00. Keeping a not-clean scope through the ranges: 14.00.
         (
@@ -262,7 +263,8 @@ fn validation_peak_memory_stays_within_its_bounds() {
             ),
             10.5,
         ),
-        // 15.00. Keeping a failed scope through the body's evaluation: 17.00.
+        // 13.00. Keeping the ranges' scratch scope through the body's
+        // evaluation: 14.00.
         (
             "large errors, range, large body temporary",
             template(
@@ -274,7 +276,7 @@ fn validation_peak_memory_stays_within_its_bounds() {
                 }; 1],
                 None,
             ),
-            15.5,
+            13.5,
         ),
         // 12.00. A second copy of the errors at host requirements: 13.00.
         (

@@ -580,8 +580,9 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   'A', 'B'. A Session may have at most one Environment defining wrap hooks (RFC 0008).`
   Steps with the same layers get one error between them, at the first, which names them
   (`the Sessions of Steps 'S1', 'S2', 'S3' would enter ...`); the names are capped as
-  `helpers::capped_name_list` caps them (at most 50 names and 512 characters, then
-  `and N more`).
+  `helpers::capped_name_list` caps them (at most 50 names and 512 bytes, then
+  `and N more`). The rule needs a Step: a template with no Steps gets only the error for
+  having none.
 
 The single-layer rule runs only in the job-template path. An environment template defines
 one environment, so the rule is trivially satisfied for an isolated env template; if

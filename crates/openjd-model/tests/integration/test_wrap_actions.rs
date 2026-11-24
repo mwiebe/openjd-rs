@@ -1211,3 +1211,20 @@ fn steps_with_the_same_wrap_layers_get_one_error() {
          one Environment defining wrap hooks (RFC 0008)."
     );
 }
+
+/// Only Environments that define wrap hooks are layers: a Job Environment
+/// without hooks beside one that wraps leaves one layer, which is valid.
+#[test]
+fn an_environment_without_wrap_hooks_is_not_a_layer() {
+    let src = r#"{"specificationVersion": "jobtemplate-2023-09", "name": "J",
+       "extensions": ["WRAP_ACTIONS", "EXPR"],
+       "jobEnvironments": [
+         {"name": "Plain", "script": {"actions": {"onEnter": {"command": "x"}}}},
+         {"name": "Wrap", "script": {"actions": {"onEnter": {"command": "x"},
+           "onWrapEnvEnter": {"command": "x"}, "onWrapTaskRun": {"command": "x"},
+           "onWrapEnvExit": {"command": "x"}}}}],
+       "steps": [{"name": "S", "stepEnvironments": [{"name": "Inner", "variables": {"V": "1"}}],
+         "script": {"actions": {"onRun": {"command": "x"}}}}]}"#;
+    decode_job_template(yaml_val(src), Some(WRAP_EXTS), &CallerLimits::default())
+        .expect("one wrap layer is valid");
+}

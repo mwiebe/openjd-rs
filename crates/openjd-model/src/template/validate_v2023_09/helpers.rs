@@ -179,11 +179,11 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
 /// Most names a message's name list shows.
 const MAX_LISTED_NAMES: usize = 50;
 
-/// Most characters a message's name list takes, the first name aside.
-const MAX_LISTED_CHARS: usize = 512;
+/// Most bytes a message's name list takes, the first name aside.
+const MAX_LISTED_BYTES: usize = 512;
 
 /// A comma-separated list of `names` for a message: at most
-/// [`MAX_LISTED_NAMES`] names and [`MAX_LISTED_CHARS`] characters (the
+/// [`MAX_LISTED_NAMES`] names and [`MAX_LISTED_BYTES`] bytes of UTF-8 (the
 /// first name is always listed), then "and N more" for the rest of `total`,
 /// so many or long names cannot make a message arbitrarily long. Consumes
 /// `names` only as far as it lists.
@@ -192,7 +192,7 @@ pub(crate) fn capped_name_list<'n>(names: impl Iterator<Item = &'n str>, total: 
     let mut shown = 0usize;
     for name in names {
         if shown == MAX_LISTED_NAMES
-            || (shown > 0 && text.len() + 2 + name.len() > MAX_LISTED_CHARS)
+            || (shown > 0 && text.len() + 2 + name.len() > MAX_LISTED_BYTES)
         {
             break;
         }
@@ -217,15 +217,15 @@ mod tests {
     }
 
     #[test]
-    fn capped_name_list_stops_at_512_characters_or_50_names() {
-        // 255 + ", " + 255 = 512 characters: both fit.
+    fn capped_name_list_stops_at_512_bytes_or_50_names() {
+        // 255 + ", " + 255 = 512 bytes: both fit.
         let a = "a".repeat(255);
         let b = "b".repeat(255);
         assert_eq!(
             capped_name_list([a.as_str(), b.as_str()].into_iter(), 2),
             format!("{a}, {b}")
         );
-        // One more character does not fit.
+        // One more byte does not fit.
         let b = "b".repeat(256);
         assert_eq!(
             capped_name_list([a.as_str(), b.as_str()].into_iter(), 2),
