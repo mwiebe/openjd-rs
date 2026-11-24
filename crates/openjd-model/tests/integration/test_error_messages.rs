@@ -749,11 +749,11 @@ steps:
     );
 }
 
-/// A Step Environment reads the values of the Step's `let` names from the
-/// Step's task scope, after the script's own `let` bindings, so a script
-/// `let` that shadows a Step `let` gives the Step Environment its type.
+/// A Step Environment reads the Step's `let` values from the Step's
+/// template scope, so a script `let` that shadows a Step `let` is reported
+/// and does not change the type the Step Environment sees.
 #[test]
-fn a_step_environment_reads_step_let_names_after_the_script_let_bindings() {
+fn a_script_let_does_not_reach_the_step_environments() {
     assert_message(
         &[],
         r#"
@@ -767,10 +767,8 @@ steps:
   stepEnvironments:
   - {name: E, variables: {V: "{{ x + 1 }}"}}
 "#,
-        "Model validation error: 2 validation errors for JobTemplate\n\
-         steps[0] -> script -> let[0]:\n\t'x' shadows enclosing scope.\n\
-         steps[0] -> stepEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation \
-         expression at [0, 11]. Cannot use '+' operator with string and int\n  x + 1\n  ~~^~~",
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> let[0]:\n\t'x' shadows enclosing scope.",
     );
 }
 
@@ -977,5 +975,32 @@ steps:
          steps[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.custom.a'.\n\
          steps[0] -> hostRequirements -> attributes[1]:\n\tduplicate attribute name \
          'attr.custom.a'.",
+    );
+}
+
+/// A Step `let` binding with no expression has no value, so it brings
+/// nothing into a Step Environment, even when it is named like a task-scope
+/// symbol.
+#[test]
+fn a_let_binding_with_no_expression_brings_nothing_into_a_step_environment() {
+    assert_message(
+        &[],
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: T
+steps:
+- name: S
+  let: ["Task.Param.T ="]
+  parameterSpace: {taskParameterDefinitions: [{name: T, type: INT, range: "1-2"}]}
+  script: {actions: {onRun: {command: x}}}
+  stepEnvironments:
+  - {name: E, variables: {V: "{{ Task.Param.T }}"}}
+"#,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> let[0]:\n\tbinding 'Task.Param.T' has no expression after '='.\n\
+         steps[0] -> stepEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation \
+         expression at [0, 18]. Undefined variable: 'Task.Param.T'.\n  Task.Param.T\n  \
+         ~~~~~~~~~~~^",
     );
 }

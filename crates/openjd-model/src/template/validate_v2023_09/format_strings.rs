@@ -114,22 +114,15 @@ fn let_names(bindings: Option<&[String]>) -> HashSet<String> {
         .collect()
 }
 
-/// Copy the values of `step`'s `let` bindings from `step_scope`, a scope
-/// that holds them, into `symtab`. They are copied last: a binding named like
+/// Copy the values of `step`'s `let` bindings from `step_scope`, its
+/// template scope, into `symtab`. They are copied last: a binding named like
 /// a scope root (`Session`, an error pass 8 reports) collides with it and is
-/// dropped, and a dotted name (an error too) sets the symbol it names. With
-/// `evaluated_only`, a binding with an empty name or no expression, which
-/// pass 8 reports and does not evaluate, is not copied: the task scope
-/// copies only evaluated bindings, and a Step Environment's scope copies
-/// every binding with an `=`. `symtab` is a host scope, so a value whose
-/// type contains `path` is then made unresolved
+/// dropped, and a dotted name (an error too) sets the symbol it names. A
+/// binding with an empty name or no expression, which pass 8 reports and
+/// does not evaluate, has no value and is not copied. `symtab` is a host
+/// scope, so a value whose type contains `path` is then made unresolved
 /// ([`unresolve_template_paths`]).
-fn copy_step_lets(
-    symtab: &mut SymbolTable,
-    step: &StepTemplate,
-    step_scope: &SymbolTable,
-    evaluated_only: bool,
-) {
+fn copy_step_lets(symtab: &mut SymbolTable, step: &StepTemplate, step_scope: &SymbolTable) {
     if step.let_bindings.is_none() {
         return;
     }
@@ -138,7 +131,7 @@ fn copy_step_lets(
             continue;
         };
         let name = binding[..eq].trim();
-        if evaluated_only && (name.is_empty() || binding[eq + 1..].trim().is_empty()) {
+        if name.is_empty() || binding[eq + 1..].trim().is_empty() {
             continue;
         }
         if let Some(value) = step_scope.get_value(name) {
@@ -367,9 +360,8 @@ impl<'a> FsCtx<'a> {
     }
 
     /// `env`'s session scope: the host scope, the Environment's `Env.File.*`,
-    /// and for a Step Environment, with `EXPR`, `Step.Name` and the values
-    /// of the Step's `let` bindings from `step`, the Step and a scope that
-    /// holds them.
+    /// and for a Step Environment, with `EXPR`, `Step.Name` and the Step's
+    /// `let` values from `step`, the Step and its template scope.
     fn session_scope(
         &self,
         env: &Environment,
@@ -384,7 +376,7 @@ impl<'a> FsCtx<'a> {
                 .and_then(|s| s.embedded_files.as_deref()),
         );
         if let (true, Some((step, step_scope))) = (self.expr, step) {
-            copy_step_lets(&mut symtab, step, step_scope, false);
+            copy_step_lets(&mut symtab, step, step_scope);
         }
         symtab
     }
@@ -428,7 +420,7 @@ impl<'a> FsCtx<'a> {
             script.as_ref().and_then(|s| s.embedded_files.as_deref()),
         );
         if self.expr {
-            copy_step_lets(&mut symtab, step, step_scope, true);
+            copy_step_lets(&mut symtab, step, step_scope);
         }
         symtab
     }
@@ -2060,9 +2052,7 @@ fn validate_step(
     let envs_path = path_field(step_path, "stepEnvironments");
     for (j, env) in step.step_environments.iter().flatten().enumerate() {
         let env_path = path_index(&envs_path, j);
-        // The Step's `let` values are read from the task scope, after its
-        // script's own `let` bindings.
-        let mut symtab = f.session_scope(env, Some((step, &task_scope)));
+        let mut symtab = f.session_scope(env, Some((step, step_scope)));
         if let Some(bindings) = env.script.as_ref().and_then(|s| s.let_bindings.as_deref()) {
             f.validate_lets(
                 Some(bindings),
