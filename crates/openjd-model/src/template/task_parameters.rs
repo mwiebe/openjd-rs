@@ -90,6 +90,22 @@ impl TaskParameterDefinition {
             Self::CHUNK_INT(p) => p.name.as_str(),
         }
     }
+
+    /// The two symbols this parameter binds in a step script's scope, with
+    /// their types: `Task.Param.<name>` typed
+    /// [`TaskParameterType::expr_type`](crate::types::TaskParameterType::expr_type),
+    /// and `Task.RawParam.<name>` typed
+    /// [`TaskParameterType::raw_expr_type`](crate::types::TaskParameterType::raw_expr_type).
+    /// Template validation and job creation both seed a task scope from
+    /// here.
+    pub(crate) fn task_symbols(&self) -> [(String, openjd_expr::ExprType); 2] {
+        let t = self.task_param_type();
+        let name = self.name();
+        [
+            (format!("Task.Param.{name}"), t.expr_type()),
+            (format!("Task.RawParam.{name}"), t.raw_expr_type()),
+        ]
+    }
 }
 
 /// Int range: either a list of values or a range expression string.

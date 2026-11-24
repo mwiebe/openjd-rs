@@ -3008,6 +3008,46 @@ mod new_cli_options {
         assert!(stdout.contains("Running Task"), "stdout: {stdout}");
     }
 
+    /// `Task.RawParam.<name>` of a PATH task parameter is a string when the
+    /// value comes from `--task-param` or `--tasks`, as `openjd check` types
+    /// it and as it is when the CLI computes the tasks itself.
+    #[test]
+    fn test_run_task_param_path_raw_param_is_a_string() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [EXPR]
+name: raw-path
+steps:
+  - name: s1
+    parameterSpace:
+      taskParameterDefinitions:
+        - {{name: P, type: PATH, range: ["/a/b"]}}
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["RAW={{{{ Task.RawParam.P.upper() }}}}"]
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, _stdout, stderr) = run_cli(&["check", path]);
+        assert_eq!(code, 0, "check stderr: {stderr}");
+        for args in [
+            vec!["--task-param", "P=/a/b"],
+            vec!["--tasks", r#"[{"P": "/a/b"}]"#],
+            vec![],
+        ] {
+            let mut cmd = vec!["run", path, "--step", "s1"];
+            cmd.extend(args.iter().copied());
+            let (code, stdout, stderr) = run_cli(&cmd);
+            assert_eq!(code, 0, "{args:?}: stdout: {stdout} stderr: {stderr}");
+            assert!(stdout.contains("RAW=/A/B"), "{args:?}: stdout: {stdout}");
+        }
+    }
+
     #[test]
     fn test_run_verbose_flag() {
         // --verbose should be accepted without error

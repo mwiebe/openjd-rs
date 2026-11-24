@@ -439,23 +439,7 @@ impl<'a> FsCtx<'a> {
             .iter()
             .flat_map(|ps| &ps.task_parameter_definitions)
         {
-            let t = match tp {
-                TaskParameterDefinition::INT(_) => ExprType::INT,
-                TaskParameterDefinition::CHUNK_INT(_) => ExprType::RANGE_EXPR,
-                TaskParameterDefinition::FLOAT(_) => ExprType::FLOAT,
-                TaskParameterDefinition::STRING(_) => ExprType::STRING,
-                TaskParameterDefinition::PATH(_) => ExprType::PATH,
-            };
-            // The same, except that a PATH's is the unmapped string (§7.3.1).
-            let raw = match tp {
-                TaskParameterDefinition::PATH(_) => ExprType::STRING,
-                _ => t.clone(),
-            };
-            let name = tp.name();
-            for (key, t) in [
-                (format!("Task.Param.{name}"), t),
-                (format!("Task.RawParam.{name}"), raw),
-            ] {
+            for (key, t) in tp.task_symbols() {
                 symtab.set(&key, ExprValue::unresolved(t)).expect("symtab");
             }
         }
@@ -2673,6 +2657,38 @@ pub(crate) fn check_carried_forward_let_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Template validation's task scope types each task parameter's
+    /// `Task.Param.*` and `Task.RawParam.*` by `TaskParameterType::expr_type`
+    /// and `raw_expr_type`, as job
+    /// creation's check scope does (see `create_job::instantiate`'s test).
+    #[test]
+    fn task_scope_types_task_parameters_by_their_type() {
+        let jt = crate::template::test_support::template_with_every_task_parameter_type();
+        let ctx = jt.default_validation_context();
+        let f = FsCtx::new(&ctx, jt.parameter_definitions.as_deref());
+        let step = &jt.steps[0];
+        let symtab = f.task_scope(step, &SymbolTable::new());
+        let defs = &step
+            .parameter_space
+            .as_ref()
+            .unwrap()
+            .task_parameter_definitions;
+        assert_eq!(defs.len(), 5);
+        for tp in defs {
+            let t = tp.task_param_type();
+            for (key, want) in [
+                (format!("Task.Param.{}", tp.name()), t.expr_type()),
+                (format!("Task.RawParam.{}", tp.name()), t.raw_expr_type()),
+            ] {
+                assert_eq!(
+                    symtab.get_value(&key),
+                    Some(&ExprValue::unresolved(want)),
+                    "{key}"
+                );
+            }
+        }
+    }
 
     /// The charge for one kept binding covers its deque slots, its entry in
     /// the bindings vector, its name, and its value.

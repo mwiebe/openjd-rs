@@ -546,8 +546,11 @@ around the number (Expression Language §1.2.3, as for the numeric strings of Te
 Schemas §7.5): `" 5 "` → `Int(5)`, and
 `" 2.50 "` → a float that renders `2.50`. **Divergence from openjd-sessions-for-python:**
 Python does not parse parameter values, so it renders `" 5 "` as given.
-`CHUNK_INT` task parameters are exempt and remain strings — chunk range
-expressions are not numeric values. A value that cannot be coerced to its declared type
+`Task.RawParam.*` of a PATH task parameter is coerced to a string (its
+`TaskParameterType::raw_expr_type`, the type template validation checks it
+against), so it is the unmapped string whether the value arrives as a string or as
+a path, as the CLI's `--task-param` passes it. `CHUNK_INT` task parameters are
+exempt and are bound as given — chunk range expressions are not numeric values. A value that cannot be coerced to its declared type
 (e.g. INT `"abc"`) fails symbol table construction with a `SessionError::Runtime` naming
 the parameter.
 

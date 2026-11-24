@@ -422,7 +422,11 @@ impl TaskParameterType {
         }
     }
 
-    /// Returns the `ExprType` this parameter produces in the symbol table.
+    /// The `ExprType` of `Task.Param.<name>` for a task parameter of this
+    /// type (Expression Language, "Task Parameter Types"). Template
+    /// validation, job creation and the session all take it from here,
+    /// through [`raw_expr_type`](Self::raw_expr_type) for
+    /// `Task.RawParam.<name>`.
     pub fn expr_type(&self) -> ExprType {
         match self {
             Self::Int => ExprType::INT,
@@ -430,6 +434,18 @@ impl TaskParameterType {
             Self::String => ExprType::STRING,
             Self::Path => ExprType::PATH,
             Self::ChunkInt => ExprType::RANGE_EXPR,
+        }
+    }
+
+    /// The `ExprType` of `Task.RawParam.<name>` for a task parameter of this
+    /// type: [`expr_type`](Self::expr_type), except `string` for PATH. A raw
+    /// path has no path mapping applied and may be in another operating
+    /// system's format, so it is a string, as `RawParam.<name>` of a PATH job
+    /// parameter is.
+    pub fn raw_expr_type(&self) -> ExprType {
+        match self {
+            Self::Path => ExprType::STRING,
+            _ => self.expr_type(),
         }
     }
 }
@@ -980,6 +996,35 @@ mod tests {
         TaskParameterType::Path,
         TaskParameterType::ChunkInt,
     ];
+
+    /// The type of `Task.Param.<name>` and `Task.RawParam.<name>` for each
+    /// task parameter type, as Expression Language "Task Parameter Types"
+    /// gives it, with a PATH's raw value a string. Template validation, job
+    /// creation and the session all take these types from `expr_type` and
+    /// `raw_expr_type`.
+    #[test]
+    fn test_task_param_symbol_types() {
+        let want = [
+            (TaskParameterType::Int, ExprType::INT, ExprType::INT),
+            (TaskParameterType::Float, ExprType::FLOAT, ExprType::FLOAT),
+            (
+                TaskParameterType::String,
+                ExprType::STRING,
+                ExprType::STRING,
+            ),
+            (TaskParameterType::Path, ExprType::PATH, ExprType::STRING),
+            (
+                TaskParameterType::ChunkInt,
+                ExprType::RANGE_EXPR,
+                ExprType::RANGE_EXPR,
+            ),
+        ];
+        assert_eq!(want.len(), ALL_TASK_PARAM_TYPES.len());
+        for (t, param, raw) in want {
+            assert_eq!(t.expr_type(), param, "Task.Param type for {t}");
+            assert_eq!(t.raw_expr_type(), raw, "Task.RawParam type for {t}");
+        }
+    }
 
     #[test]
     fn test_task_param_type_roundtrip() {

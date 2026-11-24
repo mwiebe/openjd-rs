@@ -400,8 +400,9 @@ time, with everything only a session can know left `Unresolved`:
 
 - **Task scope** (step scripts): concrete `Param.*` / `RawParam.*` /
   `Job.Name` / `Step.Name` / step-level `let` bindings; `Unresolved`
-  `Session.*`, PATH `Param.*`, `Task.Param.*` / `Task.RawParam.*`,
-  `Task.File.*`. Script-level `let` bindings are evaluated into the
+  `Session.*`, PATH `Param.*`, `Task.Param.*` / `Task.RawParam.*`
+  (typed by `TaskParameterType::expr_type` / `raw_expr_type`, as in
+  template validation's task scope), `Task.File.*`. Script-level `let` bindings are evaluated into the
   table (this subsumes the type check job creation has always run on
   them: a binding that fails with the real parameter values fails
   here, deterministically, rather than in every session).

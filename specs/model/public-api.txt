@@ -1659,6 +1659,7 @@ impl openjd_model::types::TaskParameterType
 pub fn openjd_model::types::TaskParameterType::as_spec_str(&self) -> &'static str
 pub fn openjd_model::types::TaskParameterType::expr_type(&self) -> openjd_expr::types::ExprType
 pub fn openjd_model::types::TaskParameterType::from_spec_str(&str) -> core::option::Option<Self>
+pub fn openjd_model::types::TaskParameterType::raw_expr_type(&self) -> openjd_expr::types::ExprType
 impl core::clone::Clone for openjd_model::types::TaskParameterType
 pub fn openjd_model::types::TaskParameterType::clone(&self) -> openjd_model::types::TaskParameterType
 impl core::cmp::Eq for openjd_model::types::TaskParameterType
@@ -1975,6 +1976,7 @@ impl openjd_model::types::TaskParameterType
 pub fn openjd_model::types::TaskParameterType::as_spec_str(&self) -> &'static str
 pub fn openjd_model::types::TaskParameterType::expr_type(&self) -> openjd_expr::types::ExprType
 pub fn openjd_model::types::TaskParameterType::from_spec_str(&str) -> core::option::Option<Self>
+pub fn openjd_model::types::TaskParameterType::raw_expr_type(&self) -> openjd_expr::types::ExprType
 impl core::clone::Clone for openjd_model::types::TaskParameterType
 pub fn openjd_model::types::TaskParameterType::clone(&self) -> openjd_model::types::TaskParameterType
 impl core::cmp::Eq for openjd_model::types::TaskParameterType

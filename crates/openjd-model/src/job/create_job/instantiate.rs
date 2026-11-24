@@ -293,29 +293,9 @@ fn build_task_check_symtab(
 
     if let Some(ps) = &st.parameter_space {
         for tp in &ps.task_parameter_definitions {
-            let tp_type = match tp {
-                crate::template::TaskParameterDefinition::INT(_) => openjd_expr::ExprType::INT,
-                crate::template::TaskParameterDefinition::CHUNK_INT(_) => {
-                    openjd_expr::ExprType::RANGE_EXPR
-                }
-                crate::template::TaskParameterDefinition::FLOAT(_) => openjd_expr::ExprType::FLOAT,
-                crate::template::TaskParameterDefinition::STRING(_) => {
-                    openjd_expr::ExprType::STRING
-                }
-                crate::template::TaskParameterDefinition::PATH(_) => openjd_expr::ExprType::PATH,
-            };
-            check_symtab.set(
-                &format!("Task.Param.{}", tp.name()),
-                openjd_expr::ExprValue::Unresolved(tp_type.clone()),
-            )?;
-            let raw_type = match tp {
-                crate::template::TaskParameterDefinition::PATH(_) => openjd_expr::ExprType::STRING,
-                _ => tp_type,
-            };
-            check_symtab.set(
-                &format!("Task.RawParam.{}", tp.name()),
-                openjd_expr::ExprValue::Unresolved(raw_type),
-            )?;
+            for (key, t) in tp.task_symbols() {
+                check_symtab.set(&key, openjd_expr::ExprValue::Unresolved(t))?;
+            }
         }
     }
 
@@ -911,4 +891,51 @@ fn collect_env_accessed_symbols(env: &job::Environment) -> std::collections::Has
         }
     }
     symbols
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Job creation's check scope for a step script types each task
+    /// parameter's `Task.Param.*` and `Task.RawParam.*` by
+    /// `TaskParameterType::expr_type` and `raw_expr_type`, as template validation's task scope does (see
+    /// `format_strings`' test).
+    #[test]
+    fn task_check_scope_types_task_parameters_by_their_type() {
+        let jt = crate::template::test_support::template_with_every_task_parameter_type();
+        let st = &jt.steps[0];
+        let script = st.resolve_syntax_sugar().unwrap();
+        let mut errors = ValidationErrors::default();
+        let symtab = build_task_check_symtab(
+            st,
+            &script,
+            &SymbolTable::new(),
+            true,
+            &jt.default_validation_context(),
+            &[],
+            &mut errors,
+        )
+        .unwrap();
+        assert!(errors.is_empty());
+        let defs = &st
+            .parameter_space
+            .as_ref()
+            .unwrap()
+            .task_parameter_definitions;
+        assert_eq!(defs.len(), 5);
+        for tp in defs {
+            let t = tp.task_param_type();
+            for (key, want) in [
+                (format!("Task.Param.{}", tp.name()), t.expr_type()),
+                (format!("Task.RawParam.{}", tp.name()), t.raw_expr_type()),
+            ] {
+                assert_eq!(
+                    symtab.get_value(&key),
+                    Some(&openjd_expr::ExprValue::Unresolved(want)),
+                    "{key}"
+                );
+            }
+        }
+    }
 }

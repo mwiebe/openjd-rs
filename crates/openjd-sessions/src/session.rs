@@ -3021,15 +3021,17 @@ impl Session {
 
         if let Some(task_params) = task_parameter_values {
             for (name, tv) in task_params {
-                // Task.RawParam.* — coerced to declared type so expressions
-                // like {{ Task.RawParam.Frame + 1 }} work correctly.
+                // Task.RawParam.* — coerced to the type template validation
+                // gives it (`raw_expr_type`), so expressions like
+                // {{ Task.RawParam.Frame + 1 }} work and a PATH's raw value is
+                // the unmapped string, whether it arrives as a string or a
+                // path.
                 let raw_key = format!("Task.RawParam.{name}");
                 let raw_value = match tv.param_type {
-                    TaskParameterType::Path => tv.value.clone(),
                     TaskParameterType::ChunkInt => tv.value.clone(),
                     _ => Self::coerce_param_value(
                         &tv.value,
-                        &tv.param_type.expr_type(),
+                        &tv.param_type.raw_expr_type(),
                         host_path_format,
                         &raw_key,
                     )?,
@@ -4362,6 +4364,80 @@ mod typed_param_seeding_tests {
         .unwrap();
         let result = eval_expr(&symtab, "{{RawParam.N + 1}}").unwrap();
         assert_eq!(result, ExprValue::Int(22));
+    }
+
+    /// The session binds `Task.Param.<name>` and `Task.RawParam.<name>` to
+    /// values of the types template validation checks them against,
+    /// `TaskParameterType::expr_type` and `raw_expr_type`, for a value that
+    /// arrives as a string (across the language boundary) or already typed
+    /// (from the parameter space or the CLI). A CHUNK[INT] value is passed
+    /// through as given, so only its typed form is checked here.
+    #[test]
+    fn task_param_values_have_the_types_validation_checks() {
+        let host = openjd_expr::PathFormat::host();
+        let range: openjd_expr::RangeExpr = "1-3".parse().unwrap();
+        let cases = [
+            (TaskParameterType::Int, ExprValue::String("7".into())),
+            (TaskParameterType::Int, ExprValue::Int(7)),
+            (TaskParameterType::Float, ExprValue::String("1.5".into())),
+            (TaskParameterType::String, ExprValue::String("s".into())),
+            (TaskParameterType::Path, ExprValue::String("/p".into())),
+            (
+                TaskParameterType::Path,
+                ExprValue::new_path("/p".to_string(), host),
+            ),
+            (TaskParameterType::ChunkInt, ExprValue::RangeExpr(range)),
+        ];
+        for (t, value) in cases {
+            let symtab =
+                build_symtab_with_task_params(vec![], vec![("X", t, value.clone())]).unwrap();
+            for (key, want) in [
+                ("Task.Param.X", t.expr_type()),
+                ("Task.RawParam.X", t.raw_expr_type()),
+            ] {
+                let got = symtab.get_value(key).unwrap().expr_type();
+                assert_eq!(got, want, "{key} for {t} given {value:?}");
+            }
+        }
+    }
+
+    /// `Task.RawParam.<name>` of a PATH task parameter is the unmapped
+    /// string, whichever variant the value arrives as: the CLI's
+    /// `--task-param` passes a path value, the parameter space a string.
+    /// Template validation types it `string`
+    /// (`TaskParameterType::raw_expr_type`), so a string method such as
+    /// `upper()` that `openjd check` accepts must also run.
+    #[test]
+    fn task_raw_param_path_is_a_string_for_a_path_value() {
+        let symtab = build_symtab_with_task_params(
+            vec![],
+            vec![
+                (
+                    "P",
+                    TaskParameterType::Path,
+                    ExprValue::new_path("/a/b".to_string(), openjd_expr::PathFormat::host()),
+                ),
+                (
+                    "Q",
+                    TaskParameterType::Path,
+                    ExprValue::String("/c/d".into()),
+                ),
+            ],
+        )
+        .unwrap();
+        // `ExprValue`'s `==` equates a string and a path with the same
+        // text, so match the variant.
+        for (key, want) in [("Task.RawParam.P", "/a/b"), ("Task.RawParam.Q", "/c/d")] {
+            let val = symtab.get_value(key).unwrap();
+            assert!(
+                matches!(val, ExprValue::String(s) if s == want),
+                "{key}: expected String({want:?}), got {val:?}"
+            );
+        }
+        assert_eq!(
+            eval_str(&symtab, "{{ Task.RawParam.P.upper() }}").unwrap(),
+            "/A/B"
+        );
     }
 
     #[test]
