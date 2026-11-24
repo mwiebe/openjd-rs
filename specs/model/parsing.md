@@ -94,8 +94,8 @@ Unrecognized versions produce `ModelError::UnsupportedSchema`.
 
 ### Pass 3: Serde Deserialization
 
-The value tree is deserialized into the appropriate struct via `serde_json::from_value`, through
-`serde_path_to_error`.
+The value tree, a `serde_json::Value`, is deserialized into the appropriate struct with
+`serde_path_to_error::deserialize`.
 All template types use `#[serde(deny_unknown_fields)]`, so unexpected fields produce errors.
 A failure is a `ModelError::DecodeValidation` naming where it is, with the path written as
 model validation errors write it: `'jobtemplate-2023-09' failed checks: steps[1] -> script ->

@@ -278,6 +278,20 @@ fn validation_peak_memory_stays_within_its_bounds() {
             ),
             13.5,
         ),
+        // 6.00. A Step without host requirements reports its bad `let` after
+        // its ranges; keeping the ranges' scratch scope while it does: 7.00.
+        (
+            "large errors, range, no host requirements",
+            template(
+                &[Step {
+                    lets: &fails_large,
+                    range: Some("1-3"),
+                    ..Default::default()
+                }; 1],
+                None,
+            ),
+            6.5,
+        ),
         // 12.00. A second copy of the errors at host requirements: 13.00.
         (
             "large errors, large host-requirement temporary",
