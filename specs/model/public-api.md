@@ -590,9 +590,11 @@ pub struct job::Step {
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
-    /// Complete symbol table at step scope in JSON transport format.
-    /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level
-    /// let bindings. The session deserializes this with `PathFormat::host()`
+    /// Symbol table at step scope in JSON transport format, filtered to the
+    /// symbols this step's worker-resolved format strings and `let` bindings
+    /// reference, including those of its step environments. Its entries come
+    /// from Param.*, RawParam.*, Job.Name, Step.Name, and step-level let
+    /// bindings. The session deserializes this with `PathFormat::host()`
     /// and layers Session.* and Task.* values on top at runtime.
     pub resolved_symtab: Option<SerializedSymbolTable>,
 }
@@ -620,6 +622,8 @@ pub struct job::Environment {
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
     /// Filtered symbol table with only the symbols this environment references.
+    /// `None` for a step environment, whose symbols are carried in the
+    /// step's `Step::resolved_symtab`.
     pub resolved_symtab: Option<SerializedSymbolTable>,
 }
 

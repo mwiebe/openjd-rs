@@ -260,7 +260,7 @@ This freezes the environment template's own `Param.*`/`RawParam.*` values into i
 scope — a wrap hook resolved against a step's symbol table could not otherwise see
 the environment template's own parameters.
 
-Step environments receive the step's symbol table (`step_symtab`) for format string
+Step environments receive the step's `resolved_symtab` for format string and `let`
 resolution. Job and template environments receive `None` for the step symbol table.
 
 **Single-wrap-layer preflight (RFC 0008).** Before entering any environment,

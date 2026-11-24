@@ -779,3 +779,110 @@ fn test_step_env_let_path_param_includes_raw_param() {
         "RawParam.OtherDir should be excluded"
     );
 }
+
+/// Environment `variables` that reference job parameters put them in the
+/// resolved_symtab the environment is entered with: the step's for a step
+/// environment, and the environment's own for a job environment. A PATH
+/// parameter arrives as its `RawParam.*` value.
+#[test]
+fn test_env_variables_refs_in_resolved_symtab() {
+    let td = TestDirs::new();
+    let template = yaml_val(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "EnvVars",
+        "extensions": ["EXPR"],
+        "parameterDefinitions": [
+            {"name": "Q", "type": "INT", "default": 5},
+            {"name": "PP", "type": "PATH", "default": "/a/f.txt"},
+            {"name": "J", "type": "STRING", "default": "jv"},
+            {"name": "Unused", "type": "INT", "default": 3}
+        ],
+        "jobEnvironments": [{
+            "name": "JobEnv",
+            "variables": {"JV": "{{ Param.J }}"}
+        }],
+        "steps": [{
+            "name": "Step1",
+            "stepEnvironments": [{
+                "name": "StepEnv",
+                "variables": {"SV": "{{ Param.Q * 2 }}|{{ Param.PP.name }}"}
+            }],
+            "script": {"actions": {"onRun": {"command": "echo"}}}
+        }]
+    }"#,
+    );
+    let jt = decode_job_template(template, Some(&["EXPR"]), &CallerLimits::default()).unwrap();
+    let params = preprocess_job_parameters(
+        &jt,
+        &Default::default(),
+        &[],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: td.path(),
+            current_working_dir: td.path(),
+            allow_template_dir_walk_up: true,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .unwrap();
+    let job = create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+
+    let step_st = job.steps[0]
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(openjd_expr::PathFormat::Posix)
+        .unwrap();
+    assert_eq!(
+        step_st.get_value("Param.Q"),
+        Some(&openjd_expr::ExprValue::Int(5))
+    );
+    assert!(
+        step_st.get_value("RawParam.PP").is_some(),
+        "RawParam.PP should be in step resolved_symtab for PATH param"
+    );
+    assert!(step_st.get_value("Param.J").is_none());
+    assert!(step_st.get_value("Param.Unused").is_none());
+
+    let env_st = job.job_environments.as_ref().unwrap()[0]
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(openjd_expr::PathFormat::Posix)
+        .unwrap();
+    assert_eq!(
+        env_st.get_value("Param.J"),
+        Some(&openjd_expr::ExprValue::String("jv".into()))
+    );
+    assert!(env_st.get_value("Param.Q").is_none());
+}
+
+/// A step script `let` that references a PATH-typed job parameter gets the
+/// `RawParam.*` fallback in the step's resolved_symtab.
+#[test]
+fn test_step_script_let_path_param_includes_raw_param() {
+    let st = first_step_resolved_symtab(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "StepScriptLetPath",
+        "extensions": ["EXPR"],
+        "parameterDefinitions": [
+            {"name": "P2", "type": "PATH", "default": "/a/two.txt"},
+            {"name": "Other", "type": "PATH", "default": "/other"}
+        ],
+        "steps": [{
+            "name": "Step1",
+            "script": {
+                "let": ["b = Param.P2.name"],
+                "actions": {"onRun": {"command": "echo", "args": ["{{ b }}"]}}
+            }
+        }]
+    }"#,
+    );
+    assert!(
+        st.get_value("RawParam.P2").is_some(),
+        "RawParam.P2 should be in step resolved_symtab for PATH param"
+    );
+    assert!(st.get_value("RawParam.Other").is_none());
+}
