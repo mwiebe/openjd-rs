@@ -699,6 +699,7 @@ fn test_step_env_let_refs_in_step_resolved_symtab() {
             {"name": "Base", "type": "INT", "default": 7},
             {"name": "Offset", "type": "INT", "default": 1},
             {"name": "Flag", "type": "BOOL", "default": true},
+            {"name": "Cmp", "type": "INT", "default": 7},
             {"name": "Unused", "type": "INT", "default": 3}
         ],
         "steps": [{
@@ -709,9 +710,10 @@ fn test_step_env_let_refs_in_step_resolved_symtab() {
                     "let": [
                         "x = Param.Base * 2",
                         "y = x + Param.Offset",
-                        "b = [v for v in [1] if Param.Flag]"
+                        "b = [v for v in [1] if Param.Flag]",
+                        "t = Param.Cmp == 7"
                     ],
-                    "actions": {"onEnter": {"command": "echo", "args": ["{{ y }}", "{{ b }}"]}}
+                    "actions": {"onEnter": {"command": "echo", "args": ["{{ y }}", "{{ b }}", "{{ t }}"]}}
                 }
             }],
             "script": {"actions": {"onRun": {"command": "echo"}}}
@@ -731,13 +733,19 @@ fn test_step_env_let_refs_in_step_resolved_symtab() {
         st.get_value("Param.Flag"),
         Some(&openjd_expr::ExprValue::Bool(true))
     );
+    // The binding is split at its first `=`, so an `==` in the expression
+    // keeps the reference after it.
+    assert_eq!(
+        st.get_value("Param.Cmp"),
+        Some(&openjd_expr::ExprValue::Int(7))
+    );
     assert!(
         st.get_value("Param.Unused").is_none(),
         "Param.Unused should be excluded"
     );
     // Names bound inside the environment's let chain and comprehension loop
     // variables are not job-creation symbols, so they don't appear.
-    for name in ["x", "y", "b", "v"] {
+    for name in ["x", "y", "b", "v", "t"] {
         assert!(st.get_value(name).is_none(), "{name} should be excluded");
     }
 }
