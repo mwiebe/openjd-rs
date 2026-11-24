@@ -3022,13 +3022,13 @@ impl Session {
         if let Some(task_params) = task_parameter_values {
             for (name, tv) in task_params {
                 // Task.RawParam.* — coerced to the type template validation
-                // gives it (`raw_expr_type`), so expressions like
+                // gives it (`raw_expr_type`; for CHUNK[INT], `chunk_param_value`), so expressions like
                 // {{ Task.RawParam.Frame + 1 }} work and a PATH's raw value is
                 // the unmapped string, whether it arrives as a string or a
                 // path.
                 let raw_key = format!("Task.RawParam.{name}");
                 let raw_value = match tv.param_type {
-                    TaskParameterType::ChunkInt => tv.value.clone(),
+                    TaskParameterType::ChunkInt => Self::chunk_param_value(&tv.value, &raw_key)?,
                     _ => Self::coerce_param_value(
                         &tv.value,
                         &tv.param_type.raw_expr_type(),
@@ -3055,7 +3055,7 @@ impl Session {
                             openjd_expr::path_mapping::PathFormat::host(),
                         )
                     }
-                    TaskParameterType::ChunkInt => tv.value.clone(),
+                    TaskParameterType::ChunkInt => Self::chunk_param_value(&tv.value, &key)?,
                     _ => Self::coerce_param_value(
                         &tv.value,
                         &tv.param_type.expr_type(),
@@ -3086,6 +3086,40 @@ impl Session {
         value.clone().coerce(target_type, path_format).map_err(|e| {
             SessionError::Runtime(format!("Failed to coerce parameter '{param_key}': {e}"))
         })
+    }
+
+    /// The value of a CHUNK[INT] task parameter as a `range_expr`, its
+    /// `TaskParameterType::expr_type`. A `range_expr` value is kept as given,
+    /// with its display form. A string, as a chunk crosses the language
+    /// boundary, is parsed, and keeps its text: it is marked contiguous
+    /// ([`RangeExpr::with_contiguous`](openjd_expr::RangeExpr::with_contiguous))
+    /// when it is written `<N>-<M>`, the form of a `CONTIGUOUS` chunk, so
+    /// `"5-6"` is still written `5-6` and `"5,6"` still `5,6`. Any other value
+    /// fails, naming the parameter.
+    fn chunk_param_value(
+        value: &openjd_expr::ExprValue,
+        param_key: &str,
+    ) -> Result<openjd_expr::ExprValue, SessionError> {
+        use openjd_expr::ExprValue;
+        let ExprValue::String(text) = value else {
+            return Self::coerce_param_value(
+                value,
+                &openjd_expr::ExprType::RANGE_EXPR,
+                openjd_expr::path_mapping::PathFormat::host(),
+                param_key,
+            );
+        };
+        let r: openjd_expr::RangeExpr = text.parse().map_err(|e| {
+            SessionError::Runtime(format!("Failed to coerce parameter '{param_key}': {e}"))
+        })?;
+        let contiguous = r.clone().with_contiguous(true);
+        Ok(ExprValue::RangeExpr(
+            if contiguous.to_string() == text.trim() {
+                contiguous
+            } else {
+                r
+            },
+        ))
     }
 
     /// Apply path mapping rules to the value of parameter `key`, returning
@@ -4332,23 +4366,66 @@ mod typed_param_seeding_tests {
         );
     }
 
+    /// A CHUNK[INT] value given as a string, as it crosses the language
+    /// boundary, is bound to `Task.Param.*` and `Task.RawParam.*` as a
+    /// `range_expr`, the type validation checks, written as it was given.
     #[test]
-    fn task_chunk_int_stays_string() {
-        // CHUNK[INT] — exempt from coercion, stays as string (range expression string)
-        let symtab = build_symtab_with_task_params(
-            vec![],
-            vec![(
-                "Chunk",
-                TaskParameterType::ChunkInt,
-                ExprValue::String("1-10".into()),
-            )],
-        )
-        .unwrap();
-        let val = symtab.get_value("Task.Param.Chunk").unwrap();
-        // ChunkInt maps to RANGE_EXPR via expr_type(), so coercion would parse it.
-        // But per the brief, ChunkInt is EXEMPT — stays as string.
-        // If the implementation coerces it, we'd get RangeExpr; if exempt, stays String.
-        assert_eq!(val, &ExprValue::String("1-10".into()));
+    fn task_chunk_int_string_is_a_range_expr() {
+        for (text, written) in [
+            ("1-10", "1-10"),
+            ("5-6", "5-6"),
+            ("5,6", "5,6"),
+            (" 1-3 ", "1-3"),
+        ] {
+            let symtab = build_symtab_with_task_params(
+                vec![],
+                vec![(
+                    "Chunk",
+                    TaskParameterType::ChunkInt,
+                    ExprValue::String(text.into()),
+                )],
+            )
+            .unwrap();
+            for key in ["Task.Param.Chunk", "Task.RawParam.Chunk"] {
+                let val = symtab.get_value(key).unwrap();
+                assert!(
+                    matches!(val, ExprValue::RangeExpr(_)),
+                    "{key} for {text:?}: expected RangeExpr, got {val:?}"
+                );
+                let expr = format!("{{{{ {key} }}}}");
+                assert_eq!(
+                    eval_str(&symtab, &expr).unwrap(),
+                    written,
+                    "{key} for {text:?}"
+                );
+            }
+            assert_eq!(
+                eval_str(&symtab, "{{ Task.Param.Chunk[0] + 1 }}").unwrap(),
+                if text.trim().starts_with('5') {
+                    "6"
+                } else {
+                    "2"
+                }
+            );
+        }
+    }
+
+    /// A CHUNK[INT] value that is neither a range expression nor its string
+    /// fails symbol table construction, naming the parameter.
+    #[test]
+    fn task_chunk_int_rejects_other_values() {
+        for value in [ExprValue::String("1:5".into()), ExprValue::Int(5)] {
+            let err = build_symtab_with_task_params(
+                vec![],
+                vec![("Chunk", TaskParameterType::ChunkInt, value.clone())],
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Failed to coerce parameter 'Task.RawParam.Chunk'"),
+                "{value:?}: {err}"
+            );
+        }
     }
 
     // ── RawParam contract ──
@@ -4370,8 +4447,7 @@ mod typed_param_seeding_tests {
     /// values of the types template validation checks them against,
     /// `TaskParameterType::expr_type` and `raw_expr_type`, for a value that
     /// arrives as a string (across the language boundary) or already typed
-    /// (from the parameter space or the CLI). A CHUNK[INT] value is passed
-    /// through as given, so only its typed form is checked here.
+    /// (from the parameter space or the CLI).
     #[test]
     fn task_param_values_have_the_types_validation_checks() {
         let host = openjd_expr::PathFormat::host();
@@ -4387,6 +4463,7 @@ mod typed_param_seeding_tests {
                 ExprValue::new_path("/p".to_string(), host),
             ),
             (TaskParameterType::ChunkInt, ExprValue::RangeExpr(range)),
+            (TaskParameterType::ChunkInt, ExprValue::String("1-3".into())),
         ];
         for (t, value) in cases {
             let symtab =

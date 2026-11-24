@@ -549,8 +549,13 @@ Python does not parse parameter values, so it renders `" 5 "` as given.
 `Task.RawParam.*` of a PATH task parameter is coerced to a string (its
 `TaskParameterType::raw_expr_type`, the type template validation checks it
 against), so it is the unmapped string whether the value arrives as a string or as
-a path, as the CLI's `--task-param` passes it. `CHUNK_INT` task parameters are
-exempt and are bound as given — chunk range expressions are not numeric values. A value that cannot be coerced to its declared type
+a path, as the CLI's `--task-param` passes it. A `CHUNK_INT` value is bound to both
+symbols as a `range_expr`, its `expr_type`: a `range_expr` value as given, and a
+string parsed, keeping its text (`"5-6"` is written `5-6` and `"5,6"` is written `5,6`,
+since a string written `<N>-<M>` is marked contiguous, as a `CONTIGUOUS` chunk is).
+**Divergence from openjd-sessions-for-python:** Python binds a `CHUNK_INT` value as
+a string, so an expression template validation accepts, such as
+`{{ Task.Param.Frames[0] + 1 }}`, fails there at run time. A value that cannot be coerced to its declared type
 (e.g. INT `"abc"`) fails symbol table construction with a `SessionError::Runtime` naming
 the parameter.
 

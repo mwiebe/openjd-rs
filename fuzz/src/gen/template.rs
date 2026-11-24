@@ -19,6 +19,7 @@ use super::value::range_text;
 use super::{flip, float, ident, int, one_in, path_string, pick, small_int, string, upto};
 use arbitrary::Unstructured;
 use openjd_expr::ExprType;
+use openjd_model::types::TaskParameterType;
 use serde_json::{json, Map, Value};
 
 /// A job parameter the generator declared, for building input values.
@@ -388,42 +389,34 @@ impl Ctx<'_, '_> {
                 &["INT", "FLOAT", "STRING", "PATH"]
             };
             let kind = *pick(self.u, kinds);
-            let (range, ty) = match kind {
-                "INT" | "CHUNK[INT]" => {
-                    let r = match upto(self.u, 2) {
-                        0 => json!(range_text(self.u)),
-                        1 => {
-                            let k = upto(self.u, 4) + 1;
-                            json!((0..k).map(|_| small_int(self.u)).collect::<Vec<_>>())
-                        }
-                        _ => json!(self.fmt(&ExprType::RANGE_EXPR)),
-                    };
-                    let ty = if kind == "INT" {
-                        ExprType::INT
-                    } else {
-                        ExprType::RANGE_EXPR
-                    };
-                    (r, ty)
-                }
+            let range = match kind {
+                "INT" | "CHUNK[INT]" => match upto(self.u, 2) {
+                    0 => json!(range_text(self.u)),
+                    1 => {
+                        let k = upto(self.u, 4) + 1;
+                        json!((0..k).map(|_| small_int(self.u)).collect::<Vec<_>>())
+                    }
+                    _ => json!(self.fmt(&ExprType::RANGE_EXPR)),
+                },
                 "FLOAT" => {
                     let k = upto(self.u, 3) + 1;
-                    (
-                        json!((0..k).map(|_| float(self.u)).collect::<Vec<_>>()),
-                        ExprType::FLOAT,
-                    )
+                    json!((0..k).map(|_| float(self.u)).collect::<Vec<_>>())
                 }
                 "PATH" => {
                     let k = upto(self.u, 3) + 1;
                     let r: Vec<Value> = (0..k).map(|_| json!(path_string(self.u))).collect();
-                    (Value::Array(r), ExprType::PATH)
+                    Value::Array(r)
                 }
                 _ => {
                     let k = upto(self.u, 3) + 1;
                     let r: Vec<Value> =
                         (0..k).map(|_| json!(self.fmt(&ExprType::STRING))).collect();
-                    (Value::Array(r), ExprType::STRING)
+                    Value::Array(r)
                 }
             };
+            // The symbols' types are the model's, so generated expressions
+            // are typed as template validation types them.
+            let tp_type = TaskParameterType::from_spec_str(kind).expect("a task parameter type");
             let mut d = json!({"name": name, "type": kind, "range": range});
             if kind == "CHUNK[INT]" {
                 let mut chunks = json!({
@@ -439,11 +432,11 @@ impl Ctx<'_, '_> {
             names.push(name.clone());
             self.symbols.push(Symbol {
                 name: format!("Task.Param.{name}"),
-                ty,
+                ty: tp_type.expr_type(),
             });
             self.symbols.push(Symbol {
                 name: format!("Task.RawParam.{name}"),
-                ty: ExprType::STRING,
+                ty: tp_type.raw_expr_type(),
             });
         }
         let mut space = json!({"taskParameterDefinitions": defs});
