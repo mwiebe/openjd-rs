@@ -5,7 +5,8 @@ name: Fuzz
 # - replay:       every committed corpus and regression input, through every
 #                 oracle, on Linux, macOS, and Windows (stable Rust, overflow
 #                 checks on). Fast and deterministic: a PR that breaks a
-#                 previously found bug or an oracle fails here.
+#                 previously found bug or an oracle fails here, and so does
+#                 one that leaves fuzz/Cargo.lock behind the workspace lock.
 # - fuzz:         libFuzzer under AddressSanitizer, every target in turn in
 #                 one job. Each target grows a corpus that is cached across
 #                 runs (saved from main and the nightly schedule), so coverage
@@ -85,14 +86,19 @@ jobs:
           key: fuzz-replay-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
           restore-keys: fuzz-replay-${{ runner.os }}-
       - name: Sync fuzz/Cargo.lock to the workspace lock
-        # Dependabot bumps only the workspace lock; build against the
-        # versions the crates ship with either way, and say when the
-        # committed fuzz lock lags (the lock test fails locally until then).
+        id: sync-lock
+        # Dependabot and release-plz update only the workspace lock. Replay
+        # against the versions the crates ship with either way, and record
+        # whether the committed fuzz lock lags: the last step fails the job
+        # if it does.
         shell: bash
         run: |
           scripts/fuzz.sh sync-lock
-          git diff --quiet -- fuzz/Cargo.lock ||
-            echo "::warning file=fuzz/Cargo.lock::fuzz/Cargo.lock lags the workspace lock; run scripts/fuzz.sh sync-lock and commit it"
+          if git diff --quiet -- fuzz/Cargo.lock; then
+            echo "lags=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "lags=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Replay corpus and regressions
         run: cargo test --manifest-path fuzz/Cargo.toml --no-default-features
       # The fuzz crate is its own workspace, so the main CI's fmt/clippy jobs
@@ -111,6 +117,15 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt
           cargo +nightly fmt --manifest-path fuzz/Cargo.toml --all -- --check
+      - name: Check fuzz/Cargo.lock is in step with the workspace lock
+        # After the replay and lints, so a lagging lock doesn't hide their
+        # results. Linux only: the lock is the same on every platform.
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.sync-lock.outputs.lags == 'true' }}
+        shell: bash
+        run: |
+          git diff --stat -- fuzz/Cargo.lock
+          echo "::error file=fuzz/Cargo.lock::fuzz/Cargo.lock lags the workspace lock. Run scripts/fuzz.sh sync-lock and commit fuzz/Cargo.lock."
+          exit 1
 
   # The libFuzzer/ASan build is platform-specific (on Windows, scripts/fuzz.sh
   # passes --no-include-main-msvc and puts MSVC's ASan runtime on PATH), but

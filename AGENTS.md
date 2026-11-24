@@ -321,8 +321,9 @@ crate's behavior or public API:
   (`scripts/check_fuzz_api_coverage.py` enforces this in CI).
 
 `fuzz/Cargo.lock` is separate from the workspace lock. After a dependency
-update, run `scripts/fuzz.sh sync-lock` (CI syncs it before building, and the
-replay tests fail locally while it lags).
+update or a version bump, run `scripts/fuzz.sh sync-lock` and commit the
+result. CI syncs it before building, and the Linux replay job fails while the
+committed lock lags, as do the replay tests locally.
 
 If a dependency update bumps `wasm-bindgen`, also bump `WASM_BINDGEN_VERSION`
 in the `openjd-for-js` job in `.github/workflows/ci.yml`, which pins

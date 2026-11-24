@@ -171,8 +171,10 @@ cargo +nightly fmt --manifest-path fuzz/Cargo.toml --all -- --check   # fuzz fmt
 python3 scripts/check_fuzz_api_coverage.py --generate                  # public-API fuzz coverage (Python 3.11+)
 ```
 
-`fuzz/` is a separate workspace with its own lock: after a dependency update, run
-`scripts/fuzz.sh sync-lock` (CI does this before building). See `fuzz/README.md`.
+`fuzz/` is a separate workspace with its own lock: after a dependency update or a
+version bump, run `scripts/fuzz.sh sync-lock` and commit the result. CI syncs it
+before building, and its Linux replay job fails while the committed lock lags.
+See `fuzz/README.md`.
 
 `scripts/check_public_api.sh` needs a pinned nightly toolchain and
 `cargo-public-api`. The script's header gives the install commands.
