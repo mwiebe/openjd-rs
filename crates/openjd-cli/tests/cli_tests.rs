@@ -1575,6 +1575,25 @@ steps:
         assert!(stdout.contains("EXIT_LABEL:item_21"), "stdout: {stdout}");
     }
 
+    /// A step environment's script `let` bindings that reference job
+    /// parameters and a step-level binding, directly and through a chain,
+    /// resolve when the environment is entered.
+    #[test]
+    fn test_step_env_script_let_bindings_see_params() {
+        let tdir = templates_dir();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            tdir.join("step_env_script_let_param.yaml")
+                .to_str()
+                .unwrap(),
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("ENTER_X:14|"), "stdout: {stdout}");
+        assert!(stdout.contains("ENTER_Y:15|"), "stdout: {stdout}");
+        assert!(stdout.contains("ENTER_Z:108|"), "stdout: {stdout}");
+        assert!(stdout.contains("RAN"), "stdout: {stdout}");
+    }
+
     #[test]
     fn test_task_timeout() {
         // Action-level timeout is enforced: the task should be killed before

@@ -84,7 +84,8 @@ that runs the job. The worker evaluates the format strings that remain unresolve
 creation, so `resolved_symtab` is filtered to contain exactly the symbols referenced by
 those format strings. For a Step, these are: the step script's actions (command, args,
 timeout, cancelation), embedded files, script-level let bindings, step-level let bindings,
-and any step-scoped environments' variables, actions, and embedded files. Most of these are
+and any step-scoped environments' variables, actions, embedded files, and script-level let
+bindings (the same fields as an `Environment`'s, below). Most of these are
 host-context (SESSION and TASK scope); timeout and notifyPeriodInSeconds are template scope
 (validation rejects `Session.*`/`Task.*`/`Env.File.*` in them) but still resolve on the
 worker, referencing only the job-creation-stage symbols carried in `resolved_symtab`.
@@ -161,7 +162,9 @@ symbol values to the worker host. It is filtered to contain only the symbols ref
 by this environment's worker-resolved format strings — its variables, script actions
 (including their timeouts), embedded files, and script-level let bindings. The same `RawParam` fallback applies:
 if a format string references `Param.X` for a PATH-typed parameter, `RawParam.X` is
-included instead.
+included instead. A step environment has no `resolved_symtab` of its own; the step's
+`resolved_symtab` carries the symbols its step environments reference, collected from the
+same fields.
 
 ### EmbeddedFile, CancelationMode
 

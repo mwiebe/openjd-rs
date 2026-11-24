@@ -559,7 +559,7 @@ pub fn evaluate_let_bindings(
 // Step and Environment have different sets of these format strings:
 //   Step  — step-level let bindings, script (actions, embedded files,
 //           script-level let bindings), and step-scoped environments
-//           (variables, actions, embedded files).
+//           (the same fields as Env below).
 //   Env   — variables, script (actions, embedded files, script-level
 //           let bindings).
 //
@@ -622,21 +622,7 @@ fn filter_symtab_for_step(
 
     if let Some(envs) = step_environments {
         for env in envs {
-            if let Some(vars) = &env.variables {
-                for fs in vars.values() {
-                    fs.copy_used_symtab_values(full, &mut filtered);
-                }
-            }
-            if let Some(es) = &env.script {
-                collect_env_action_refs(&es.actions, full, &mut filtered);
-                if let Some(files) = &es.embedded_files {
-                    for f in files {
-                        if let Some(d) = &f.data {
-                            d.copy_used_symtab_values(full, &mut filtered);
-                        }
-                    }
-                }
-            }
+            copy_env_refs(env, full, &mut filtered);
         }
     }
 
@@ -715,14 +701,7 @@ fn collect_all_accessed_symbols(
     }
 
     if let Some(bindings) = step_let_bindings {
-        for binding in bindings {
-            if let Some(eq_pos) = binding.find('=') {
-                let expr = binding[eq_pos + 1..].trim();
-                if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                    symbols.extend(parsed.accessed_symbols().iter().cloned());
-                }
-            }
-        }
+        symbols.extend(let_binding_accessed_symbols(bindings));
     }
 
     if let Some(s) = script {
@@ -735,56 +714,43 @@ fn collect_all_accessed_symbols(
             }
         }
         if let Some(bindings) = &s.let_bindings {
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let expr = binding[eq_pos + 1..].trim();
-                    if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                        symbols.extend(parsed.accessed_symbols().iter().cloned());
-                    }
-                }
-            }
+            symbols.extend(let_binding_accessed_symbols(bindings));
         }
     }
 
     if let Some(envs) = step_environments {
         for env in envs {
-            if let Some(vars) = &env.variables {
-                for fs in vars.values() {
-                    collect_from_fs(fs, &mut symbols);
-                }
-            }
-            if let Some(es) = &env.script {
-                for action in es.actions.iter_actions() {
-                    collect_from_action(action, &mut symbols);
-                }
-                if let Some(files) = &es.embedded_files {
-                    for f in files {
-                        if let Some(d) = &f.data {
-                            collect_from_fs(d, &mut symbols);
-                        }
-                    }
-                }
-            }
+            symbols.extend(collect_env_accessed_symbols(env));
         }
     }
 
     symbols
 }
 
-fn collect_let_binding_refs(bindings: &[String], full: &SymbolTable, filtered: &mut SymbolTable) {
+/// The symbols the right-hand sides of `name = expr` let bindings access.
+///
+/// Bindings have already been validated by this point. They are parsed here
+/// only to discover referenced symbols for the filtered symtab, so a parse
+/// failure is unreachable but harmless: its symbols just don't appear.
+/// A reference to an earlier binding in the same `let` is returned like any
+/// other name. The caller looks each name up in the job-creation symtab, and
+/// a name that isn't there is skipped.
+fn let_binding_accessed_symbols(bindings: &[String]) -> std::collections::HashSet<String> {
+    let mut symbols = std::collections::HashSet::new();
     for binding in bindings {
         if let Some(eq_pos) = binding.find('=') {
             let expr = binding[eq_pos + 1..].trim();
-            // Bindings have already been validated and evaluated by this point.
-            // Parse here only to discover referenced symbols for the filtered symtab.
-            // A parse failure is unreachable but harmless — the symbol just won't
-            // appear in the filtered output.
             if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                for symbol in parsed.accessed_symbols() {
-                    copy_symbol_value(symbol, full, filtered);
-                }
+                symbols.extend(parsed.accessed_symbols().iter().cloned());
             }
         }
+    }
+    symbols
+}
+
+fn collect_let_binding_refs(bindings: &[String], full: &SymbolTable, filtered: &mut SymbolTable) {
+    for symbol in let_binding_accessed_symbols(bindings) {
+        copy_symbol_value(&symbol, full, filtered);
     }
 }
 
@@ -826,33 +792,43 @@ fn collect_env_action_refs(
     }
 }
 
-fn filter_symtab_for_environment(env: &job::Environment, full: &SymbolTable) -> SymbolTable {
-    let mut filtered = SymbolTable::new();
+/// Copy into `filtered` the symbols of `full` that an environment's
+/// worker-resolved format strings and script `let` bindings reference.
+/// Shared by job environments ([`filter_symtab_for_environment`]) and step
+/// environments ([`filter_symtab_for_step`]); its `RawParam.*` counterpart
+/// is [`collect_env_accessed_symbols`].
+fn copy_env_refs(env: &job::Environment, full: &SymbolTable, filtered: &mut SymbolTable) {
     if let Some(vars) = &env.variables {
         for fs in vars.values() {
-            fs.copy_used_symtab_values(full, &mut filtered);
+            fs.copy_used_symtab_values(full, filtered);
         }
     }
     if let Some(es) = &env.script {
-        collect_env_action_refs(&es.actions, full, &mut filtered);
+        collect_env_action_refs(&es.actions, full, filtered);
         if let Some(files) = &es.embedded_files {
             for f in files {
                 if let Some(d) = &f.data {
-                    d.copy_used_symtab_values(full, &mut filtered);
+                    d.copy_used_symtab_values(full, filtered);
                 }
             }
         }
         if let Some(bindings) = &es.let_bindings {
-            collect_let_binding_refs(bindings, full, &mut filtered);
+            collect_let_binding_refs(bindings, full, filtered);
         }
     }
+}
+
+fn filter_symtab_for_environment(env: &job::Environment, full: &SymbolTable) -> SymbolTable {
+    let mut filtered = SymbolTable::new();
+    copy_env_refs(env, full, &mut filtered);
     let symbols = collect_env_accessed_symbols(env);
     include_raw_param_fallbacks(&symbols, full, &mut filtered);
     filtered
 }
 
 /// Collect all symbol names accessed by an environment's worker-resolved
-/// format strings (host-context fields plus template-scope timeouts).
+/// format strings (host-context fields plus template-scope timeouts) and
+/// script `let` bindings. Covers the same fields as [`copy_env_refs`].
 fn collect_env_accessed_symbols(env: &job::Environment) -> std::collections::HashSet<String> {
     let mut symbols = std::collections::HashSet::new();
     if let Some(vars) = &env.variables {
@@ -900,14 +876,7 @@ fn collect_env_accessed_symbols(env: &job::Environment) -> std::collections::Has
             }
         }
         if let Some(bindings) = &es.let_bindings {
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let expr = binding[eq_pos + 1..].trim();
-                    if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                        symbols.extend(parsed.accessed_symbols().iter().cloned());
-                    }
-                }
-            }
+            symbols.extend(let_binding_accessed_symbols(bindings));
         }
     }
     symbols

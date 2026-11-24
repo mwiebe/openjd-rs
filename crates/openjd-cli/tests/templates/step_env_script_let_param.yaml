@@ -1,0 +1,38 @@
+# A step environment's script `let` bindings reference job parameters and a
+# step-level `let` binding, directly and through a chain of bindings. They
+# resolve when the environment is entered, from the step's resolved_symtab.
+specificationVersion: jobtemplate-2023-09
+name: Step Env Script Let Param Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: Base
+    type: INT
+    default: 7
+  - name: Offset
+    type: INT
+    default: 1
+steps:
+  - name: TestStep
+    let:
+      - s = Param.Base + 100
+    stepEnvironments:
+      - name: StepEnv
+        script:
+          let:
+            - x = Param.Base * 2
+            - y = x + Param.Offset
+            - z = s + 1
+          actions:
+            onEnter:
+              command: python
+              args:
+                - -c
+                - "print('ENTER_X:{{ x }}|')\nprint('ENTER_Y:{{ y }}|')\nprint('ENTER_Z:{{ z }}|')"
+    script:
+      actions:
+        onRun:
+          command: python
+          args:
+            - -c
+            - "print('RAN')"

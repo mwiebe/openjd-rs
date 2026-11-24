@@ -651,3 +651,131 @@ fn test_job_env_resolved_symtab_includes_raw_param_for_path() {
         "RawParam.OutDir should be in env resolved_symtab for PATH param"
     );
 }
+
+/// Create a job from `template` with default parameter values and return the
+/// first step's resolved_symtab.
+fn first_step_resolved_symtab(template: &str) -> openjd_model::SymbolTable {
+    let td = TestDirs::new();
+    let jt = decode_job_template(
+        yaml_val(template),
+        Some(&["EXPR"]),
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    let params = preprocess_job_parameters(
+        &jt,
+        &Default::default(),
+        &[],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: td.path(),
+            current_working_dir: td.path(),
+            allow_template_dir_walk_up: true,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .unwrap();
+    let job = create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    job.steps[0]
+        .resolved_symtab
+        .as_ref()
+        .expect("step should have resolved_symtab")
+        .to_symtab(openjd_expr::PathFormat::Posix)
+        .unwrap()
+}
+
+/// A step environment's script `let` bindings are resolved on the worker
+/// from the step's resolved_symtab, so the job parameters they reference
+/// must be in it: directly, through a chain of bindings, and inside a
+/// comprehension. Parameters nothing references stay out.
+#[test]
+fn test_step_env_let_refs_in_step_resolved_symtab() {
+    let st = first_step_resolved_symtab(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "StepEnvLet",
+        "extensions": ["EXPR"],
+        "parameterDefinitions": [
+            {"name": "Base", "type": "INT", "default": 7},
+            {"name": "Offset", "type": "INT", "default": 1},
+            {"name": "Flag", "type": "BOOL", "default": true},
+            {"name": "Unused", "type": "INT", "default": 3}
+        ],
+        "steps": [{
+            "name": "Step1",
+            "stepEnvironments": [{
+                "name": "StepEnv",
+                "script": {
+                    "let": [
+                        "x = Param.Base * 2",
+                        "y = x + Param.Offset",
+                        "b = [v for v in [1] if Param.Flag]"
+                    ],
+                    "actions": {"onEnter": {"command": "echo", "args": ["{{ y }}", "{{ b }}"]}}
+                }
+            }],
+            "script": {"actions": {"onRun": {"command": "echo"}}}
+        }]
+    }"#,
+    );
+
+    assert_eq!(
+        st.get_value("Param.Base"),
+        Some(&openjd_expr::ExprValue::Int(7))
+    );
+    assert_eq!(
+        st.get_value("Param.Offset"),
+        Some(&openjd_expr::ExprValue::Int(1))
+    );
+    assert_eq!(
+        st.get_value("Param.Flag"),
+        Some(&openjd_expr::ExprValue::Bool(true))
+    );
+    assert!(
+        st.get_value("Param.Unused").is_none(),
+        "Param.Unused should be excluded"
+    );
+    // Names bound inside the environment's let chain and comprehension loop
+    // variables are not job-creation symbols, so they don't appear.
+    for name in ["x", "y", "b", "v"] {
+        assert!(st.get_value(name).is_none(), "{name} should be excluded");
+    }
+}
+
+/// A step environment's script `let` that references a PATH-typed job
+/// parameter gets the `RawParam.*` fallback in the step's resolved_symtab,
+/// as a job environment's does.
+#[test]
+fn test_step_env_let_path_param_includes_raw_param() {
+    let st = first_step_resolved_symtab(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "StepEnvLetPath",
+        "extensions": ["EXPR"],
+        "parameterDefinitions": [
+            {"name": "OutDir", "type": "PATH", "default": "/out/renders"},
+            {"name": "OtherDir", "type": "PATH", "default": "/other"}
+        ],
+        "steps": [{
+            "name": "Step1",
+            "stepEnvironments": [{
+                "name": "StepEnv",
+                "script": {
+                    "let": ["leaf = Param.OutDir.name"],
+                    "actions": {"onEnter": {"command": "echo", "args": ["{{ leaf }}"]}}
+                }
+            }],
+            "script": {"actions": {"onRun": {"command": "echo"}}}
+        }]
+    }"#,
+    );
+
+    assert!(
+        st.get_value("RawParam.OutDir").is_some(),
+        "RawParam.OutDir should be in step resolved_symtab for PATH param"
+    );
+    assert!(
+        st.get_value("RawParam.OtherDir").is_none(),
+        "RawParam.OtherDir should be excluded"
+    );
+}
