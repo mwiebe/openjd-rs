@@ -423,10 +423,11 @@ impl TaskParameterType {
     }
 
     /// The `ExprType` of `Task.Param.<name>` for a task parameter of this
-    /// type (Expression Language, "Task Parameter Types"). Template
-    /// validation, job creation and the session all take it from here,
-    /// and [`raw_expr_type`](Self::raw_expr_type) for
-    /// `Task.RawParam.<name>`.
+    /// type (Expression Language, "Task Parameter Types"), with
+    /// [`raw_expr_type`](Self::raw_expr_type) for `Task.RawParam.<name>`.
+    /// Template validation and job creation type a task parameter's symbols
+    /// by these two methods, the session binds values of these types, and
+    /// tests in each pin it.
     pub fn expr_type(&self) -> ExprType {
         match self {
             Self::Int => ExprType::INT,

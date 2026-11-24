@@ -879,8 +879,9 @@ impl TaskParameterType {
 `TaskParameterType::expr_type` is the type of `Task.Param.<name>` and
 `raw_expr_type` the type of `Task.RawParam.<name>`: the same, except `string`
 for PATH (Expression Language, "Task Parameter Types"). Template validation's
-task scope, job creation's check scope for a step script, and the session's
-symbol table all type a task parameter by these two methods.
+task scope and job creation's check scope for a step script type a task
+parameter's symbols by these two methods, and tests pin the session's symbol
+table to bind values of the same types.
 
 ### Parameter Values
 

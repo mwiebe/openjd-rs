@@ -3091,11 +3091,13 @@ impl Session {
     /// The value of a CHUNK[INT] task parameter as a `range_expr`, its
     /// `TaskParameterType::expr_type`. A `range_expr` value is kept as given,
     /// with its display form. A string, as a chunk crosses the language
-    /// boundary, is parsed, and keeps its text: it is marked contiguous
+    /// boundary, is parsed and written in canonical form, except that a
+    /// string written `<N>-<M>` (white space around it aside), the form of a
+    /// `CONTIGUOUS` chunk, is marked contiguous
     /// ([`RangeExpr::with_contiguous`](openjd_expr::RangeExpr::with_contiguous))
-    /// when it is written `<N>-<M>`, the form of a `CONTIGUOUS` chunk, so
-    /// `"5-6"` is still written `5-6` and `"5,6"` still `5,6`. Any other value
-    /// fails, naming the parameter.
+    /// and keeps that form: `"5-6"` is written `5-6`, and `"5,6"` and
+    /// `"5-6:1"` are written `5,6`. Any other value fails, naming the
+    /// parameter.
     fn chunk_param_value(
         value: &openjd_expr::ExprValue,
         param_key: &str,
@@ -4368,7 +4370,8 @@ mod typed_param_seeding_tests {
 
     /// A CHUNK[INT] value given as a string, as it crosses the language
     /// boundary, is bound to `Task.Param.*` and `Task.RawParam.*` as a
-    /// `range_expr`, the type validation checks, written as it was given.
+    /// `range_expr`, the type validation checks. It is written in canonical
+    /// form, except that a string written `<N>-<M>` keeps that form.
     #[test]
     fn task_chunk_int_string_is_a_range_expr() {
         for (text, written) in [
@@ -4376,6 +4379,9 @@ mod typed_param_seeding_tests {
             ("5-6", "5-6"),
             ("5,6", "5,6"),
             (" 1-3 ", "1-3"),
+            (" 5-6 ", "5-6"),
+            ("5-6:1", "5,6"),
+            ("6,5", "5,6"),
         ] {
             let symtab = build_symtab_with_task_params(
                 vec![],
@@ -4401,11 +4407,7 @@ mod typed_param_seeding_tests {
             }
             assert_eq!(
                 eval_str(&symtab, "{{ Task.Param.Chunk[0] + 1 }}").unwrap(),
-                if text.trim().starts_with('5') {
-                    "6"
-                } else {
-                    "2"
-                }
+                if written.starts_with('5') { "6" } else { "2" }
             );
         }
     }
@@ -4414,16 +4416,22 @@ mod typed_param_seeding_tests {
     /// fails symbol table construction, naming the parameter.
     #[test]
     fn task_chunk_int_rejects_other_values() {
-        for value in [ExprValue::String("1:5".into()), ExprValue::Int(5)] {
+        for (value, reason) in [
+            (ExprValue::String("1:5".into()), "Unexpected ':' in '1:5'"),
+            (ExprValue::Int(5), "Cannot coerce int to range_expr"),
+        ] {
             let err = build_symtab_with_task_params(
                 vec![],
                 vec![("Chunk", TaskParameterType::ChunkInt, value.clone())],
             )
             .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("Failed to coerce parameter 'Task.RawParam.Chunk'"),
-                "{value:?}: {err}"
+            assert_eq!(
+                err.to_string(),
+                SessionError::Runtime(format!(
+                    "Failed to coerce parameter 'Task.RawParam.Chunk': {reason}"
+                ))
+                .to_string(),
+                "{value:?}"
             );
         }
     }
