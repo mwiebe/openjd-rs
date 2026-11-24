@@ -1603,7 +1603,8 @@ fn validate_action_timing_fs(
 /// script. On the plain lifecycle actions (`onEnter`/`onExit`) these
 /// fields resolve at job creation, before any session exists, so they
 /// validate against the template-scope `template_symtab`. On the RFC 0008
-/// wrap hooks they resolve at run time with the `WrappedAction.*`
+/// wrap hooks (the ones `EnvironmentActions::wrap_hooks` lists, as for
+/// `command`/`args`) they resolve at run time with the `WrappedAction.*`
 /// variables seeded — that is what makes round-trip forwarding
 /// (`timeout: "{{WrappedAction.Timeout}}"`,
 /// `mode: "{{WrappedAction.Cancelation.Mode}}"`) possible — so they see
@@ -1615,7 +1616,7 @@ fn validate_env_actions_timing_fs(
     actions_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let wrap_hook_names: [&str; 3] = ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"];
+    let wrap_hook_names = script.actions.wrap_hooks().map(|(name, _, _)| name);
     for (name, action) in script.actions.iter_named() {
         let action_path = path_field(actions_path, name);
         let scoped_symtab: SymbolTable;

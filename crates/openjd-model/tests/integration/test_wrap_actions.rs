@@ -1142,3 +1142,105 @@ environment:
          its RawParam.* fallback in the frozen symtab"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Timing fields see the WrappedAction.* scope in every wrap hook
+// ════════════════════════════════════════════════════════════════════
+
+/// An environment whose action `slot` forwards the wrapped action's
+/// `timeout` and `cancelation`, with plain wrap hooks in the other slots.
+fn forwarding_actions(slot: &str, indent: &str) -> String {
+    let mut out = String::new();
+    for name in [
+        "onEnter",
+        "onWrapEnvEnter",
+        "onWrapTaskRun",
+        "onWrapEnvExit",
+    ] {
+        out.push_str(&format!("{indent}{name}:\n{indent}  command: echo\n"));
+        if name == slot {
+            out.push_str(&format!(
+                "{indent}  timeout: \"{{{{ WrappedAction.Timeout }}}}\"\n\
+                 {indent}  cancelation:\n\
+                 {indent}    mode: \"{{{{ WrappedAction.Cancelation.Mode }}}}\"\n\
+                 {indent}    notifyPeriodInSeconds: \"{{{{ WrappedAction.Cancelation.NotifyPeriodInSeconds }}}}\"\n"
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn every_wrap_hook_timing_field_sees_wrapped_action_scope() {
+    // Fails for a hook that `wrap_hooks()` leaves out: its `timeout` and
+    // `cancelation` would then validate without `WrappedAction.*`.
+    for hook in ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"] {
+        let actions = forwarding_actions(hook, "        ");
+        expect_job_ok(
+            &format!(
+                "specificationVersion: jobtemplate-2023-09\n\
+                 extensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]\n\
+                 name: J\n\
+                 jobEnvironments:\n\
+                 - name: W\n\
+                 \x20 script:\n\
+                 \x20   actions:\n{actions}\
+                 steps:\n\
+                 - name: S\n\
+                 \x20 script:\n\
+                 \x20   actions:\n\
+                 \x20     onRun:\n\
+                 \x20       command: echo\n"
+            ),
+            ROUND_TRIP_EXTS,
+        );
+        let actions = forwarding_actions(hook, "      ");
+        expect_env_ok(
+            &format!(
+                "specificationVersion: environment-2023-09\n\
+                 extensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]\n\
+                 environment:\n\
+                 \x20 name: W\n\
+                 \x20 script:\n\
+                 \x20   actions:\n{actions}"
+            ),
+            ROUND_TRIP_EXTS,
+        );
+    }
+}
+
+#[test]
+fn on_enter_timing_fields_do_not_see_wrapped_action_scope() {
+    let actions = forwarding_actions("onEnter", "      ");
+    let err = decode_environment_template(
+        yaml_val(&format!(
+            "specificationVersion: environment-2023-09\n\
+             extensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]\n\
+             environment:\n\
+             \x20 name: W\n\
+             \x20 script:\n\
+             \x20   actions:\n{actions}"
+        )),
+        Some(ROUND_TRIP_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("WrappedAction.* is undefined outside the wrap hooks")
+    .to_string();
+    let path = "environment -> script -> actions -> onEnter";
+    assert_eq!(
+        err,
+        format!(
+            "Model validation error: 3 validation errors for EnvironmentTemplate\n\
+             {path} -> timeout:\n\tFailed to parse interpolation expression at [0, 27]. \
+             Undefined variable: 'WrappedAction.Timeout'.\n  WrappedAction.Timeout\n  \
+             ~~~~~~~~~~~~~~^~~~~~~\n\
+             {path} -> cancelation:\n\tFailed to parse interpolation expression at [0, 36]. \
+             Undefined variable: 'WrappedAction.Cancelation.Mode'.\n  \
+             WrappedAction.Cancelation.Mode\n  ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~\n\
+             {path} -> cancelation:\n\tFailed to parse interpolation expression at [0, 53]. \
+             Undefined variable: 'WrappedAction.Cancelation.NotifyPeriodInSeconds'.\n  \
+             WrappedAction.Cancelation.NotifyPeriodInSeconds\n  \
+             ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~"
+        )
+    );
+}
