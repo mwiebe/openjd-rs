@@ -951,6 +951,37 @@ steps:
     );
 }
 
+/// A Step Environment's session scope copies every Step `let` binding with
+/// an `=`, including one with no expression, from the task scope, so `t`
+/// there is the step script's `t = 1` (an INT), and the Step Environment
+/// reports nothing more. The task scope itself skips the binding
+/// (`a_let_binding_with_no_expression_does_not_replace_a_task_scope_symbol`).
+#[test]
+fn a_step_environment_reads_a_let_binding_with_no_expression_from_the_task_scope() {
+    assert_message(
+        &[],
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: T
+steps:
+- name: S
+  let: ["t ="]
+  script:
+    let: ["t = 1"]
+    actions: {onRun: {command: x}}
+  stepEnvironments:
+  - name: E
+    script:
+      let: ["u = t + 1"]
+      actions: {onEnter: {command: "{{ t }}", args: ["{{ u }}"]}}
+"#,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[0] -> let[0]:\n\tbinding 't' has no expression after '='.\n\
+         steps[0] -> script -> let[0]:\n\t't' shadows enclosing scope.",
+    );
+}
+
 /// Pass 8 reports a fully static amount or attribute name that repeats an
 /// earlier literal one; structure, which compares only literal names, does
 /// not see it.
