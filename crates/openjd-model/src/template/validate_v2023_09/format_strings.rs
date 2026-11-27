@@ -143,7 +143,8 @@ fn copy_step_lets(
             continue;
         }
         if let Some(value) = step_scope.get_value(name) {
-            // Host scope: their paths are in the worker's format there.
+            // Host scope: a path the value holds is in the worker's format
+            // there.
             let _ = symtab.set(name, unresolve_template_path(value.clone()));
         }
     }
@@ -1117,7 +1118,8 @@ fn check_cancelation_mode(
 /// POSIX: the host-scope library (`HostContext::Unresolved`) returns
 /// `unresolved[path]` from `path()`, because the worker's path format
 /// isn't known yet, and a TEMPLATE-scope path reaching a host-scope
-/// symbol table is unresolved too ([`unresolve_template_paths`]; see
+/// symbol table is unresolved too ([`copy_step_lets`] here, and
+/// [`unresolve_template_paths`] in job creation; see
 /// specs/model/validation.md § Path Format).
 struct FsEval {
     profile: openjd_expr::ExprProfile,

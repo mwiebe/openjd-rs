@@ -951,6 +951,32 @@ steps:
     );
 }
 
+/// A Step `let` value that holds a path is unresolved in a Step
+/// Environment's session scope, and it keeps its own type there: the error
+/// names `list[path]`, not an unresolved type wrapped twice. The task scope
+/// unresolves the value first, and the Step Environment copies it from
+/// there.
+#[test]
+fn a_step_environment_reports_a_step_let_list_of_paths_by_its_own_type() {
+    assert_message(
+        &[],
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: T
+steps:
+- name: S
+  let: ["c = [path('C:\\a')]"]
+  script: {actions: {onRun: {command: x}}}
+  stepEnvironments:
+  - {name: E, variables: {V: "{{ c }}"}}
+"#,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> stepEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation \
+         expression at [0, 7]. Cannot coerce list[path] to string\n  c\n  ^",
+    );
+}
+
 /// A Step Environment's session scope copies every Step `let` binding with
 /// an `=`, including one with no expression, from the task scope, so `t`
 /// there is the step script's `t = 1` (an INT), and the Step Environment

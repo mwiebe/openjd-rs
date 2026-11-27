@@ -113,7 +113,7 @@ Re-exports of `FormatString` and `SymbolTable` from `openjd-expr` are appropriat
 - All 24 `.expect("symtab")` calls are on hardcoded key paths after earlier validation — safe
 
 **Issues Found:**
-- ~~`validate_format_strings()` is ~400 lines — could benefit from decomposition into smaller helper functions per scope~~ **Resolved** by #618 — it is 74 lines, with one function per scope.
+- ~~`validate_format_strings()` is ~400 lines — could benefit from decomposition into smaller helper functions per scope~~ **Resolved** — #618 split it into one function per scope; it is 74 lines.
 - Repeated pattern of building symtabs with `Job.Name`/`Step.Name` in multiple places
 
 #### `parameters.rs` (813 lines)
@@ -331,7 +331,7 @@ Re-exports of `FormatString` and `SymbolTable` from `openjd-expr` are appropriat
 ### Priority 3 (Nice to Have)
 
 5. ~~**Extract duplicated `chunk_range_expr()` logic** into a shared function.~~ **Resolved.**
-6. ~~**Decompose `validate_format_strings()`** into per-scope helpers.~~ **Resolved** by #618.
+6. ~~**Decompose `validate_format_strings()`** into per-scope helpers.~~ **Resolved** — #618.
 7. ~~**Update specs** to use `ModelError` instead of `OpenJdError`.~~ **Resolved.**
 8. ~~**Add tests for `StepParameterSpaceIterator::get()`** with product and association combinations.~~ Partially addressed — 24 chunking tests ported from Python, though `get()` random access tests for complex combinations remain a gap.
 9. ~~**Consider `IndexMap` for `TaskParameterSet`** if deterministic key ordering is desired.~~ **Resolved.**
