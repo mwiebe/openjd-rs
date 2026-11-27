@@ -880,8 +880,8 @@ impl TaskParameterType {
 `raw_expr_type` the type of `Task.RawParam.<name>`: the same, except `string`
 for PATH (Expression Language, "Task Parameter Types"). Template validation's
 task scope and job creation's check scope for a step script type a task
-parameter's symbols by these two methods, and tests pin the session's symbol
-table to bind values of the same types.
+parameter's symbols by these two methods, and the session binds values of the
+same types.
 
 ### Parameter Values
 

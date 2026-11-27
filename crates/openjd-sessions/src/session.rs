@@ -4412,6 +4412,29 @@ mod typed_param_seeding_tests {
         }
     }
 
+    /// A CHUNK[INT] value that is a range expression is bound to both
+    /// symbols as given, keeping its display form: a contiguous `5-6` stays
+    /// `5-6`, and the same values not marked contiguous are written `5,6`.
+    #[test]
+    fn task_chunk_int_range_expr_keeps_its_display_form() {
+        let r: openjd_expr::RangeExpr = "5-6".parse().unwrap();
+        for (value, written) in [(r.clone().with_contiguous(true), "5-6"), (r, "5,6")] {
+            let symtab = build_symtab_with_task_params(
+                vec![],
+                vec![(
+                    "Chunk",
+                    TaskParameterType::ChunkInt,
+                    ExprValue::RangeExpr(value),
+                )],
+            )
+            .unwrap();
+            for key in ["Task.Param.Chunk", "Task.RawParam.Chunk"] {
+                let expr = format!("{{{{ {key} }}}}");
+                assert_eq!(eval_str(&symtab, &expr).unwrap(), written, "{key}");
+            }
+        }
+    }
+
     /// A CHUNK[INT] value that is neither a range expression nor its string
     /// fails symbol table construction, naming the parameter.
     #[test]

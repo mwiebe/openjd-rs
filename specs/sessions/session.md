@@ -554,7 +554,7 @@ symbols as a `range_expr`, its `expr_type`: a `range_expr` value as given, and a
 string parsed and written in canonical form, except that a string written `<N>-<M>`
 is marked contiguous, as a `CONTIGUOUS` chunk is, and keeps that form (`"5-6"` is
 written `5-6`; `"5,6"` and `"5-6:1"` are written `5,6`). A string that is not a range
-expression fails, naming the parameter.
+expression, or any other value (an int, a list, a path), fails, naming the parameter.
 **Divergence from openjd-sessions-for-python:** Python binds a `CHUNK_INT` value as
 a string, so an expression template validation accepts, such as
 `{{ Task.Param.Frames[0] + 1 }}`, fails there at run time. A value that cannot be coerced to its declared type

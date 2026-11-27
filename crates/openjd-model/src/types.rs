@@ -426,8 +426,7 @@ impl TaskParameterType {
     /// type (Expression Language, "Task Parameter Types"), with
     /// [`raw_expr_type`](Self::raw_expr_type) for `Task.RawParam.<name>`.
     /// Template validation and job creation type a task parameter's symbols
-    /// by these two methods, the session binds values of these types, and
-    /// tests in each pin it.
+    /// by these two methods, and the session binds values of these types.
     pub fn expr_type(&self) -> ExprType {
         match self {
             Self::Int => ExprType::INT,
