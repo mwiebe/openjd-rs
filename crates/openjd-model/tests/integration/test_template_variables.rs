@@ -209,3 +209,31 @@ fn step_name_in_parameter_space_range() {
     }"#,
     );
 }
+
+/// A Step Environment's session scope has `Step.Name`, with EXPR, in its
+/// actions and its script's `let` bindings, at validation and at job
+/// creation. A standalone Environment Template has no Step
+/// (`test_environment_template.rs`, `env_template_step_name_not_available`).
+#[test]
+fn step_name_in_step_environment_actions_and_let() {
+    let t = r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR"],
+        "name": "MyJob",
+        "steps": [{"name": "S",
+            "script": {"actions": {"onRun": {"command": "echo"}}},
+            "stepEnvironments": [{"name": "E", "script": {
+                "let": ["n = len(Step.Name)"],
+                "actions": {
+                    "onEnter": {"command": "{{ Step.Name }}", "args": ["{{ n + 1 }}"]},
+                    "onExit": {"command": "echo", "args": ["{{ Step.Name.upper() }}"]}
+                }
+            }}]
+        }]
+    }"#;
+    let jt = decode_job_template(yaml_val(t), Some(&["EXPR"]), &CallerLimits::default())
+        .unwrap_or_else(|e| panic!("Expected success: {e}"));
+    let ctx = jt.default_validation_context();
+    openjd_model::create_job(&jt, &std::collections::HashMap::new(), &ctx)
+        .unwrap_or_else(|e| panic!("Expected job creation to succeed: {e}"));
+}

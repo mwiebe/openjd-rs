@@ -983,15 +983,21 @@ fn env_template_env_file_reference_available() {
 #[test]
 fn env_template_step_name_not_available() {
     // Step.Name is never in scope for a standalone environment template,
-    // even with EXPR — the template is not attached to a step.
+    // even with EXPR — the template is not attached to a step. A Step
+    // Environment has it (test_template_variables.rs,
+    // step_name_in_step_environment_actions_and_let).
     check_env_err_with_exts(
         r#"{
         "specificationVersion": "environment-2023-09",
         "extensions": ["EXPR"],
-        "environment": {"name": "Foo", "script": {"actions": {"onEnter": {"command": "{{Step.Name}}"}}}}
+        "environment": {"name": "Foo", "script": {
+            "let": ["n = Step.Name"],
+            "actions": {"onEnter": {"command": "{{Step.Name}}"}}
+        }}
     }"#,
         &["EXPR"],
         &[
+            "environment -> script -> let[0]:\n\tInvalid expression in let binding 'n': Undefined variable: 'Step.Name'.",
             "environment -> script -> actions -> onEnter -> command:\n\tFailed to parse interpolation expression at [0, 13]. Undefined variable: 'Step.Name'.",
         ],
     );
