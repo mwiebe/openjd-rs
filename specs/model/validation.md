@@ -380,9 +380,8 @@ specs/sessions/session.md), so when the step-level bindings are copied into
 the task scope and a step environment's session scope (`copy_step_lets`),
 each copied value whose type contains `path` becomes `unresolved[T]`. When
 they are copied, every other symbol in those scopes is unresolved already.
-Job creation applies the
-same rule to every value of its host-scope check tables
-(`unresolve_template_paths` in `build_task_check_symtab` and
+Job creation applies the same rule to every value of its host-scope check
+tables (`unresolve_template_paths` in `build_task_check_symtab` and
 `build_env_check_symtab`).
 Whether `C:\a\b` has one component or three is decided by the worker's
 format when the session runs it (Expression Language "Path Format"). This
