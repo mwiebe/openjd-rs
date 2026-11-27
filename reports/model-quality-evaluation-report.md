@@ -113,7 +113,7 @@ Re-exports of `FormatString` and `SymbolTable` from `openjd-expr` are appropriat
 - All 24 `.expect("symtab")` calls are on hardcoded key paths after earlier validation — safe
 
 **Issues Found:**
-- `validate_format_strings()` is ~400 lines — could benefit from decomposition into smaller helper functions per scope
+- ~~`validate_format_strings()` is ~400 lines — could benefit from decomposition into smaller helper functions per scope~~ **Resolved** by #618 — it is 74 lines, with one function per scope.
 - Repeated pattern of building symtabs with `Job.Name`/`Step.Name` in multiple places
 
 #### `parameters.rs` (813 lines)
@@ -292,12 +292,13 @@ Re-exports of `FormatString` and `SymbolTable` from `openjd-expr` are appropriat
 **Description:** `StaticChunkNode` and `StaticChunkIterator` previously had ~40 lines of identical `chunk_range_expr()` logic. Now both delegate to a shared `build_chunk_range_expr()` function (since renamed `static_chunk()`).
 **Resolution:** Extracted shared helper function.
 
-### Finding #7: Long Validation Function
+### Finding #7: ~~Long Validation Function~~ (Resolved)
 
 **File:** `src/template/validate_v2023_09/format_strings.rs`
-**Severity:** Informational
+**Severity:** ~~Informational~~ Resolved
 **Description:** `validate_format_strings()` is ~400 lines. While the logic is correct, the function handles four distinct scopes (job name, host requirements, environments, steps) in a single function body.
 **Recommendation:** Consider decomposing into per-scope helper functions for readability and maintainability.
+**Resolution:** #618 decomposed it into per-scope functions; `validate_format_strings()` is 74 lines.
 
 ### Finding #8: ~~Spec Uses Wrong Error Type Name~~ (Resolved)
 
@@ -330,7 +331,7 @@ Re-exports of `FormatString` and `SymbolTable` from `openjd-expr` are appropriat
 ### Priority 3 (Nice to Have)
 
 5. ~~**Extract duplicated `chunk_range_expr()` logic** into a shared function.~~ **Resolved.**
-6. **Decompose `validate_format_strings()`** into per-scope helpers.
+6. ~~**Decompose `validate_format_strings()`** into per-scope helpers.~~ **Resolved** by #618.
 7. ~~**Update specs** to use `ModelError` instead of `OpenJdError`.~~ **Resolved.**
 8. ~~**Add tests for `StepParameterSpaceIterator::get()`** with product and association combinations.~~ Partially addressed — 24 chunking tests ported from Python, though `get()` random access tests for complex combinations remain a gap.
 9. ~~**Consider `IndexMap` for `TaskParameterSet`** if deterministic key ordering is desired.~~ **Resolved.**
