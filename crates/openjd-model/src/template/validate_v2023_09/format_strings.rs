@@ -2608,11 +2608,11 @@ fn evaluate_let_binding(
                     // `set` fails only on a name that conflicts with an entry already
                     // in the symtab: a scope root (`Session`), a dotted name under a
                     // value (`Session.WorkingDirectory.x`), or an earlier binding (`a`
-                    // after `a.b`). Each such conflict
-                    // involves a name the `<UserIdentifier>` rule reports at template
-                    // validation, so the binding is dropped and ignoring the result
-                    // is safe. A scope added after the bindings (a wrap hook's) is
-                    // merged over them instead.
+                    // after `a.b`). Each such conflict involves a name the
+                    // `<UserIdentifier>` rule reports at template validation, so the
+                    // binding is dropped and ignoring the result is safe. A scope
+                    // added after the bindings (a wrap hook's) is merged over them
+                    // instead.
                     let _ = symtab.set(name, result);
                 }
                 Err(e) => {
