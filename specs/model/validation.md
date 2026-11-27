@@ -378,9 +378,11 @@ computed: the session converts it to the worker's format before host-scope
 fields use it (`SerializedSymbolTable::to_symtab(PathFormat::host())`, see
 specs/sessions/session.md), so when the step-level bindings are copied into
 the task scope and a step environment's session scope (`copy_step_lets`),
-`unresolve_template_paths` replaces every value whose type contains `path`
-with `unresolved[T]`. Job creation does the same for its host-scope check
-tables (`build_task_check_symtab`, `build_env_check_symtab`).
+each copied value whose type contains `path` becomes `unresolved[T]`. Every
+other symbol in those scopes is unresolved already. Job creation applies the
+same rule to every value of its host-scope check tables
+(`unresolve_template_paths` in `build_task_check_symtab` and
+`build_env_check_symtab`).
 Whether `C:\a\b` has one component or three is decided by the worker's
 format when the session runs it (Expression Language "Path Format"). This
 is what keeps validation from rejecting an expression that a worker runs:

@@ -121,9 +121,10 @@ fn let_names(bindings: Option<&[String]>) -> HashSet<String> {
 /// `evaluated_only`, a binding with an empty name or no expression, which
 /// pass 8 reports and does not evaluate, is not copied: the task scope
 /// copies only evaluated bindings, and a Step Environment's scope copies
-/// every binding with an `=`. `symtab` is a host scope, so a value whose
-/// type contains `path` is then made unresolved
-/// ([`unresolve_template_paths`]).
+/// every binding with an `=`. `symtab` is a host scope, so a copied value
+/// whose type contains `path` is made unresolved
+/// ([`unresolve_template_path`]). The scope's other symbols are unresolved
+/// already.
 fn copy_step_lets(
     symtab: &mut SymbolTable,
     step: &StepTemplate,
@@ -142,11 +143,10 @@ fn copy_step_lets(
             continue;
         }
         if let Some(value) = step_scope.get_value(name) {
-            let _ = symtab.set(name, value.clone());
+            // Host scope: their paths are in the worker's format there.
+            let _ = symtab.set(name, unresolve_template_path(value.clone()));
         }
     }
-    // Host scope: their paths are in the worker's format there.
-    unresolve_template_paths(symtab);
 }
 
 /// A step's template-scope symtab with its step-level `let` bindings
@@ -2611,20 +2611,36 @@ fn evaluate_let_binding(
 /// three there, and a host-scope check can no more fold them in POSIX than
 /// it can a literal `path()` (specs/model/validation.md § Path Format).
 pub(crate) fn unresolve_template_paths(symtab: &mut SymbolTable) {
+    for name in symtab.all_paths("") {
+        let Some(ty) = symtab.get_value(&name).and_then(template_path_type) else {
+            continue;
+        };
+        symtab
+            .set(&name, ExprValue::unresolved(ty))
+            .expect("replacing an existing leaf value cannot conflict");
+    }
+}
+
+/// `value`, made unresolved if [`unresolve_template_paths`] would replace
+/// it in a symbol table.
+fn unresolve_template_path(value: ExprValue) -> ExprValue {
+    match template_path_type(&value) {
+        Some(ty) => ExprValue::unresolved(ty),
+        None => value,
+    }
+}
+
+/// The type of `value` when a host-scope check can't use it as it is: it
+/// is concrete and its type contains `path`.
+fn template_path_type(value: &ExprValue) -> Option<ExprType> {
     fn has_path(t: &ExprType) -> bool {
         t.code() == openjd_expr::TypeCode::Path || t.params().iter().any(has_path)
     }
-    for name in symtab.all_paths("") {
-        let ty = match symtab.get_value(&name) {
-            Some(v) if !v.is_unresolved() => v.expr_type(),
-            _ => continue,
-        };
-        if has_path(&ty) {
-            symtab
-                .set(&name, ExprValue::unresolved(ty))
-                .expect("replacing an existing leaf value cannot conflict");
-        }
+    if value.is_unresolved() {
+        return None;
     }
+    let ty = value.expr_type();
+    has_path(&ty).then_some(ty)
 }
 
 /// Job-creation evaluation of a `let` block into a check symbol table

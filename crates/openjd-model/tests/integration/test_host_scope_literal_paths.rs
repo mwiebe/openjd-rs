@@ -48,6 +48,11 @@ fn template(expr: &str, field: &str) -> serde_json::Value {
                 "actions": {"onEnter": {"command": "echo", "args": ["{{ v }}"]}}
             }}])
         }
+        "step env arg" => {
+            step_envs = serde_json::json!([{"name": "E", "script": {
+                "actions": {"onEnter": {"command": "echo", "args": [fs]}}
+            }}])
+        }
         other => panic!("unknown field {other}"),
     }
     let mut step = serde_json::json!({"name": "S", "script": script});
@@ -77,6 +82,7 @@ const HOST_FIELDS: &[&str] = &[
     "embedded file",
     "job env var",
     "step env script let",
+    "step env arg",
 ];
 
 #[test]
@@ -133,7 +139,9 @@ fn template_scope_paths_are_unresolved_in_host_scope() {
     // A path a step-level let builds is TEMPLATE scope (POSIX), but the
     // session converts it to the worker's format before host-scope fields
     // use it (specs/sessions/session.md, `to_symtab(PathFormat::host())`),
-    // so a host-scope check can't fold it in POSIX either.
+    // so a host-scope check can't fold it in POSIX either. The task scope
+    // ("arg", "let") and a Step Environment's session scope ("step env
+    // ...") each copy the Step's `let` values.
     let mut failures = Vec::new();
     for (lets, expr) in [
         (vec![r#"p = path("C:\\a\\b")"#], "p.parts[2]"),
@@ -144,7 +152,7 @@ fn template_scope_paths_are_unresolved_in_host_scope() {
             "p.with_number(1)",
         ),
     ] {
-        for field in ["arg", "let", "step env script let"] {
+        for field in ["arg", "let", "step env script let", "step env arg"] {
             let mut t = template(expr, field);
             t["steps"][0]["let"] = serde_json::json!(lets);
             let jt = match decode(t) {
